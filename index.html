@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Notorolla — grid</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      font-family: system-ui, sans-serif;
+      background: #11131a;
+      color: #d7dae0;
+    }
+    header {
+      display: flex;
+      align-items: baseline;
+      gap: 1rem;
+      padding: 0.8rem 1.2rem;
+      border-bottom: 1px solid #262a35;
+    }
+    header h1 { font-size: 1.05rem; margin: 0; font-weight: 600; }
+    header .sub { color: #6b7280; font-size: 0.85rem; }
+
+    .transport {
+      display: flex;
+      gap: 0.6rem;
+      align-items: center;
+      padding: 0.7rem 1.2rem;
+      border-bottom: 1px solid #1c2029;
+    }
+    button {
+      background: #2a2f3d;
+      color: #e8eaf0;
+      border: 1px solid #3a4150;
+      border-radius: 6px;
+      padding: 0.4rem 0.85rem;
+      font-size: 0.88rem;
+      cursor: pointer;
+    }
+    button:hover { background: #343b4c; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .transport button.active { outline: 2px solid #5aa9ff; outline-offset: 1px; }
+    #loop { min-width: 3rem; font-size: 1rem; }
+    .tempo { display: flex; align-items: center; gap: 0.4rem; color: #9aa1ad; font-size: 0.85rem; }
+    .tempo input { width: 130px; }
+
+    /* panes */
+    #panes { padding: 0.8rem 1.2rem 1.5rem; display: flex; flex-direction: column; gap: 0.8rem; }
+    .pane { border: 1px solid #262a35; border-radius: 8px; overflow: hidden; background: #0d0f15; }
+    .pane.dragging { opacity: 0.5; }
+    .pane.active-pane { border-color: #3d5a80; }
+    .pane.active-pane > .pane-header { background: #1d2840; color: #cfe0ff; }
+    .pane.active-pane > .pane-header .grip { color: #5a73a0; }
+    .pane-header {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.4rem 0.7rem;
+      background: #181b23;
+      border-bottom: 1px solid #262a35;
+      font-size: 0.8rem; color: #9aa1ad;
+      cursor: grab; user-select: none;
+    }
+    .pane-header .grip { color: #4a5160; letter-spacing: 1px; }
+    .pane-body { padding: 0.7rem; position: relative; }
+    .canvas-scroll { overflow-x: auto; }
+    canvas { display: block; border-radius: 6px; }
+
+    /* grid resize handle + interim guide */
+    .grid-resize {
+      height: 9px; margin-top: 3px;
+      background: #181b23; border: 1px solid #262a35; border-radius: 5px;
+      cursor: ns-resize;
+    }
+    .grid-resize:hover { background: #222633; }
+    .resize-guide {
+      position: fixed; z-index: 50;
+      border-top: 2px dashed #5aa9ff; display: none; pointer-events: none;
+    }
+    .resize-guide span {
+      position: absolute; right: 0; top: 2px;
+      background: #1c2233; color: #cfe0ff; font-size: 11px; padding: 1px 5px; border-radius: 3px;
+    }
+
+    /* toolbar */
+    .toolbar {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem;
+      padding-bottom: 0.7rem;
+    }
+    .tlabel { color: #6b7280; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; margin-right: 0.1rem; }
+    .tsep { width: 1px; align-self: stretch; background: #262a35; margin: 0 0.4rem; }
+    .tbtn { padding: 0.28rem 0.6rem; font-size: 0.82rem; }
+    .tbtn.swatch { color: #241c14; border-color: rgba(0,0,0,0.25); font-weight: 600; }
+    .tbtn.active { outline: 2px solid #5aa9ff; outline-offset: 1px; }
+    .tbtn.danger { border-color: #5a2f33; color: #d6a3a8; }
+    .tbtn.danger:hover { background: #3a2326; }
+    .grab {
+      display: inline-flex; align-items: center;
+      padding: 0.28rem 0.6rem; font-size: 0.82rem;
+      background: #232a38; border: 1px dashed #4a5470; border-radius: 6px;
+      color: #aeb9d0; cursor: grab; user-select: none;
+    }
+    .grab:active { cursor: grabbing; }
+
+    /* pattern name in the grid header */
+    .pane-name { color: #cbd2e0; font-weight: 600; }
+
+    /* tile player */
+    .tile-controls { display: flex; gap: 0.4rem; padding-bottom: 0.6rem; }
+    .tile-controls button { font-size: 0.82rem; padding: 0.28rem 0.6rem; }
+    .tile-lanes { display: flex; flex-direction: column; gap: 0.5rem; }
+    .lane {
+      display: flex; align-items: stretch; gap: 0.5rem;
+      padding: 0.4rem; border: 1px solid #1c2029; border-radius: 6px; background: #0b0d12;
+    }
+    .lane.active-lane { border-color: #3d5a80; background: #0e1422; }
+    .lane-tag { flex: 0 0 6px; width: 6px; border-radius: 3px; }
+    .lane-tiles {
+      display: flex; gap: 0.6rem; align-items: center;
+      flex: 1; min-height: 56px; overflow-x: auto;
+    }
+    .lane-tiles.drop { outline: 2px dashed #5aa9ff; outline-offset: -2px; border-radius: 4px; }
+    .tile-hint { color: #4a5160; font-size: 0.85rem; align-self: center; padding: 0 0.4rem; }
+    .tile {
+      position: relative; flex: 0 0 auto;
+      border: 1px solid #2a2f3d; border-radius: 6px; background: #11131a;
+      cursor: pointer; line-height: 0;
+    }
+    .tile:hover { border-color: #3a4150; }
+    .tile.selected { outline: 2px solid #5aa9ff; outline-offset: 1px; }
+    .tile.playing { box-shadow: 0 0 0 2px #6bd08a, 0 0 10px rgba(107,208,138,0.5); }
+    .tile-controls .active { outline: 2px solid #5aa9ff; outline-offset: 1px; }
+    .tile-thumb { display: block; border-radius: 6px; }
+    .tile-name {
+      position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      font-size: 0.9rem; font-weight: 700; color: #fff;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.9); pointer-events: none; line-height: 1;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Notorolla</h1>
+    <span class="sub">algorithmic composition — pattern grid</span>
+  </header>
+
+  <div class="transport">
+    <button id="loop" title="Finite loop — click to start, click again to re-arm">↻</button>
+    <button id="play">▶ Play</button>
+    <button id="stop" disabled>■ Stop</button>
+    <label class="tempo">
+      Tempo
+      <input id="tempo" type="range" min="40" max="200" value="120" />
+      <span id="tempoLabel">120 BPM</span>
+    </label>
+  </div>
+
+  <div id="panes">
+    <section class="pane" data-pane="grid">
+      <div class="pane-header"><span class="grip">⠿</span> Grid&nbsp;·&nbsp;<span class="pane-name" id="gridName">A</span></div>
+      <div class="pane-body">
+        <div id="toolbar" class="toolbar"></div>
+        <div class="canvas-scroll" id="gridScroll"><canvas id="grid"></canvas></div>
+        <div class="grid-resize" id="gridResize" title="Drag to resize the pitch range"></div>
+        <div class="resize-guide" id="resizeGuide"></div>
+      </div>
+    </section>
+
+    <section class="pane" data-pane="tiles">
+      <div class="pane-header"><span class="grip">⠿</span> Tile player</div>
+      <div class="pane-body">
+        <div class="tile-controls">
+          <button id="tilePlay" title="Play the lane once">▶</button>
+          <button id="tileStop" disabled>■</button>
+          <button id="tileLoop" title="Loop — tap to add passes (max 8)">↻</button>
+          <span class="tsep"></span>
+          <button id="arrUndo">Undo</button>
+          <button id="arrRedo">Redo</button>
+          <button id="tileDelete">Delete</button>
+        </div>
+        <div id="tileLane" class="tile-lanes"></div>
+      </div>
+    </section>
+
+    <section class="pane" data-pane="roll">
+      <div class="pane-header"><span class="grip">⠿</span> Piano roll</div>
+      <div class="pane-body">
+        <div class="canvas-scroll" id="rollScroll"><canvas id="roll"></canvas></div>
+      </div>
+    </section>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
