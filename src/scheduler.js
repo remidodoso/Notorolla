@@ -63,6 +63,9 @@ export class Scheduler {
     this.cycleNotes = [...score.notes].sort((a, b) => a.start - b.start);
     this.nextIndex = 0;
     this.spb = score.secondsPerBeat;
+    // Fraction of each note's slot that actually sounds (<1 = non-legato). The
+    // notes themselves carry full slot durations; we shorten at schedule time.
+    this.articulation = score.articulation != null ? score.articulation : 1;
     this.cycleSeconds = score.lengthBeats * this.spb;
     if (this.displayCycleSeconds == null) {
       this.displayCycleSeconds = this.cycleSeconds || this.spb;
@@ -82,7 +85,11 @@ export class Scheduler {
         const note = this.cycleNotes[this.nextIndex];
         const noteTime = this.cycleStart + note.start * this.spb;
         if (noteTime > horizon) return;
-        this.engine.playNote(note.pitch, noteTime, note.duration * this.spb, note.velocity);
+        // `muted` notes (from a silenced lane) stay in the score so the roll can
+        // still show them hatched, but they don't sound.
+        if (!note.muted) {
+          this.engine.playNote(note.pitch, noteTime, note.duration * this.articulation * this.spb, note.velocity, note.freq);
+        }
         this.nextIndex++;
       }
 

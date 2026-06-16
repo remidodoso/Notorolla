@@ -22,6 +22,18 @@
     header h1 { font-size: 1.05rem; margin: 0; font-weight: 600; }
     header .sub { color: #6b7280; font-size: 0.85rem; }
 
+    /* project bar — document-level New / Open / Save, above everything */
+    .project-bar {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.5rem 1.2rem;
+      background: #0c0e14;
+      border-bottom: 1px solid #1c2029;
+    }
+    .project-bar button { font-size: 0.82rem; padding: 0.3rem 0.7rem; }
+    .proj-name { margin-left: 0.5rem; color: #9aa1ad; font-size: 0.85rem; }
+    .proj-name b { color: #cbd2e0; font-weight: 600; }
+    .proj-dot { color: #e8a04e; }            /* unsaved-changes indicator */
+
     .transport {
       display: flex;
       gap: 0.6rem;
@@ -40,6 +52,13 @@
     }
     button:hover { background: #343b4c; }
     button:disabled { opacity: 0.5; cursor: default; }
+
+    /* Keyboard-shortcut feedback: pulse the button the shortcut maps to. */
+    @keyframes btn-flash {
+      from { box-shadow: 0 0 0 2px #5aa9ff, 0 0 10px 2px rgba(90, 169, 255, 0.65); }
+      to   { box-shadow: 0 0 0 0 rgba(90, 169, 255, 0); }
+    }
+    .flash { animation: btn-flash 0.3s ease-out; }
     .transport button.active { outline: 2px solid #5aa9ff; outline-offset: 1px; }
     #loop { min-width: 3rem; font-size: 1rem; }
     .tempo { display: flex; align-items: center; gap: 0.4rem; color: #9aa1ad; font-size: 0.85rem; }
@@ -89,6 +108,10 @@
     .tlabel { color: #6b7280; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; margin-right: 0.1rem; }
     .tsep { width: 1px; align-self: stretch; background: #262a35; margin: 0 0.4rem; }
     .tbtn { padding: 0.28rem 0.6rem; font-size: 0.82rem; }
+    .tsel {
+      background: #2a2f3d; color: #e8eaf0; border: 1px solid #3a4150;
+      border-radius: 6px; padding: 0.26rem 0.4rem; font-size: 0.82rem; cursor: pointer;
+    }
     .tbtn.swatch { color: #241c14; border-color: rgba(0,0,0,0.25); font-weight: 600; }
     .tbtn.active { outline: 2px solid #5aa9ff; outline-offset: 1px; }
     .tbtn.danger { border-color: #5a2f33; color: #d6a3a8; }
@@ -104,30 +127,60 @@
     /* pattern name in the grid header */
     .pane-name { color: #cbd2e0; font-weight: 600; }
 
+    /* edit instrument (Vesperia) */
+    .instr-head { display: flex; align-items: baseline; gap: 0.6rem; padding-bottom: 0.7rem; }
+    .instr-title { font-weight: 700; color: #cbd2e0; font-size: 0.95rem; }
+    .instr-kind { color: #6b7280; font-size: 0.78rem; }
+    .instr-head button { font-size: 0.82rem; padding: 0.28rem 0.6rem; }
+    .instr-grid { display: flex; flex-wrap: wrap; gap: 1.4rem 2.2rem; }
+    .instr-group { display: flex; flex-direction: column; gap: 0.35rem; min-width: 220px; }
+    .instr-group-title {
+      color: #6b7280; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;
+      border-bottom: 1px solid #262a35; padding-bottom: 0.25rem; margin-bottom: 0.15rem;
+    }
+    .instr-row { display: grid; grid-template-columns: 4.5rem 1fr 3.6rem; align-items: center; gap: 0.5rem; cursor: pointer; }
+    .instr-label { color: #aeb9d0; font-size: 0.82rem; }
+    .instr-row input[type="range"] { width: 100%; }
+    .instr-val { color: #8a93a3; font-size: 0.78rem; text-align: right; font-variant-numeric: tabular-nums; }
+
     /* tile player */
     .tile-controls { display: flex; gap: 0.4rem; padding-bottom: 0.6rem; }
     .tile-controls button { font-size: 0.82rem; padding: 0.28rem 0.6rem; }
-    .tile-lanes { display: flex; flex-direction: column; gap: 0.5rem; }
-    .lane {
-      display: flex; align-items: stretch; gap: 0.5rem;
-      padding: 0.4rem; border: 1px solid #1c2029; border-radius: 6px; background: #0b0d12;
+    /* Both lanes share one horizontal scroll + origin, so tiles align in time. */
+    .tile-lanes { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; overflow-x: auto; }
+    .lane { display: flex; align-items: stretch; width: max-content; }
+    /* Sticky lane header: color stripe + Mute/Solo, room reserved for more. */
+    .lane-head {
+      position: sticky; left: 0; z-index: 3; flex: 0 0 auto;
+      display: flex; align-items: stretch; gap: 4px;
+      height: 56px; padding: 4px 5px 4px 0; box-sizing: border-box;
+      background: #0c0e14; border: 1px solid #1c2029; border-right: none; border-radius: 6px 0 0 6px;
     }
-    .lane.active-lane { border-color: #3d5a80; background: #0e1422; }
-    .lane-tag { flex: 0 0 6px; width: 6px; border-radius: 3px; }
-    .lane-tiles {
-      display: flex; gap: 0.6rem; align-items: center;
-      flex: 1; min-height: 56px; overflow-x: auto;
+    .lane.active-lane .lane-head { border-color: #3d5a80; background: #0e1422; }
+    .lane-stripe { flex: 0 0 6px; width: 6px; border-radius: 3px; }
+    .lane-ms { display: flex; flex-direction: column; gap: 3px; justify-content: center; }
+    .lane-btn {
+      width: 22px; height: 22px; padding: 0; font-size: 0.72rem; font-weight: 700; line-height: 1;
+      border-radius: 4px; background: #20242e; color: #8a93a3; border: 1px solid #313747;
     }
-    .lane-tiles.drop { outline: 2px dashed #5aa9ff; outline-offset: -2px; border-radius: 4px; }
-    .tile-hint { color: #4a5160; font-size: 0.85rem; align-self: center; padding: 0 0.4rem; }
+    .lane-btn:hover { background: #272c38; }
+    .lane-btn.mute.active { background: #5a2f33; border-color: #8a4a4f; color: #ffd9dc; }
+    .lane-btn.solo.active { background: #4a4322; border-color: #8a7c3a; color: #ffeeb0; }
+    .lane-track {
+      position: relative; flex: 0 0 auto; height: 56px;
+      border: 1px solid #1c2029; border-left: none; border-radius: 0 6px 6px 0; background: #0b0d12;
+    }
+    .lane.active-lane .lane-track { border-color: #3d5a80; background: #0e1422; }
+    .lane-track.drop { outline: 2px dashed #5aa9ff; outline-offset: -2px; }
+    .tile-hint { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: #4a5160; font-size: 0.85rem; }
     .tile {
-      position: relative; flex: 0 0 auto;
+      position: absolute; top: 2px; height: 52px; box-sizing: border-box; overflow: hidden;
       border: 1px solid #2a2f3d; border-radius: 6px; background: #11131a;
       cursor: pointer; line-height: 0;
     }
     .tile:hover { border-color: #3a4150; }
-    .tile.selected { outline: 2px solid #5aa9ff; outline-offset: 1px; }
-    .tile.playing { box-shadow: 0 0 0 2px #6bd08a, 0 0 10px rgba(107,208,138,0.5); }
+    .tile.selected { outline: 2px solid #5aa9ff; outline-offset: 1px; z-index: 2; }
+    .tile.playing { box-shadow: 0 0 0 2px #6bd08a, 0 0 10px rgba(107,208,138,0.5); z-index: 2; }
     .tile-controls .active { outline: 2px solid #5aa9ff; outline-offset: 1px; }
     .tile-thumb { display: block; border-radius: 6px; }
     .tile-name {
@@ -135,9 +188,22 @@
       font-size: 0.9rem; font-weight: 700; color: #fff;
       text-shadow: 0 1px 3px rgba(0,0,0,0.9); pointer-events: none; line-height: 1;
     }
+    /* horizontal-scale strip (quantized: smaller ← slider → bigger) */
+    .tile-scale { display: flex; align-items: center; gap: 0.5rem; padding-top: 0.7rem; }
+    .tile-scale .ts-end { font-size: 0.72rem; color: #6b7280; }
+    .tile-scale button { font-size: 1rem; line-height: 1; padding: 0.15rem 0.5rem; min-width: 1.9rem; }
+    .tile-scale input[type="range"] { width: 170px; }
   </style>
 </head>
 <body>
+  <div class="project-bar">
+    <button id="projNew">New Project</button>
+    <button id="projOpen">Open…</button>
+    <button id="projSave">Save…</button>
+    <span class="proj-name"><span id="projDot" class="proj-dot">●</span> <b id="projName">untitled</b></span>
+    <input id="projFile" type="file" accept=".json,application/json" hidden />
+  </div>
+
   <header>
     <h1>Notorolla</h1>
     <span class="sub">algorithmic composition — pattern grid</span>
@@ -176,8 +242,17 @@
           <button id="arrUndo">Undo</button>
           <button id="arrRedo">Redo</button>
           <button id="tileDelete">Delete</button>
+          <span class="tsep"></span>
+          <button id="midiExport" title="Export the arrangement as a Standard MIDI file">Export MIDI</button>
         </div>
         <div id="tileLane" class="tile-lanes"></div>
+        <div class="tile-scale">
+          <span class="ts-end">smaller</span>
+          <button id="tileZoomOut" title="Zoom out (smaller tiles)">−</button>
+          <input id="tileScale" type="range" min="0" max="6" step="1" value="1" title="Tile time scale" />
+          <button id="tileZoomIn" title="Zoom in (bigger tiles)">+</button>
+          <span class="ts-end">bigger</span>
+        </div>
       </div>
     </section>
 
@@ -185,6 +260,13 @@
       <div class="pane-header"><span class="grip">⠿</span> Piano roll</div>
       <div class="pane-body">
         <div class="canvas-scroll" id="rollScroll"><canvas id="roll"></canvas></div>
+      </div>
+    </section>
+
+    <section class="pane" data-pane="instrument">
+      <div class="pane-header"><span class="grip">⠿</span> Edit instrument</div>
+      <div class="pane-body">
+        <div id="instr" class="instr"></div>
       </div>
     </section>
   </div>

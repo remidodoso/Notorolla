@@ -1,30 +1,47 @@
 // tileplayer.js — render the tile lanes and handle tile interaction.
 //
-// The tile player holds two parallel lanes. Each tile is a mini pitch×time
-// thumbnail (note bars colored by duration) bordered in its lane's color, with
-// the pattern name bold in the middle. Click selects; double-click opens the
-// pattern in the editor. Each lane is a drop target for the grid's grab handle.
+// Both lanes share ONE horizontal time axis: a single scale (`this.ppb`,
+// px/beat — adjustable in quantized notches via TILE_SCALES) and origin, one
+// shared horizontal scroll, and tiles positioned by their start beat. So a tile
+// that sounds at beat X sits at the same x in either lane. (Lanes are gapless
+// for now.) Each lane has a sticky header block (color stripe + Mute/Solo) that
+// stays pinned when scrolled. Thumbnails are a self-contained recap of each
+// tile's contents, drawn at the current scale.
 
 import { PALETTE, DURATIONS } from './grid.js';
 import { LANE_COLORS } from './library.js';
 
-const THUMB_PPB = 6;   // px per beat — same scale across all tiles, so lengths compare
-const THUMB_H = 52;
+// Quantized horizontal-scale notches (px per beat), smaller → bigger. The old
+// fixed scale (6) sits near the low end; most of the ladder is zoom-in headroom.
+export const TILE_SCALES = [4, 6, 9, 13, 19, 28, 40];
+export const DEFAULT_SCALE_IDX = 1; // = 6 px/beat, the prior fixed scale
+
+const TILE_H = 52;
+const TRACK_H = 56;
 const THUMB_PAD = 3;
-const THUMB_MIN_W = 30;
+const MIN_TRACK = 200;  // min track width so empty lanes still offer a drop area
 
 export class TilePlayer {
-  // cb: onSelect(id), onOpen(name, id), onDropAppend(laneId), onLaneClick(laneId)
+  // cb: onSelect(id), onOpen(name, id), onDropAppend(laneId), onLaneClick(laneId),
+  //     onMute(laneId), onSolo(laneId)
   constructor(containerEl, library, arrangement, cb) {
     this.container = containerEl;
     this.library = library;
     this.arrangement = arrangement;
     this.cb = cb;
+    this.ppb = TILE_SCALES[DEFAULT_SCALE_IDX]; // current time scale; main sets it from saved UI
   }
 
   render() {
     const c = this.container;
     c.innerHTML = '';
+
+    // Shared axis width = the longest lane, so both lanes scroll as one and the
+    // shorter lane has an empty (still droppable) tail.
+    const ppb = this.ppb;
+    const maxBeats = Math.max(0, ...this.arrangement.lanes.map((l) => laneBeats(l, this.library)));
+    const trackWidth = Math.max(Math.round(maxBeats * ppb), MIN_TRACK);
+
     this.arrangement.lanes.forEach((lane, li) => {
       const color = LANE_COLORS[li % LANE_COLORS.length];
 
@@ -32,57 +49,77 @@ export class TilePlayer {
       laneEl.className = 'lane' + (this.arrangement.activeLaneId === lane.id ? ' active-lane' : '');
       laneEl.dataset.lane = lane.id;
 
-      const tag = document.createElement('span');
-      tag.className = 'lane-tag';
-      tag.style.background = color;
+      // Sticky lane-header block (stays pinned during horizontal scroll, like the
+      // old color tag): color stripe + Mute/Solo. Room is reserved here for future
+      // per-lane controls (volume, name, add/remove, instrument). M and S are a
+      // tri-state — one or the other or neither.
+      const head = document.createElement('div');
+      head.className = 'lane-head';
+      const stripe = document.createElement('span');
+      stripe.className = 'lane-stripe';
+      stripe.style.background = color;
+      const ms = document.createElement('div');
+      ms.className = 'lane-ms';
+      const muteBtn = laneToggle('M', 'mute', lane.mute, 'Mute this lane', () => this.cb.onMute(lane.id));
+      const soloBtn = laneToggle('S', 'solo', lane.solo, 'Solo this lane', () => this.cb.onSolo(lane.id));
+      ms.append(muteBtn, soloBtn);
+      head.append(stripe, ms);
 
-      const tilesEl = document.createElement('div');
-      tilesEl.className = 'lane-tiles';
-      tilesEl.dataset.lane = lane.id;
-      tilesEl.addEventListener('dragover', (e) => {
+      const track = document.createElement('div');
+      track.className = 'lane-track';
+      track.dataset.lane = lane.id;
+      track.style.width = `${trackWidth}px`;
+      track.addEventListener('dragover', (e) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'copy';
-        tilesEl.classList.add('drop');
+        track.classList.add('drop');
       });
-      tilesEl.addEventListener('dragleave', () => tilesEl.classList.remove('drop'));
-      tilesEl.addEventListener('drop', (e) => {
+      track.addEventListener('dragleave', () => track.classList.remove('drop'));
+      track.addEventListener('drop', (e) => {
         e.preventDefault();
-        tilesEl.classList.remove('drop');
+        track.classList.remove('drop');
         this.cb.onDropAppend(lane.id);
       });
-      tilesEl.addEventListener('click', (e) => { if (e.target === tilesEl) this.cb.onLaneClick(lane.id); });
+      track.addEventListener('click', (e) => { if (e.target === track) this.cb.onLaneClick(lane.id); });
 
       if (lane.tiles.length === 0) {
         const hint = document.createElement('div');
         hint.className = 'tile-hint';
         hint.textContent = 'Drop a pattern here →';
-        tilesEl.append(hint);
+        track.append(hint);
       } else {
-        for (const t of lane.tiles) {
-          const pattern = this.library.patterns.get(t.name);
+        let t = 0; // start beat within this lane
+        for (const tile of lane.tiles) {
+          const pattern = this.library.patterns.get(tile.name);
+          const beats = pattern ? patternBeats(pattern) : 0;
+          const w = Math.max(2, Math.round(beats * ppb));
+
           const el = document.createElement('div');
-          el.className = 'tile' + (this.arrangement.selectedId === t.id ? ' selected' : '');
-          el.dataset.id = t.id;
+          el.className = 'tile' + (this.arrangement.selectedId === tile.id ? ' selected' : '');
+          el.dataset.id = tile.id;
           el.style.borderColor = color;
+          el.style.left = `${Math.round(t * ppb)}px`;
+          el.style.width = `${w}px`;
 
           const cv = document.createElement('canvas');
-          cv.height = THUMB_H;
-          cv.width = pattern ? thumbWidth(pattern) : THUMB_MIN_W;
+          cv.width = w;
+          cv.height = TILE_H;
           cv.className = 'tile-thumb';
-          if (pattern) drawThumb(cv, pattern);
+          if (pattern) drawThumb(cv, pattern, ppb);
 
           const name = document.createElement('span');
           name.className = 'tile-name';
-          name.textContent = t.name;
+          name.textContent = tile.name;
 
           el.append(cv, name);
-          el.addEventListener('click', () => this.cb.onSelect(t.id));
-          el.addEventListener('dblclick', () => this.cb.onOpen(t.name, t.id));
-          tilesEl.append(el);
+          el.addEventListener('click', () => this.cb.onSelect(tile.id));
+          el.addEventListener('dblclick', () => this.cb.onOpen(tile.name, tile.id));
+          track.append(el);
+          t += beats;
         }
       }
 
-      laneEl.append(tag, tilesEl);
+      laneEl.append(head, track);
       c.append(laneEl);
     });
   }
@@ -106,19 +143,31 @@ export class TilePlayer {
   }
 }
 
-// Total length of a pattern in beats.
+// Total length of a pattern / a lane in beats (all columns, trailing rests included).
 function patternBeats(pattern) {
   return pattern.columns.reduce((s, c) => s + DURATIONS[c.durIndex].beats, 0);
 }
+function laneBeats(lane, library) {
+  return lane.tiles.reduce((s, t) => {
+    const p = library.patterns.get(t.name);
+    return s + (p ? patternBeats(p) : 0);
+  }, 0);
+}
 
-// Thumbnail width is proportional to the pattern's length.
-function thumbWidth(pattern) {
-  return Math.max(THUMB_MIN_W, Math.round(patternBeats(pattern) * THUMB_PPB) + THUMB_PAD * 2);
+// A small lane-header toggle (Mute / Solo). `kind` drives the active styling.
+function laneToggle(text, kind, on, title, onClick) {
+  const b = document.createElement('button');
+  b.className = `lane-btn ${kind}` + (on ? ' active' : '');
+  b.textContent = text;
+  b.title = title;
+  b.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+  return b;
 }
 
 // Notes as little bars at their real beat-time, length = duration, colored by
-// duration; rests omitted.
-function drawThumb(cv, pattern) {
+// duration; rests omitted. (Unchanged look — a self-contained recap.) `ppb`
+// matches the lane's current horizontal scale so the thumbnail lines up.
+function drawThumb(cv, pattern, ppb) {
   const ctx = cv.getContext('2d');
   const W = cv.width, H = cv.height;
   ctx.fillStyle = '#0d0f15';
@@ -140,8 +189,8 @@ function drawThumb(cv, pattern) {
   const span = Math.max(1, hi - lo);
   const innerH = H - THUMB_PAD * 2 - 3;
   for (const n of notes) {
-    const x = THUMB_PAD + n.start * THUMB_PPB;
-    const w = Math.max(2, n.beats * THUMB_PPB - 1);
+    const x = THUMB_PAD + n.start * ppb;
+    const w = Math.max(2, n.beats * ppb - 1);
     const y = THUMB_PAD + (1 - (n.degree - lo) / span) * innerH;
     ctx.fillStyle = PALETTE[n.durIndex];
     ctx.fillRect(x, y, w, 3);

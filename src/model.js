@@ -18,6 +18,12 @@ export function noteName(note) {
   return `${name}${octave}`;
 }
 
+/** Pitch-class (0..11) -> name without octave (C, C#, …). The 12-ET case of a
+ *  per-tuning naming seam; non-12 tunings would name their classes "whatever". */
+export function pitchClassName(pc) {
+  return NOTE_NAMES[(((pc % 12) + 12) % 12)];
+}
+
 /** Is this pitch a black key? Used to shade the piano-roll lanes. */
 export function isBlackKey(note) {
   return [1, 3, 6, 8, 10].includes(note % 12);

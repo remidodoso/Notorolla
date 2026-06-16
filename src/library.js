@@ -49,9 +49,14 @@ export class PatternLibrary {
     return !!c && this.isFloating(c.name) && !c.isEmpty();
   }
 
-  // New/Clone are only allowed when nothing's parked and the current pattern is
-  // safe (referenced) or empty — i.e. making a new one won't strand work.
+  // New (a blank) is only allowed when nothing's parked and the current pattern
+  // is safe (referenced) or empty — i.e. it won't strand work or pile up blanks.
   canCreate() { return !this.parkedName && !this._currentIsFloatingNonEmpty(); }
+
+  // Clone is allowed whenever the current pattern is safe to leave (referenced or
+  // empty) — even with something parked, since cloning a referenced pattern is a
+  // normal, non-stranding action.
+  canClone() { return !!this.current() && !this._currentIsFloatingNonEmpty(); }
 
   // Leave the current pattern: park it if it's a non-empty float (the parked
   // slot is guaranteed free by the invariant), drop it if it's an empty float,
@@ -74,7 +79,7 @@ export class PatternLibrary {
   }
 
   clone() {
-    if (!this.canCreate()) return null;
+    if (!this.canClone()) return null;
     const src = this.current();
     this._leaveCurrent();
     const p = this._add(src.clone(this._mint()));
@@ -109,7 +114,9 @@ export class PatternLibrary {
 
   toJSON() {
     return {
-      patterns: [...this.patterns.values()].map((p) => ({ name: p.name, cols: p.toJSON() })),
+      patterns: [...this.patterns.values()].map((p) => ({
+        name: p.name, cols: p.toJSON(), tuning: p.tuningId, scale: p.scaleId, root: p.root,
+      })),
       counter: this.counter,
       currentName: this.currentName,
       parkedName: this.parkedName,
@@ -118,7 +125,14 @@ export class PatternLibrary {
 
   static fromJSON(o, isReferenced) {
     const lib = new PatternLibrary(isReferenced);
-    for (const { name, cols } of o.patterns) lib.patterns.set(name, Pattern.fromJSON(cols, name));
+    // tuning/scale/root are optional — older patterns default to 12-ET chromatic.
+    for (const { name, cols, tuning, scale, root } of o.patterns) {
+      const p = Pattern.fromJSON(cols, name);
+      if (tuning) p.tuningId = tuning;
+      if (scale) p.scaleId = scale;
+      if (root != null) p.root = root;
+      lib.patterns.set(name, p);
+    }
     lib.counter = o.counter;
     lib.currentName = o.currentName;
     lib.parkedName = o.parkedName;
@@ -134,7 +148,7 @@ export const LANE_COLORS = ['#5aa9ff', '#e8a04e'];
 // Tile ids are globally unique across lanes, so selection/deletion is flat.
 export class Arrangement {
   constructor(lanes) {
-    this.lanes = lanes || [{ id: 0, tiles: [] }, { id: 1, tiles: [] }];
+    this.lanes = lanes || [newLane(0), newLane(1)];
     this.selectedId = null;
     this.activeLaneId = this.lanes[0].id;
     this.seq = 0; // global tile-id counter
@@ -143,6 +157,21 @@ export class Arrangement {
   lane(id) { return this.lanes.find((l) => l.id === id); }
   laneOfTile(id) { return this.lanes.find((l) => l.tiles.some((t) => t.id === id)); }
   allTiles() { return this.lanes.flatMap((l) => l.tiles); }
+
+  // Mute and Solo are a per-lane tri-state {none | muted | soloed}: turning one
+  // on clears the other for that lane. Across lanes there's no exclusivity (mute
+  // both, solo both, etc. are all fine). Both persist with the project so it
+  // reloads sounding exactly as saved.
+  toggleMute(id) { const l = this.lane(id); if (!l) return; l.mute = !l.mute; if (l.mute) l.solo = false; }
+  toggleSolo(id) { const l = this.lane(id); if (!l) return; l.solo = !l.solo; if (l.solo) l.mute = false; }
+
+  // The set of lane ids that actually sound: solo wins globally — if any lane is
+  // soloed, only soloed lanes sound; otherwise every non-muted lane sounds.
+  audibleLaneIds() {
+    const soloed = this.lanes.filter((l) => l.solo);
+    const src = soloed.length ? soloed : this.lanes.filter((l) => !l.mute);
+    return new Set(src.map((l) => l.id));
+  }
 
   append(laneId, name) {
     const tile = { id: ++this.seq, name };
@@ -162,20 +191,25 @@ export class Arrangement {
 
   toJSON() {
     return {
-      lanes: this.lanes.map((l) => ({ id: l.id, tiles: l.tiles.map((t) => ({ id: t.id, name: t.name })) })),
+      lanes: this.lanes.map((l) => ({
+        id: l.id, tiles: l.tiles.map((t) => ({ id: t.id, name: t.name })), mute: !!l.mute, solo: !!l.solo,
+      })),
       seq: this.seq,
       activeLaneId: this.activeLaneId,
     };
   }
 
   static fromJSON(o) {
-    // Migrate the old single-lane format ({tiles}) into lane 0.
+    // mute/solo are optional — older saves (and the legacy single-lane format,
+    // migrated into lane 0) default to none.
     const lanes = o.lanes
-      ? o.lanes.map((l) => ({ id: l.id, tiles: l.tiles.map((t) => ({ id: t.id, name: t.name })) }))
-      : [{ id: 0, tiles: (o.tiles || []).map((t) => ({ id: t.id, name: t.name })) }, { id: 1, tiles: [] }];
+      ? o.lanes.map((l) => ({ id: l.id, tiles: l.tiles.map((t) => ({ id: t.id, name: t.name })), mute: !!l.mute, solo: !!l.solo }))
+      : [{ id: 0, tiles: (o.tiles || []).map((t) => ({ id: t.id, name: t.name })), mute: false, solo: false }, newLane(1)];
     const a = new Arrangement(lanes);
     a.seq = o.seq || 0;
     a.activeLaneId = o.activeLaneId ?? lanes[0].id;
     return a;
   }
 }
+
+function newLane(id) { return { id, tiles: [], mute: false, solo: false }; }
