@@ -64,6 +64,14 @@
     .tempo { display: flex; align-items: center; gap: 0.4rem; color: #9aa1ad; font-size: 0.85rem; }
     .tempo input { width: 130px; }
 
+    /* output level meter + clip LED + master fader (right of the transport) */
+    .meter-group { display: flex; align-items: center; gap: 0.5rem; margin-left: auto; }
+    #meter { display: block; border-radius: 3px; background: #0c0e14; border: 1px solid #1c2029; }
+    .clip-led { width: 10px; height: 10px; border-radius: 2px; background: #2a2f3d; cursor: pointer; }
+    .clip-led.on { background: #ff5050; box-shadow: 0 0 6px #ff5050; }
+    .master-fader { display: flex; align-items: center; gap: 0.35rem; color: #9aa1ad; font-size: 0.8rem; }
+    .master-fader input { width: 90px; }
+
     /* panes */
     #panes { padding: 0.8rem 1.2rem 1.5rem; display: flex; flex-direction: column; gap: 0.8rem; }
     .pane { border: 1px solid #262a35; border-radius: 8px; overflow: hidden; background: #0d0f15; }
@@ -128,7 +136,11 @@
     .pane-name { color: #cbd2e0; font-weight: 600; }
 
     /* edit instrument (Vesperia) */
-    .instr-head { display: flex; align-items: baseline; gap: 0.6rem; padding-bottom: 0.7rem; }
+    .instr-head { display: flex; align-items: center; gap: 0.6rem; padding-bottom: 0.7rem; }
+    .instr-target { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.18rem 0.5rem;
+      border: 1px solid #2a3040; border-radius: 4px; background: #11141c; }
+    .instr-swatch { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+    .instr-target-label { color: #cbd2e0; font-size: 0.8rem; font-weight: 600; }
     .instr-title { font-weight: 700; color: #cbd2e0; font-size: 0.95rem; }
     .instr-kind { color: #6b7280; font-size: 0.78rem; }
     .instr-head button { font-size: 0.82rem; padding: 0.28rem 0.6rem; }
@@ -144,20 +156,67 @@
     .instr-val { color: #8a93a3; font-size: 0.78rem; text-align: right; font-variant-numeric: tabular-nums; }
 
     /* tile player */
-    .tile-controls { display: flex; gap: 0.4rem; padding-bottom: 0.6rem; }
+    .tile-controls { display: flex; gap: 0.4rem; align-items: center; padding-bottom: 0.6rem; }
     .tile-controls button { font-size: 0.82rem; padding: 0.28rem 0.6rem; }
+    /* indeterminate "rendering" bar shown during offline audio export */
+    .export-prog { width: 120px; height: 6px; border-radius: 3px; background: #1c2029; overflow: hidden; display: none; }
+    .export-prog.on { display: inline-block; }
+    .export-prog::before {
+      content: ''; display: block; width: 40%; height: 100%; border-radius: 3px; background: #5aa9ff;
+      animation: prog-slide 1s linear infinite;
+    }
+    @keyframes prog-slide { from { transform: translateX(-110%); } to { transform: translateX(260%); } }
     /* Both lanes share one horizontal scroll + origin, so tiles align in time. */
-    .tile-lanes { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; overflow-x: auto; }
+    .tile-lanes { --lane-head-w: 132px; display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; overflow-x: auto; }
     .lane { display: flex; align-items: stretch; width: max-content; }
+    /* Beat ruler (sticky top): left spacer aligns with the lane heads, then a
+       scrolling track of ticks/numbers carrying the play-region markers. */
+    .ruler-row { display: flex; align-items: stretch; width: max-content; position: sticky; top: 0; z-index: 4; }
+    .ruler-spacer { flex: 0 0 var(--lane-head-w); width: var(--lane-head-w); position: sticky; left: 0; z-index: 5; background: #0c0e14; }
+    .ruler-track { position: relative; flex: 0 0 auto; height: 20px; background: #0a0c11; border: 1px solid #1c2029; border-radius: 4px 4px 0 0; cursor: pointer; touch-action: none; }
+    .ruler-canvas { display: block; }
+    .ruler-region { position: absolute; top: 0; bottom: 0; background: rgba(90,169,255,0.10); pointer-events: none; }
+    .ruler-mark { position: absolute; top: 0; height: 20px; width: 0; pointer-events: none; z-index: 2; }
+    .ruler-mark.start { border-left: 2px solid #4caf6a; }
+    .ruler-mark.start::before { content: ''; position: absolute; top: 0; left: 0; border-top: 7px solid #4caf6a; border-right: 7px solid transparent; }
+    .ruler-mark.end { border-left: 2px solid #e0584f; }
+    .ruler-mark.end::before { content: ''; position: absolute; top: 0; left: -7px; border-top: 7px solid #e0584f; border-left: 7px solid transparent; }
+    .ruler-mark.end.auto { opacity: 0.4; }
+    /* Loop-region guide lines through each lane track. */
+    .tile-region-line { position: absolute; top: 0; bottom: 0; width: 0; pointer-events: none; z-index: 1; }
+    .tile-region-line.start { border-left: 1px dashed rgba(76,175,106,0.5); }
+    .tile-region-line.end { border-left: 1px dashed rgba(224,88,79,0.5); }
     /* Sticky lane header: color stripe + Mute/Solo, room reserved for more. */
     .lane-head {
-      position: sticky; left: 0; z-index: 3; flex: 0 0 auto;
+      position: sticky; left: 0; z-index: 3; flex: 0 0 var(--lane-head-w); width: var(--lane-head-w);
       display: flex; align-items: stretch; gap: 4px;
       height: 56px; padding: 4px 5px 4px 0; box-sizing: border-box;
       background: #0c0e14; border: 1px solid #1c2029; border-right: none; border-radius: 6px 0 0 6px;
     }
     .lane.active-lane .lane-head { border-color: #3d5a80; background: #0e1422; }
     .lane-stripe { flex: 0 0 6px; width: 6px; border-radius: 3px; }
+    /* Instrument block: name (future selector) over an Edit button. */
+    .lane-info { display: flex; flex-direction: column; justify-content: center; gap: 4px; flex: 1 1 auto; min-width: 0; }
+    .lane-instr {
+      font-size: 0.72rem; font-weight: 600; color: #aeb6c4; line-height: 1; padding-left: 2px;
+      max-width: 70px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .lane-edit {
+      height: 20px; padding: 0 8px; font-size: 0.72rem; font-weight: 600; line-height: 1;
+      border-radius: 4px; background: #20242e; color: #8a93a3; border: 1px solid #313747;
+    }
+    .lane-edit:hover { background: #272c38; color: #cbd2e0; }
+    .lane-edit.on { background: #1e3050; border-color: #3d5a80; color: #cfe0ff; }
+    /* Pan (top) + Gain (bottom) knobs: click + vertical-drag, dbl-click resets. */
+    .lane-knobs { display: flex; flex-direction: column; gap: 5px; justify-content: center; align-items: center; }
+    .lane-knob {
+      position: relative; width: 18px; height: 18px; border-radius: 50%;
+      background: radial-gradient(circle at 50% 38%, #2b313d, #181c24);
+      border: 1px solid #3a4154; cursor: ns-resize; touch-action: none; flex: 0 0 auto;
+    }
+    .lane-knob:hover { border-color: #5a647c; }
+    .knob-tick { position: absolute; left: 50%; top: 1px; width: 2px; height: 7px; border-radius: 1px;
+      background: #cbd2e0; transform-origin: 50% 8px; }
     .lane-ms { display: flex; flex-direction: column; gap: 3px; justify-content: center; }
     .lane-btn {
       width: 22px; height: 22px; padding: 0; font-size: 0.72rem; font-weight: 700; line-height: 1;
@@ -170,15 +229,37 @@
       position: relative; flex: 0 0 auto; height: 56px;
       border: 1px solid #1c2029; border-left: none; border-radius: 0 6px 6px 0; background: #0b0d12;
     }
+    /* thin "add a lane" row at the bottom of the stack, + on the left */
+    .lane-add { display: flex; align-items: center; padding: 1px 0; }
+    .lane-add-btn {
+      width: 22px; height: 20px; padding: 0; font-size: 1rem; line-height: 1;
+      border-radius: 4px; background: #20242e; color: #8a93a3; border: 1px solid #313747;
+    }
+    .lane-add-btn:hover { background: #272c38; color: #cbd2e0; }
     .lane.active-lane .lane-track { border-color: #3d5a80; background: #0e1422; }
     .lane-track.drop { outline: 2px dashed #5aa9ff; outline-offset: -2px; }
     .tile-hint { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: #4a5160; font-size: 0.85rem; }
     .tile {
       position: absolute; top: 2px; height: 52px; box-sizing: border-box; overflow: hidden;
       border: 1px solid #2a2f3d; border-radius: 6px; background: #11131a;
-      cursor: pointer; line-height: 0;
+      cursor: pointer; line-height: 0; user-select: none; touch-action: none;
     }
     .tile:hover { border-color: #3a4150; }
+    /* prospective drop slot (drag preview) + the floating drag ghost's badge */
+    .tile-gap {
+      position: absolute; top: 2px; height: 52px; box-sizing: border-box;
+      border: 2px dashed #5aa9ff; border-radius: 6px; background: rgba(90, 169, 255, 0.10);
+    }
+    .ghost-badge {
+      position: absolute; top: -7px; right: -7px; width: 18px; height: 18px;
+      border-radius: 50%; background: #6bd08a; color: #06210f; font-weight: 800; font-size: 12px;
+      align-items: center; justify-content: center; display: none; box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+    }
+    /* playback position line, swept across each lane track during playback */
+    .tile-playhead {
+      position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px;
+      background: #ff6b6b; pointer-events: none; z-index: 5; display: none;
+    }
     .tile.selected { outline: 2px solid #5aa9ff; outline-offset: 1px; z-index: 2; }
     .tile.playing { box-shadow: 0 0 0 2px #6bd08a, 0 0 10px rgba(107,208,138,0.5); z-index: 2; }
     .tile-controls .active { outline: 2px solid #5aa9ff; outline-offset: 1px; }
@@ -218,6 +299,13 @@
       <input id="tempo" type="range" min="40" max="200" value="120" />
       <span id="tempoLabel">120 BPM</span>
     </label>
+    <div class="meter-group">
+      <canvas id="meter" width="160" height="16" title="Output level (peak, L/R)"></canvas>
+      <span id="clipLed" class="clip-led" title="Clip (0 dBFS) — click to reset"></span>
+      <label class="master-fader">Master
+        <input id="masterGain" type="range" min="0" max="140" value="90" />
+      </label>
+    </div>
   </div>
 
   <div id="panes">
@@ -244,6 +332,8 @@
           <button id="tileDelete">Delete</button>
           <span class="tsep"></span>
           <button id="midiExport" title="Export the arrangement as a Standard MIDI file">Export MIDI</button>
+          <button id="audioExport" title="Render the arrangement to a WAV audio file">Export Audio</button>
+          <span id="exportProg" class="export-prog" title="Rendering…"></span>
         </div>
         <div id="tileLane" class="tile-lanes"></div>
         <div class="tile-scale">

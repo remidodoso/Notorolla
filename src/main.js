@@ -5,15 +5,16 @@ import { Scheduler } from './scheduler.js';
 import { PianoRoll } from './pianoroll.js';
 import { Note, Score } from './model.js';
 import { Pattern, BASE_PITCH } from './grid.js';
-import { PatternLibrary, Arrangement, LANE_COLORS } from './library.js';
+import { PatternLibrary, Arrangement, laneColor } from './library.js';
 import { enumerateTriadulations } from './triads.js';
 import { DEGREES_PER_OCTAVE, tuningFreq } from './tuning.js';
 import { notesToMidi } from './midi.js';
+import { encodeWav } from './wav.js';
 import { GridView } from './gridview.js';
 import { TilePlayer, TILE_SCALES, DEFAULT_SCALE_IDX } from './tileplayer.js';
 import { buildToolbar } from './toolbar.js';
 import { buildInstrumentPane } from './instrumentpane.js';
-import { normalizePatch, defaultPatch } from './instrument.js';
+import { normalizePatch, defaultPatch, clonePatch } from './instrument.js';
 import { setupPanes } from './panes.js';
 import { VERSION, buildEnvelope, validate, migrate, defaultName, downloadJSON, downloadBytes, readFile } from './project.js';
 
@@ -22,7 +23,8 @@ const ARR_KEY = 'notorolla.arr';
 const UI_KEY = 'notorolla.ui';
 const LAYOUT_KEY = 'notorolla.layout2';
 const PROJ_KEY = 'notorolla.proj'; // { name, snapshot } — current project identity + last-saved content
-const PATCH_KEY = 'notorolla.patch'; // the Vesperia patch (autosaved; not part of the project file yet)
+const PATCH_KEY = 'notorolla.patch'; // legacy single global patch — seeds existing lanes on first load, then vestigial
+const GRIDPATCH_KEY = 'notorolla.gridpatch'; // the grid's neutral audition patch (a workspace preference, not in the project)
 const LOOP_MAX = 8;
 const LOOP_STEP = 4;
 const HISTORY_LIMIT = 200;
@@ -43,6 +45,7 @@ const state = {
   visibleRows: 12,
   activePane: 'grid', // 'grid' | 'tiles' — which pane the roll mirrors
   tileScaleIdx: DEFAULT_SCALE_IDX, // tile-player horizontal scale (view-only)
+  masterGain: 0.9,    // master fader (0..1.4); applied live and to the export
 };
 Object.assign(state, readJSON(UI_KEY) || {});
 
@@ -70,10 +73,52 @@ const library = savedLib
 // --- core objects -----------------------------------------------------
 
 const engine = new AudioEngine();
-// The Vesperia patch — the live instrument settings the engine reads at every
-// note-on. Autosaved to localStorage (not yet folded into the project file).
-const patch = normalizePatch(readJSON(PATCH_KEY));
-engine.patch = patch;
+engine.masterLevel = state.masterGain; // ensureRunning will apply it to the master node
+
+// Instrument patches now live per lane (lane.patch, saved with the project). The
+// grid's click-to-hear / Test uses a separate neutral patch — a workspace
+// preference kept out of the project (its own key, defaults to factory).
+const gridPatch = normalizePatch(readJSON(GRIDPATCH_KEY));
+
+// One-time migration: lanes saved before per-lane instruments had no patch, so
+// seed those from the old single global patch — the project reloads sounding
+// identical, with the tweaks spread across its lanes. Idempotent: once a lane
+// owns a patch it's saved, so a saved lane (raw.patch present) is never reseeded.
+(() => {
+  const legacy = readJSON(PATCH_KEY);
+  if (!legacy) return;
+  const raws = savedArr && savedArr.lanes ? savedArr.lanes : null;
+  arrangement.lanes.forEach((lane, i) => {
+    const savedHadPatch = raws && raws[i] && raws[i].patch != null;
+    if (!savedHadPatch) lane.patch = normalizePatch(legacy);
+  });
+})();
+
+// Resolve the patch for a voice: a lane's own patch, or the grid/neutral patch
+// for un-laned sound (grid playback/audition). Read fresh per note, so edits in
+// the instrument pane are heard on the next note.
+engine.patch = gridPatch; // fallback default
+engine.patchFor = (laneId) => {
+  if (laneId == null) return gridPatch;
+  const lane = arrangement.lane(laneId);
+  return lane ? lane.patch : gridPatch;
+};
+
+// Resolve a lane's mixer settings (linear volume + pan) for the engine — read
+// when a lane strip is created (live) and per lane in the offline export.
+engine.laneMix = (laneId) => {
+  const lane = arrangement.lane(laneId);
+  return lane ? { gain: lane.gain, pan: lane.pan } : { gain: 1, pan: 0 };
+};
+
+// Push every lane's volume + pan onto its bus (after undo/redo or a load, where
+// values change under existing strips; new strips read the resolver themselves).
+function applyLaneMix(rampSec = 0.012) {
+  for (const lane of arrangement.lanes) {
+    engine.setLaneVolume(lane.id, lane.gain, rampSec);
+    engine.setLanePan(lane.id, lane.pan, rampSec);
+  }
+}
 
 const scheduler = new Scheduler(engine);
 scheduler.onEnded = () => {};
@@ -98,6 +143,19 @@ function patternLen(name) {
   return p ? p.toScore(state.bpm, state.articulation).lengthBeats : 0;
 }
 
+// Old projects stored tiles gaplessly (no `start`); derive starts from the
+// cumulative order so they open identically. No-op once tiles carry `start`.
+function ensureTileStarts() {
+  for (const lane of arrangement.lanes) {
+    let acc = 0;
+    for (const tile of lane.tiles) {
+      if (tile.start == null) tile.start = acc;
+      acc = tile.start + patternLen(tile.name);
+    }
+    lane.tiles.sort((a, b) => a.start - b.start);
+  }
+}
+
 // Overlay all lanes in parallel (each from t=0) into one score; the length is
 // the longest lane. Notes carry their lane color, dimmed for non-active lanes.
 function arrangementScore() {
@@ -105,27 +163,63 @@ function arrangementScore() {
   let maxLen = 0;
   const audible = arrangement.audibleLaneIds(); // mute/solo: which lanes sound
   arrangement.lanes.forEach((lane, li) => {
-    const color = LANE_COLORS[li % LANE_COLORS.length];
+    const color = laneColor(li);
     const alpha = lane.id === arrangement.activeLaneId ? 1 : 0.3; // focus dim
     const muted = !audible.has(lane.id);                          // silent → hatched, not sounded
-    let t = 0;
     for (const tile of lane.tiles) {
       const p = library.patterns.get(tile.name);
       if (!p) continue;
       const s = p.toScore(state.bpm, state.articulation);
       for (const n of s.notes) {
-        const nn = new Note(n.pitch, n.start + t, n.duration, n.velocity);
+        const nn = new Note(n.pitch, n.start + tile.start, n.duration, n.velocity);
         nn.freq = n.freq; // carry each pattern's tuning-resolved frequency
         nn.color = color;
         nn.alpha = alpha;
-        nn.muted = muted; // the scheduler skips these; the roll hatches them
+        nn.laneId = lane.id;      // routes the voice through this lane's gain bus
+        nn.muted = muted;         // for the roll's hatch (audio mute is the lane bus)
+        nn.tileStart = tile.start; // this tile's start beat — the scheduler's commit unit
         notes.push(nn);
       }
-      t += s.lengthBeats; // full tile length, trailing rests included
+      maxLen = Math.max(maxLen, tile.start + s.lengthBeats); // tiles are freely positioned
     }
-    maxLen = Math.max(maxLen, t);
   });
   return new Score(notes, state.bpm, state.articulation, maxLen);
+}
+
+// End beat of the whole arrangement (the last tile's end), without building a
+// full score — also the default play-region end when no end marker is set.
+function arrangementEndBeat() {
+  let end = 0;
+  for (const lane of arrangement.lanes) {
+    for (const tile of lane.tiles) end = Math.max(end, tile.start + patternLen(tile.name));
+  }
+  return end;
+}
+
+// The resolved play-region bounds in beats. Start is always present; end falls
+// back to the arrangement end when no marker is set. Clamped so start < end.
+function playStartBeat() {
+  return Math.max(0, Math.min(arrangement.playStart || 0, Math.max(0, arrangementEndBeat() - 1)));
+}
+function playEndBeat() {
+  const contentEnd = arrangementEndBeat();
+  const end = arrangement.playEnd == null ? contentEnd : Math.min(arrangement.playEnd, contentEnd);
+  return Math.max(end, playStartBeat() + 1);
+}
+
+// The scheduler's provider for tile playback: the arrangement score windowed to
+// the play region — notes triggering within [start, end), shifted so the region
+// begins at beat 0, with the cycle length = the region length. So Play and Loop
+// both honor the markers, and the scheduler/resync logic is unchanged (it just
+// sees a shorter score). Default markers (0 … arrangement end) = the whole thing.
+function windowedArrangementScore() {
+  const score = arrangementScore();
+  const start = playStartBeat();
+  const end = playEndBeat();
+  if (start <= 0 && end >= score.lengthBeats) return score; // full range — no windowing
+  const notes = score.notes.filter((n) => n.start >= start && n.start < end);
+  for (const n of notes) { n.start -= start; n.tileStart -= start; }
+  return new Score(notes, state.bpm, state.articulation, end - start);
 }
 
 // The tiles currently sounding — one per audible lane whose timeline covers
@@ -135,26 +229,18 @@ function playingTileIds(beat) {
   const audible = arrangement.audibleLaneIds();
   for (const lane of arrangement.lanes) {
     if (!audible.has(lane.id)) continue;
-    let t = 0;
     for (const tile of lane.tiles) {
-      const len = patternLen(tile.name);
-      if (beat >= t && beat < t + len) { ids.add(tile.id); break; }
-      t += len;
+      if (beat >= tile.start && beat < tile.start + patternLen(tile.name)) { ids.add(tile.id); break; }
     }
   }
   return ids;
 }
 
-// Start beat of a tile within its own lane's timeline.
+// Start beat of a tile (its explicit position on the lane's timeline).
 function tileStartBeat(id) {
   const lane = arrangement.laneOfTile(id);
-  if (!lane) return 0;
-  let t = 0;
-  for (const tile of lane.tiles) {
-    if (tile.id === id) return t;
-    t += patternLen(tile.name);
-  }
-  return 0;
+  const tile = lane && lane.tiles.find((t) => t.id === id);
+  return tile ? tile.start : 0;
 }
 
 // The roll mirrors the active pane: the grid's current pattern, or the whole
@@ -185,7 +271,7 @@ const grid = new GridView(document.getElementById('grid'), library.current(), {
 const tb = buildToolbar(document.getElementById('toolbar'), state, onToolbarChange);
 
 const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, arrangement, {
-  onSelect: (id) => selectTile(id),
+  onTileDown: (id, ev) => onTileDown(id, ev),
   onOpen: (name, id) => openTile(name, id),
   onDropAppend: (laneId) => appendCurrentTile(laneId),
   onLaneClick: (laneId) => {
@@ -199,18 +285,173 @@ const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, 
   },
   onMute: (laneId) => toggleLaneFlag('mute', laneId),
   onSolo: (laneId) => toggleLaneFlag('solo', laneId),
+  onAddLane: () => addLane(),
+  onEdit: (laneId) => editLane(laneId),
+  onMixStart: () => onMixStart(),
+  onMixChange: (laneId, key, value) => onMixChange(laneId, key, value),
+  onMixEnd: () => onMixEnd(),
+  onMarkerStart: () => onMixStart(),                // reuse the arrangement-edit bracket
+  onMarkers: (start, end) => setPlayMarkers(start, end),
 });
+
+// Commit a play-region change (from the ruler): clamp, store on the arrangement,
+// and close the undo bracket opened on pointerdown. `end` null = "to last tile".
+// Marker edits take effect at the next loop boundary (the provider re-reads), so
+// no mid-cycle resync — just persist + redraw the ruler.
+function setPlayMarkers(start, end) {
+  const contentEnd = arrangementEndBeat();
+  const s = Math.max(0, Math.min(Math.round(start), Math.max(0, contentEnd - 1)));
+  let e = end; // null = auto (end of last tile)
+  if (e != null) {
+    e = Math.round(e);
+    if (e >= contentEnd) e = null;          // dragged to/past the content end → back to auto
+    else e = Math.max(s + 1, e);            // keep a non-empty region
+  }
+  arrangement.playStart = s;
+  arrangement.playEnd = e;
+  onMixEnd(); // shared bracket: commit one undo step if changed, persist, refresh undo btn
+  tilePlayer.render();
+}
+
+// Pan/Gain knob drag. The knob updates itself live; we apply each move to the
+// lane bus immediately (so you hear it) but defer autosave/dirty + the single
+// undo step to release — so a continuous drag is one undoable change, not many.
+let mixBefore = null;
+function onMixStart() { mixBefore = arrSnap(); }
+function onMixChange(laneId, key, value) {
+  const lane = arrangement.lane(laneId);
+  if (!lane) return;
+  if (key === 'pan') { lane.pan = value; engine.setLanePan(laneId, value, 0.01); }
+  else { lane.gain = value; engine.setLaneVolume(laneId, value, 0.01); }
+}
+function onMixEnd() {
+  if (mixBefore != null && arrSnap() !== mixBefore) { // a net change → one undo step
+    arrPast.push(mixBefore);
+    if (arrPast.length > HISTORY_LIMIT) arrPast.shift();
+    arrFuture.length = 0;
+  }
+  mixBefore = null;
+  persist(); // autosave + dirty (knobs already drove the audio live)
+  updateTransportButtons(); // reflect the new arrangement-undo entry immediately
+}
+
+// Add a lane (undoable arrangement edit) and make it active.
+function addLane() {
+  setActive('tiles');
+  arrRecord();
+  const lane = arrangement.addLane();
+  arrangement.activeLaneId = lane.id;
+  applyLaneGains(0); // give the new lane's bus the right gain under any active solo/mute
+  refresh();
+}
 state.tileScaleIdx = clampScaleIdx(state.tileScaleIdx);
 tilePlayer.ppb = TILE_SCALES[state.tileScaleIdx];
 
 // Mute / Solo: an undoable arrangement edit (so it rides tile Undo/Redo and the
-// dirty bit), then re-render audio source + roll hatching.
+// dirty bit). The audio change is the lane gain bus (real-time, ramped); refresh
+// re-renders the lane buttons + roll hatching.
 function toggleLaneFlag(kind, laneId) {
   setActive('tiles');
   arrRecord();
   if (kind === 'mute') arrangement.toggleMute(laneId);
   else arrangement.toggleSolo(laneId);
+  applyLaneGains(0.012); // immediate (ramped) — present tails + future notes
   refresh();
+}
+
+// Push the current mute/solo state onto the lane gain buses. rampSec 0 = instant
+// (use when starting playback so an already-muted lane is silent from note one);
+// a small ramp avoids clicks for live toggles.
+function applyLaneGains(rampSec) {
+  const audible = arrangement.audibleLaneIds();
+  for (const lane of arrangement.lanes) {
+    engine.setLaneGain(lane.id, audible.has(lane.id) ? 1 : 0, rampSec);
+  }
+}
+
+// --- tile drag: reorder / move / copy ---------------------------------
+//
+// Pointer-based so we can preview the prospective ripple and animate it. A drag
+// only mutates the committed arrangement on DROP — until then audio, roll, and
+// playhead keep playing the committed order (the preview "is not what's
+// playing"). No modifier = move (keeps the tile id so selection follows); Shift =
+// a shallow copy (new id, same pattern reference). A committed reorder's audio
+// lands at the next loop boundary, like other live edits.
+const DRAG_THRESH = 5; // px of movement before a press becomes a drag (else click)
+let tileDrag = null;   // { id, fromLaneId, preview } while a drag is active
+
+// pointerdown on a tile: decide click vs drag from movement, via window-level
+// listeners (so they survive the re-renders the preview triggers).
+function onTileDown(id, ev) {
+  if (ev.button != null && ev.button !== 0) return;
+  const startX = ev.clientX, startY = ev.clientY;
+  let dragging = false;
+
+  const onMove = (e) => {
+    if (!dragging) {
+      if (Math.hypot(e.clientX - startX, e.clientY - startY) < DRAG_THRESH) return;
+      dragging = true;
+      startTileDrag(id);
+    }
+    updateTileDrag(e);
+  };
+  const onUp = (e) => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    if (dragging) endTileDrag(e);
+    else selectTile(id); // no movement → it was a click
+  };
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+}
+
+function startTileDrag(id) {
+  const lane = arrangement.laneOfTile(id);
+  tileDrag = { id, fromLaneId: lane ? lane.id : null, preview: null };
+  tilePlayer.setPlaying(new Set()); // drop the green "playing" badge while dragging
+  tilePlayer.makeGhost(id);
+}
+
+function updateTileDrag(e) {
+  const copy = e.shiftKey;
+  const tgt = tilePlayer.dropTarget(e.clientX, e.clientY);
+  const preview = tgt
+    ? { id: tileDrag.id, fromLaneId: tileDrag.fromLaneId, copy, toLaneId: tgt.laneId, start: tgt.start }
+    : null;
+  if (!samePreview(preview, tileDrag.preview)) {
+    tileDrag.preview = preview;
+    tilePlayer.render(preview, true); // animate the live ripple
+  }
+  tilePlayer.moveGhost(e.clientX, e.clientY, copy);
+}
+
+function endTileDrag(e) {
+  const preview = tileDrag.preview;
+  tilePlayer.clearGhost();
+  tileDrag = null;
+
+  if (!preview) { refresh(); return; } // dropped off the lanes → cancel
+  const copy = e.shiftKey;             // authoritative copy state at the drop
+
+  const before = arrSnap();
+  const newId = copy
+    ? arrangement.copyTile(preview.id, preview.toLaneId, preview.start, patternLen)
+    : (arrangement.moveTile(preview.id, preview.toLaneId, preview.start, patternLen), preview.id);
+  if (arrSnap() !== before) {           // only a real change makes an undo entry
+    arrPast.push(before);
+    if (arrPast.length > HISTORY_LIMIT) arrPast.shift();
+    arrFuture.length = 0;
+  }
+  arrangement.activeLaneId = preview.toLaneId;
+  arrangement.selectedId = newId;
+  refresh();
+}
+
+function samePreview(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.id === b.id && a.copy === b.copy && a.toLaneId === b.toLaneId
+    && a.start === b.start && a.fromLaneId === b.fromLaneId;
 }
 
 function selectTile(id) {
@@ -234,35 +475,84 @@ function openTile(name, id) {
   const lane = arrangement.laneOfTile(id);
   if (lane) arrangement.activeLaneId = lane.id;
   library.open(name);
+  centerGridOn(library.current()); // bring the opened pattern into view
   arrangement.selectedId = id;
   refresh();
   scrollRollToSelected();
 }
 
 // Edit-instrument pane (the Vesperia). An editor panel, not a transport pane:
-// it doesn't touch activePane or the shortcut routing. Slider edits mutate the
-// live patch in place (heard on the next note) and autosave.
-const instrPane = buildInstrumentPane(document.getElementById('instr'), patch, {
+// it doesn't touch activePane or the shortcut routing. The pane edits ONE target
+// patch at a time (a lane's, or the grid's neutral one). Slider edits mutate
+// that patch in place (heard on the next note) and autosave the right place.
+const instrPane = buildInstrumentPane(document.getElementById('instr'), {
   onChange: persistPatch,
   onTest: testInstrument,
   onReset: resetInstrument,
+  onCopy: copyPatch,
+  onPaste: pastePatch,
 });
 
-function persistPatch() { safeSet(PATCH_KEY, JSON.stringify(patch)); }
+// What the editor is currently editing: the grid's neutral patch, or a lane's.
+let editTarget = { patch: gridPatch, laneId: null };
+let patchClipboard = null; // in-memory only (cleared on reload) — Copy/Paste
 
-// Audition the patch on a fixed mid-register note (independent of the Audition
-// toggle, which gates click-to-hear on the grid).
-async function testInstrument() {
-  const t = await engine.ensureRunning();
-  const cur = library.current();
-  engine.playNote(60, t + 0.005, 60 / state.bpm, 0.85, tuningFreq(60, cur.tuningId, cur.root));
+// Point the editor at the grid's neutral patch (when the grid pane has focus).
+function editGrid() {
+  editTarget = { patch: gridPatch, laneId: null };
+  tilePlayer.editLaneId = null;
+  instrPane.setTarget(gridPatch, 'Grid', '#8a8f98');
+  tilePlayer.render();
 }
 
-function resetInstrument() {
-  Object.assign(patch, defaultPatch());
+// Point the editor at a lane's own patch (its Edit button), scrolling the pane
+// into view if it's off-screen so the sliders are actually visible.
+function editLane(laneId) {
+  const lane = arrangement.lane(laneId);
+  if (!lane) return;
+  const idx = arrangement.lanes.indexOf(lane);
+  editTarget = { patch: lane.patch, laneId };
+  tilePlayer.editLaneId = laneId;
+  instrPane.setTarget(lane.patch, `Lane ${idx + 1}`, laneColor(idx));
+  tilePlayer.render();
+  document.getElementById('instr').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+// Persist a patch edit: the grid patch is a workspace preference (its own key);
+// a lane patch is musical content, so it rides the arrangement autosave + dirty.
+function persistPatch() {
+  if (editTarget.laneId == null) safeSet(GRIDPATCH_KEY, JSON.stringify(gridPatch));
+  else persist();
+}
+
+function copyPatch() {
+  patchClipboard = clonePatch(editTarget.patch);
+  instrPane.setCanPaste(true);
+}
+
+function pastePatch() {
+  if (!patchClipboard) return;
+  Object.assign(editTarget.patch, clonePatch(patchClipboard));
   instrPane.refresh();
   persistPatch();
 }
+
+// Audition the target patch on a fixed mid-register note (independent of the
+// Audition toggle, which gates click-to-hear on the grid). A lane target plays
+// through that lane's bus so Mute/Solo apply; the grid target is un-laned.
+async function testInstrument() {
+  const t = await engine.ensureRunning();
+  const cur = library.current();
+  engine.playNote(60, t + 0.005, 60 / state.bpm, 0.85, tuningFreq(60, cur.tuningId, cur.root), editTarget.laneId);
+}
+
+function resetInstrument() {
+  Object.assign(editTarget.patch, defaultPatch());
+  instrPane.refresh();
+  persistPatch();
+}
+
+editGrid(); // start with the editor showing the grid's neutral patch
 
 setupPanes(document.getElementById('panes'), LAYOUT_KEY);
 
@@ -277,7 +567,7 @@ function setActive(pane) {
   if (activePane === pane) return;
   activePane = pane;
   state.activePane = pane;
-  if (pane === 'grid') { arrangement.selectedId = null; tilePlayer.setSelected(null); }
+  if (pane === 'grid') { arrangement.selectedId = null; tilePlayer.setSelected(null); editGrid(); }
   else grid.clearSelection(); // leaving the grid drops its note selection
   applyActiveHighlight();
   updateRollContent(); scrollRollToSelected();
@@ -298,6 +588,19 @@ function ensureRollVisible(x) {
   const margin = 80;
   if (x > el.scrollLeft + el.clientWidth - margin) el.scrollLeft = x - el.clientWidth + margin;
   else if (x < el.scrollLeft + margin) el.scrollLeft = Math.max(0, x - margin);
+}
+
+// Keep the tile-player playhead on screen. The playhead's x within the scroll
+// content is the (sticky) lane-header width plus its track position, so we don't
+// scroll it behind the header.
+function ensureTileVisible(beat) {
+  const el = document.getElementById('tileLane');
+  const head = el.querySelector('.lane-head');
+  const headW = head ? head.offsetWidth : 0;
+  const x = headW + beat * tilePlayer.ppb;
+  const margin = 80;
+  if (x > el.scrollLeft + el.clientWidth - margin) el.scrollLeft = x - el.clientWidth + margin;
+  else if (x < el.scrollLeft + headW + margin) el.scrollLeft = Math.max(0, x - headW - margin);
 }
 function scrollRollToSelected() {
   if (scheduler.isPlaying) return; // playback drives the scroll itself
@@ -359,30 +662,55 @@ function arrSnap() { return JSON.stringify(arrangement.toJSON()); }
 function arrRecord() { arrPast.push(arrSnap()); if (arrPast.length > HISTORY_LIMIT) arrPast.shift(); arrFuture.length = 0; }
 function arrApply(json) {
   const o = JSON.parse(json);
+  // Instrument tweaks aren't part of tile undo/redo (the editor is a live panel,
+  // as the global patch was). Carry each lane's CURRENT patch across by id, so
+  // undoing a tile move never reverts a later sound edit; a lane reappearing on
+  // redo (after an addLane undo) takes its snapshot patch.
+  const livePatch = new Map(arrangement.lanes.map((l) => [l.id, l.patch]));
   arrangement.lanes = o.lanes.map((l) => ({
-    id: l.id, tiles: l.tiles.map((t) => ({ id: t.id, name: t.name })), mute: !!l.mute, solo: !!l.solo,
+    id: l.id, tiles: l.tiles.map((t) => ({ id: t.id, name: t.name, start: t.start })), mute: !!l.mute, solo: !!l.solo,
+    gain: l.gain == null ? 1 : l.gain, pan: l.pan == null ? 0 : l.pan, // mixer IS undoable
+    patch: livePatch.get(l.id) || normalizePatch(l.patch),
   }));
   arrangement.seq = o.seq || 0;
   if (o.activeLaneId != null) arrangement.activeLaneId = o.activeLaneId;
+  arrangement.playStart = o.playStart == null ? 0 : o.playStart; // region markers are undoable
+  arrangement.playEnd = o.playEnd == null ? null : o.playEnd;
   if (!arrangement.allTiles().some((t) => t.id === arrangement.selectedId)) arrangement.selectedId = null;
+  applyLaneMix(0.012); // restored pan/gain → push to the (existing) lane buses
+  // If the editor was on a lane the undo/redo removed, drop back to the grid.
+  if (editTarget && editTarget.laneId != null && !arrangement.lane(editTarget.laneId)) editGrid();
 }
 function arrUndo() { if (!arrPast.length) return; arrFuture.push(arrSnap()); arrApply(arrPast.pop()); refresh(); }
 function arrRedo() { if (!arrFuture.length) return; arrPast.push(arrSnap()); arrApply(arrFuture.pop()); refresh(); }
 
 function appendCurrentTile(laneId) {
   arrRecord();
-  arrangement.append(laneId, library.current().name);
+  arrangement.append(laneId, library.current().name, patternLen);
   arrangement.activeLaneId = laneId;
   refresh();
 }
 function deleteSelectedTile() {
   if (arrangement.selectedId == null) return;
   arrRecord();
-  arrangement.remove(arrangement.selectedId);
+  arrangement.removeRipple(arrangement.selectedId, patternLen); // ripple-close the gap
   refresh();
 }
 
 // --- pattern lifecycle ------------------------------------------------
+
+// Re-center the grid's pitch viewport on a pattern's notes, so opening one that
+// sits a couple of octaves away doesn't land off-screen. Best-effort: centers on
+// the note span's midpoint, clamped to the navigable range (C1..C8); leaves the
+// view untouched for an empty (note-less) pattern.
+function centerGridOn(pattern) {
+  const degs = pattern.columns.filter((c) => !c.isRest).map((c) => c.degree);
+  if (!degs.length) return;
+  const mid = (Math.min(...degs) + Math.max(...degs)) / 2;
+  const rows = state.visibleRows;
+  const top = Math.round(mid + (rows - 1) / 2);
+  state.topDegree = Math.max(24 + rows - 1, Math.min(108, top)); // MIN_DEGREE/MAX_DEGREE in gridview.js
+}
 
 function newOrRestore() {
   clearProposal();
@@ -390,6 +718,7 @@ function newOrRestore() {
   if (library.parkedName) library.restore();
   else library.newPattern();
   arrangement.selectedId = null;
+  centerGridOn(library.current()); // no-op for the blank New pattern
   refresh();
 }
 function clonePattern() {
@@ -578,6 +907,11 @@ function refresh() {
   grid.draw();
   updateRollContent(); scrollRollToSelected();
   tilePlayer.render();
+  // Reconcile live tile-player edits into the running cycle (tiles are the commit
+  // unit): started tiles stay, not-yet-started tiles are taken live, the cycle
+  // end follows the live length. Grid playback commits whole-pattern at the loop
+  // boundary, so it isn't resynced here.
+  if (scheduler.isPlaying && activeSource === 'tiles') scheduler.resync();
   gridName.textContent = library.currentName;
   updateEditButtons();
   updateTriadulateButtons();
@@ -648,7 +982,7 @@ function persist() {
     bpm: state.bpm, brush: state.brush, mode: state.mode, audition: state.audition,
     cursor: state.cursor, highlightRows: state.highlightRows, showTriads: state.showTriads, proper: state.proper,
     topDegree: state.topDegree, visibleRows: state.visibleRows, activePane: state.activePane,
-    tileScaleIdx: state.tileScaleIdx,
+    tileScaleIdx: state.tileScaleIdx, masterGain: state.masterGain,
   }));
   recomputeDirty();
 }
@@ -734,9 +1068,13 @@ function loadContent(env) {
   arrFuture.length = 0;
   clearProposal();
   grid.clearSelection();
+  ensureTileStarts(); // derive positions for tiles loaded from an old gapless file
+  centerGridOn(library.current()); // bring the loaded pattern into view
   activePane = 'grid';
   state.activePane = 'grid';
   applyActiveHighlight();
+  editGrid(); // the loaded lanes have fresh patch objects; re-point the editor
+  applyLaneMix(0); // push the loaded volume/pan onto the lane buses
   refresh();
 }
 
@@ -786,7 +1124,6 @@ function exportMidi() {
   const tracks = arrangement.lanes
     .map((lane, i) => {
       const notes = [];
-      let t = 0;
       for (const tile of lane.tiles) {
         const p = library.patterns.get(tile.name);
         if (!p) continue;
@@ -794,12 +1131,11 @@ function exportMidi() {
         for (const n of s.notes) {
           notes.push({
             pitch: n.pitch,
-            startBeat: n.start + t,
+            startBeat: n.start + tile.start,
             durBeats: n.duration * state.articulation,
             velocity: n.velocity,
           });
         }
-        t += s.lengthBeats;
       }
       return { name: `Lane ${i + 1}`, notes };
     })
@@ -807,6 +1143,52 @@ function exportMidi() {
   if (!tracks.length) return;
   const bytes = notesToMidi(tracks, state.bpm, { tpqn: 480 });
   downloadBytes(`${projectName || defaultName()}.mid`, bytes, 'audio/midi');
+}
+
+// Export the tile-player arrangement to a WAV file: render the whole arrangement
+// (one pass, mute/solo respected, articulation applied) through the Vesperia via
+// an OfflineAudioContext, plus a release tail, then encode + download. Faster
+// than realtime; an indeterminate "Rendering…" bar shows while it works (offline
+// rendering has no portable progress event — Firefox lacks `suspend()`).
+let exporting = false;
+async function exportAudio() {
+  if (exporting || arrangement.allTiles().length === 0) return;
+  const score = arrangementScore();
+  const spb = 60 / state.bpm;
+  const notes = [];
+  for (const n of score.notes) {
+    if (n.muted) continue; // silenced lanes (mute / solo) aren't rendered
+    notes.push({
+      pitch: n.pitch,
+      time: n.start * spb,
+      duration: n.duration * state.articulation * spb,
+      velocity: n.velocity,
+      freq: n.freq,
+      laneId: n.laneId, // render through this lane's instrument patch
+    });
+  }
+  if (!notes.length) return;
+  // Release tail: let the longest-releasing lane ring out fully.
+  const maxRelease = Math.max(gridPatch.release, ...arrangement.lanes.map((l) => l.patch.release));
+  const tail = Math.max(2.5, maxRelease * 6 + 0.5);
+  const durSec = score.lengthBeats * spb + tail;
+
+  setExporting(true);
+  try {
+    const buffer = await engine.renderToBuffer(notes, durSec);
+    downloadBytes(`${projectName || defaultName()}.wav`, encodeWav(buffer), 'audio/wav');
+  } catch (err) {
+    alert(`Audio export failed: ${err.message}`);
+  } finally {
+    setExporting(false);
+  }
+}
+
+function setExporting(on) {
+  exporting = on;
+  exportProgEl.classList.toggle('on', on);
+  audioExportBtn.textContent = on ? 'Rendering…' : 'Export Audio';
+  audioExportBtn.disabled = on || arrangement.allTiles().length === 0;
 }
 
 projNewBtn.addEventListener('click', newProject);
@@ -824,6 +1206,30 @@ projFileInput.addEventListener('change', () => {
 window.addEventListener('beforeunload', (e) => {
   if (!storageOK) { e.preventDefault(); e.returnValue = ''; }
 });
+
+// If the saved baseline predates a per-lane field (patch, gain, pan), fold the
+// auto-added defaults/migrated values into it so a silent upgrade doesn't flag
+// the project dirty. Only those absent fields are absorbed — real unsaved
+// tile/note work still shows dirty.
+if (savedSnapshot) {
+  try {
+    const base = JSON.parse(savedSnapshot);
+    if (base.arr && base.arr.lanes) {
+      const live = new Map(arrangement.lanes.map((l) => [l.id, l]));
+      let changed = false;
+      for (const bl of base.arr.lanes) {
+        const ll = live.get(bl.id);
+        if (!ll) continue;
+        if (bl.patch == null) { bl.patch = ll.patch; changed = true; }
+        if (bl.gain == null) { bl.gain = ll.gain; changed = true; }
+        if (bl.pan == null) { bl.pan = ll.pan; changed = true; }
+      }
+      // Region markers (top-level arr fields) added in this version too.
+      if (!('playStart' in base.arr)) { base.arr.playStart = arrangement.playStart; base.arr.playEnd = arrangement.playEnd; changed = true; }
+      if (changed) { savedSnapshot = JSON.stringify(base); persistProjMeta(); }
+    }
+  } catch { /* malformed baseline — fall through to the recompute below */ }
+}
 
 // No prior project metadata (first run, or pre-feature autosave): treat the
 // restored session as the clean baseline rather than spuriously "dirty".
@@ -844,9 +1250,12 @@ const arrUndoBtn = document.getElementById('arrUndo');
 const arrRedoBtn = document.getElementById('arrRedo');
 const tileDeleteBtn = document.getElementById('tileDelete');
 const midiExportBtn = document.getElementById('midiExport');
+const audioExportBtn = document.getElementById('audioExport');
+const exportProgEl = document.getElementById('exportProg');
 const gridName = document.getElementById('gridName');
 
 midiExportBtn.addEventListener('click', exportMidi);
+audioExportBtn.addEventListener('click', exportAudio);
 
 let rafId = null;
 
@@ -854,7 +1263,18 @@ function renderLoop() {
   roll.draw(scheduler.isPlaying ? scheduler.currentBeat : null);
   if (scheduler.isPlaying) {
     ensureRollVisible(roll.xForBeat(scheduler.currentBeat));
-    if (activeSource === 'tiles') tilePlayer.setPlaying(playingTileIds(scheduler.currentBeat));
+    if (activeSource === 'tiles') {
+      // The scheduler runs in region-relative beats (the windowed score); the tile
+      // timeline is absolute, so add the region start back for the playhead/highlight.
+      const absBeat = playStartBeat() + scheduler.currentBeat;
+      // The playhead marks real playback position — shown even mid-drag.
+      tilePlayer.setPlayhead(absBeat);
+      ensureTileVisible(absBeat);
+      // The green "playing" badge is suppressed during a drag (prospective slots).
+      if (!tileDrag) tilePlayer.setPlaying(playingTileIds(absBeat));
+    } else {
+      tilePlayer.setPlayhead(null); // grid playback: no tile playhead
+    }
   }
   updateTransportButtons();
   if (scheduler.isPlaying) {
@@ -863,6 +1283,7 @@ function renderLoop() {
     rafId = null;
     activeSource = null;
     tilePlayer.setPlaying(new Set());
+    tilePlayer.setPlayhead(null);
     refresh();
   }
 }
@@ -875,14 +1296,20 @@ async function startTransport(source, loop) {
   const now = await engine.ensureRunning();
   scheduler.stop();
   activeSource = source;
-  const provider = source === 'tiles' ? arrangementScore : buildScore;
+  if (source === 'tiles') applyLaneGains(0); // set mute/solo before the first note
+  const provider = source === 'tiles' ? windowedArrangementScore : buildScore;
   scheduler.start(provider, now + 0.1, loop ? LOOP_STEP : 1, loop);
   startRender();
   updateTransportButtons();
 }
 
+// Loop tap: queue, don't interrupt. If this source is already playing — whether
+// looping OR a one-shot still in progress — promote it to a loop in place and
+// add LOOP_STEP passes (capped), without restarting. Only a stopped/other source
+// starts fresh.
 function loopClick(source) {
-  if (activeSource === source && scheduler.isLooping) {
+  if (activeSource === source && scheduler.isPlaying) {
+    scheduler.loop = true; // promote a one-shot in progress to a loop
     scheduler.remaining = Math.min(scheduler.remaining + LOOP_STEP, LOOP_MAX);
     updateTransportButtons();
     return;
@@ -907,6 +1334,7 @@ function updateTransportButtons() {
   tileStopBtn.disabled = !playing;
   tileLoopBtn.disabled = !haveTiles;
   midiExportBtn.disabled = !haveTiles;
+  audioExportBtn.disabled = exporting || !haveTiles;
 
   const gridLooping = activeSource === 'grid' && scheduler.isLooping;
   loopBtn.textContent = loopLabel(gridLooping);
@@ -979,6 +1407,87 @@ tempo.addEventListener('input', () => {
   tempoLabel.textContent = `${state.bpm} BPM`;
   refresh();
 });
+
+// --- master fader + output level meter --------------------------------
+
+const masterGainEl = document.getElementById('masterGain');
+masterGainEl.value = String(Math.round(state.masterGain * 100));
+masterGainEl.addEventListener('input', () => {
+  state.masterGain = Number(masterGainEl.value) / 100;
+  engine.setMasterGain(state.masterGain);
+  persist();
+});
+
+// A continuous (cheap) STEREO meter loop: reads the per-channel output peaks and
+// draws two stacked dB bars (L over R) with peak-hold and a shared clip LED.
+// Runs from load; reads 0 (idle) until audio starts.
+const meterCanvas = document.getElementById('meter');
+const meterCtx = meterCanvas.getContext('2d');
+const clipLed = document.getElementById('clipLed');
+const MW = meterCanvas.width, MH = meterCanvas.height;
+const BAR_H = Math.floor((MH - 1) / 2);        // two bars + a 1px gap
+const chan = { l: { bar: 0, hold: 0, holdF: 0 }, r: { bar: 0, hold: 0, holdF: 0 } };
+let clipFrames = 0;     // clip LED latch (frames remaining lit) — either channel
+
+// Level instrumentation (opt-in). Session running-max + clip count, queryable
+// from the console via window.notorollaLevels(); set window.NOTO_LOG_LEVELS = true
+// to also log each clip (throttled). notorollaResetLevels() clears the stats.
+let peakMax = 0, clipCount = 0, lastClipLog = 0;
+const toDb = (v) => (v > 0 ? +(20 * Math.log10(v)).toFixed(1) : -Infinity);
+window.notorollaLevels = () => ({ peakL: toDb(chan.l.bar), peakR: toDb(chan.r.bar), maxDb: toDb(peakMax), clips: clipCount });
+window.notorollaResetLevels = () => { peakMax = 0; clipCount = 0; };
+
+clipLed.addEventListener('click', () => { clipFrames = 0; clipLed.classList.remove('on'); });
+
+const dbToX = (db) => Math.max(0, Math.min(1, (db + 60) / 60)) * MW; // -60..0 dBFS across the bar
+const peakToX = (p) => (p > 0 ? dbToX(20 * Math.log10(p)) : 0);
+
+// Gradient is constant (depends only on width); build it once.
+const meterGrad = meterCtx.createLinearGradient(0, 0, MW, 0);
+meterGrad.addColorStop(0, '#4caf6a');
+meterGrad.addColorStop(dbToX(-12) / MW, '#7fc77a');
+meterGrad.addColorStop(dbToX(-6) / MW, '#d6c34e');
+meterGrad.addColorStop(dbToX(-3) / MW, '#e07a3a');
+meterGrad.addColorStop(1, '#ff5050');
+
+// Advance one channel's smoothed bar + peak-hold from this frame's peak.
+function stepChannel(c, peak) {
+  c.bar = peak >= c.bar ? peak : Math.max(peak, c.bar * 0.85);
+  if (peak >= c.hold) { c.hold = peak; c.holdF = 45; }
+  else if (c.holdF > 0) c.holdF--;
+  else c.hold *= 0.94;
+}
+
+function drawBar(y, c) {
+  meterCtx.fillStyle = meterGrad;
+  meterCtx.fillRect(0, y, peakToX(c.bar), BAR_H);
+  const hx = peakToX(c.hold);
+  if (hx > 0) { meterCtx.fillStyle = '#e8eaf0'; meterCtx.fillRect(Math.min(MW - 1, hx - 1), y, 2, BAR_H); }
+}
+
+function drawMeter() {
+  const { l, r } = engine.getPeak();
+  stepChannel(chan.l, l);
+  stepChannel(chan.r, r);
+  const peak = Math.max(l, r);
+  if (peak > peakMax) peakMax = peak;
+  if (peak >= 1.0) {                           // clip = would clamp at the device (0 dBFS)
+    clipFrames = 120;
+    clipCount++;
+    if (window.NOTO_LOG_LEVELS && performance.now() - lastClipLog > 500) {
+      console.warn(`[noto level] CLIP — peak ${toDb(peak)} dBFS`);
+      lastClipLog = performance.now();
+    }
+  } else if (clipFrames > 0) clipFrames--;
+  clipLed.classList.toggle('on', clipFrames > 0);
+
+  meterCtx.clearRect(0, 0, MW, MH);
+  drawBar(0, chan.l);
+  drawBar(MH - BAR_H, chan.r);
+
+  requestAnimationFrame(drawMeter);
+}
+drawMeter();
 
 // Deselect (Select None) for the active pane.
 function selectNone() {
@@ -1067,6 +1576,7 @@ window.addEventListener('keydown', (e) => {
 
 // --- initial paint ----------------------------------------------------
 
+ensureTileStarts(); // derive positions for tiles restored from an old gapless autosave
 grid.updateCursor();
 applyActiveHighlight();
 updateScaleStrip();

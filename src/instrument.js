@@ -38,6 +38,12 @@ export function defaultPatch() {
   return { ...DEFAULT_PATCH };
 }
 
+// A clean, in-range copy of a patch — used to snapshot one (Copy/Paste, the
+// per-lane migration seed) without aliasing the source object.
+export function clonePatch(p) {
+  return normalizePatch(p);
+}
+
 // Coerce a loaded/partial patch to a full, in-range one (forward/backward safe:
 // unknown keys dropped, missing keys defaulted, values clamped).
 export function normalizePatch(obj) {

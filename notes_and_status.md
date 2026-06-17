@@ -46,37 +46,48 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 | [src/model.js](src/model.js) | `Note`, `Score` (beats, tempo, articulation, explicit length), MIDI↔freq, note names, black-key test |
 | [src/tuning.js](src/tuning.js) | row/degree → pitch/frequency seam |
 | [src/grid.js](src/grid.js) | `Pattern` (named, 12 columns), `DURATIONS`, `PALETTE`, `COLS`, `BASE_PITCH` |
-| [src/library.js](src/library.js) | `PatternLibrary` (registry, naming, parking), `Arrangement` (lanes/tiles), `LANE_COLORS` |
-| [src/audio.js](src/audio.js) | `AudioEngine` — additive synth voice (reads the live patch) + master compressor |
-| [src/instrument.js](src/instrument.js) | the **Vesperia** patch: `DEFAULT_PATCH`, `PARAMS` (editor metadata), slider mapping, `normalizePatch` |
-| [src/instrumentpane.js](src/instrumentpane.js) | `buildInstrumentPane` — the "Edit instrument" pane (grouped sliders, Test, Factory Reset) |
-| [src/scheduler.js](src/scheduler.js) | lookahead scheduler, finite looping, per-cycle re-read (`onCycle`) |
+| [src/library.js](src/library.js) | `PatternLibrary` (registry, naming, parking), `Arrangement` (lanes/tiles + per-lane mute/solo + `lane.gain`/`lane.pan`/`lane.patch`, play-region `playStart`/`playEnd`, `audibleLaneIds`), `LANE_COLORS` |
+| [src/audio.js](src/audio.js) | `AudioEngine` — additive synth voice (`buildVoice`, context-parametric), per-lane patch resolution (`patchFor`), per-lane **stereo mixer strips** (volume→mute-gate→panner; `setLaneVolume`/`setLaneGain`/`setLanePan`, `laneMix`), master limiter (`setupLimiter`) + fader (`setMasterGain`) + **stereo meter tap** (`getPeak`→`{l,r}`); `renderToBuffer` (offline **stereo** bounce, per-lane patch+mix) |
+| [src/instrument.js](src/instrument.js) | the **Vesperia** patch: `DEFAULT_PATCH`, `PARAMS` (editor metadata), slider mapping, `normalizePatch`, `clonePatch` |
+| [src/instrumentpane.js](src/instrumentpane.js) | `buildInstrumentPane` — the retargetable "Edit instrument" pane (grouped sliders, target chip, Test, Copy/Paste, Factory Reset) |
+| [src/knob.js](src/knob.js) | `makeKnob` — click-vertical-drag rotary widget (detents, dbl-click reset, gesture-bracketed callbacks) + `PAN_MAP` / `GAIN_MAP` mixer mappings |
+| [src/scheduler.js](src/scheduler.js) | lookahead scheduler, finite looping, per-cycle re-read (`onCycle`), mid-cycle tile reconciliation (`resync`) |
 | [src/pianoroll.js](src/pianoroll.js) | `PianoRoll` canvas render + playhead; per-note color/alpha |
 | [src/gridview.js](src/gridview.js) | `GridView` — grid editor (render + gestures + viewport + resize) |
-| [src/tileplayer.js](src/tileplayer.js) | `TilePlayer` — multi-lane tile rendering + interaction |
+| [src/tileplayer.js](src/tileplayer.js) | `TilePlayer` — multi-lane tile rendering + interaction; lane heads (instrument/Edit, Pan/Gain knobs, M/S); beat **ruler + play-region markers** (`_buildRuler`/`drawRuler`) |
 | [src/toolbar.js](src/toolbar.js) | grid toolbar (brush, pattern lifecycle, view toggles) |
 | [src/panes.js](src/panes.js) | reorderable vertical panes, order persisted |
 | [src/project.js](src/project.js) | versioned file envelope (`format`/`version`), migrate, save (download) / load (file read) helpers |
 | [src/triads.js](src/triads.js) | Triadulator engine (pure): partition a pitch-class set into traditional triads (proper / partial) |
 | [src/midi.js](src/midi.js) | Standard MIDI File writer (pure): note data → bytes (Format 1, tempo, track names) |
+| [src/wav.js](src/wav.js) | WAV encoder (pure): an `AudioBuffer` → 16-bit PCM RIFF bytes |
 | [src/main.js](src/main.js) | wires everything; transport, undo, active pane, persistence, project save/load |
 
 ---
 
 ## What works today
 
-### Sound — the Vesperia (one editable instrument)
+### Sound — the Vesperia (per-lane editable instrument)
 - Additive synth voice: ~6 sine partials, slight inharmonicity, an **ADSR** amplitude
-  envelope + a **resonant lowpass** with its own envelope and keyboard tracking. Master
-  compressor for chords. Default articulation ~0.88 (slightly detached / non-legato).
+  envelope + a **resonant lowpass** with its own envelope and keyboard tracking. Conservative
+  per-voice level (`VOICE_PEAK`) into a transparent **master limiter** (see Transport & roll).
+  Default articulation ~0.88 (slightly detached / non-legato).
 - The voice's parameters live in a **patch** struct ([src/instrument.js](src/instrument.js))
   the engine reads **at every note-on**, so edits are heard on the next note with no
-  re-wiring. Today there's one global patch — the **Vesperia** (the One True Instrument);
-  the struct/`PARAMS` are shaped so a future registry of named instruments / instances /
-  per-lane voices is a lookup, not a rewrite.
+  re-wiring. The instrument is the **Vesperia** (the one synth model so far); the
+  struct/`PARAMS` are shaped so a future registry of named instruments is a lookup, not a
+  rewrite.
+- **Patches are now per lane.** Each arrangement lane owns its own `lane.patch` (the engine
+  resolves a voice's patch via `engine.patchFor(laneId)` → that lane's patch). New lanes start
+  from the **factory preset**. Un-laned sound (grid click-to-hear / ♪ Test on the grid) uses a
+  **separate neutral grid patch** — a workspace preference, *not* part of the project.
 - **Edit instrument pane** ([src/instrumentpane.js](src/instrumentpane.js), below the roll —
   an editor panel, *not* a transport pane: it doesn't touch the active-pane or shortcut
-  routing). Grouped sliders:
+  routing). It edits **one target patch at a time**, retargetable: focusing the **grid** pane
+  loads the neutral grid patch; a lane's **Edit** button (lane header, left of M/S) loads that
+  lane's patch (and scrolls the pane into view). A color-swatch chip in the header shows which
+  target is being edited ("Grid" / "Lane N"). **Copy / Paste** ferry settings between targets
+  (in-memory clipboard, session only). Grouped sliders:
   - **Amp Envelope** — Attack / Decay / **Sustain** / Release. It's a true ADSR; **Sustain 0
     reproduces the old struck-string decay-to-silence** (Decay = the old ring time-constant),
     and Sustain > 0 holds the note (pad/organ territory).
@@ -85,16 +96,25 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   - **Filter** — **Cutoff**, **Resonance** (Q), **Env Amount** (octaves the filter envelope
     opens cutoff above base at the attack, then settles) and **Key Track** (0 = fixed Hz,
     1 = cutoff fully follows pitch). All native Web Audio `BiquadFilter` — no WASM.
-  - **♪ Test** auditions a mid-register note through the current patch; **Factory Reset**
-    restores the defaults that *are* the original sound.
+  - **♪ Test** auditions a mid-register note through the **current target** patch (a lane
+    target plays through that lane's bus, so M/S apply); **Factory Reset** restores the target
+    to the defaults that *are* the original sound.
 - **Defaults reproduce the prior sound** in the central register (e.g. A4's filter sweep is
   identical, 1760 → 4842 Hz). The one intentional difference: the old per-note cutoff *floors/
   ceilings* (guard clamps) are gone, replaced by continuous Key Track — so the bass can now
   open darker and the treble brighter than the old fixed clamps allowed.
-- **Patch persistence: localStorage autosave only** (`notorolla.patch`, via `persistPatch`).
-  *Not* folded into the project file yet and *not* a multi-patch registry yet — both deferred
-  until the instrument model settles (`normalizePatch` already clamps/defaults on load, so a
-  future format bump is safe). The patch is **not** part of the dirty-bit / project content.
+- **Patch persistence:**
+  - **Lane patches** ride the arrangement (autosave `notorolla.arr` + the project file via
+    `Arrangement.toJSON`/`fromJSON`) and **count as musical content** — editing one marks the
+    project dirty. They are *not* part of the tile **undo/redo** stack, though: `arrApply`
+    carries each lane's *live* patch across by id, so undoing a tile move never reverts a sound
+    edit (and a lane reappearing on a redo takes its snapshot patch).
+  - **Grid/neutral patch**: `notorolla.gridpatch` (localStorage only, a workspace preference —
+    not in the project, not dirty-tracked).
+  - **Migration**: the old single global patch (`notorolla.patch`) seeds any patch-less lane on
+    first load, so existing projects reload sounding identical; the saved dirty baseline absorbs
+    the auto-added patches so the silent upgrade doesn't flag the project dirty. The
+    `notorolla.patch` key is vestigial afterward.
 
 ### Grid editor (one pattern at a time)
 - **12 columns** (time) × resizable pitch rows (one chromatic octave by default, C4 at
@@ -181,6 +201,10 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   ghosts); no inversion figure.
 - Vertical **resize** (drag handle, min 12 rows) + **wheel scroll** of pitch range, with a
   fixed-position dashed resize guide.
+- **Opening a pattern auto-centers the pitch viewport** on its notes (`centerGridOn`: midpoint of
+  the note span, clamped to the navigable C1..C8 range), so a pattern a couple octaves away doesn't
+  land off-screen. Applies on double-click-open a tile, Restore, and project load; a note-less
+  pattern leaves the view untouched. A plain reload keeps the last-scrolled view.
 - Generous **audition** (fixed quarter-note preview on edits).
 - Cursor reflects brush duration (Dot default; Glyph experiment — SMuFL is the real
   long-term answer for music glyphs).
@@ -198,48 +222,160 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 - **Undo/redo is per-pattern**; the tile lane has its own append/delete undo.
 
 ### Tile player (the arrangement)
-- **Two parallel lanes** (fixed for now). Each lane is an ordered list of tile references.
+- **Parallel lanes** — **2 by default**, and you can **add more** via a thin "+" row at the bottom
+  of the lane stack (`addLane`; new lane is empty and becomes active; undoable, persisted; New
+  Project resets to 2). No hard cap. Lane colors are auto-assigned (`laneColor`: the established
+  blue/orange first, then golden-angle HSL hues). *Removing* lanes is deferred (likely a right-click
+  menu later). Each lane is an ordered set of positioned tile references.
 - Drag the grid's **grab handle** into a lane to drop a tile (a width-proportional
   thumbnail; note bars colored by duration; bordered in lane color; name centered).
 - Both lanes share **one horizontal time axis** (a single scale `tilePlayer.ppb`, one shared
-  scroll, common origin), so tiles **align in time** across lanes. Tiles are gapless for now.
+  scroll, common origin), so tiles **align in time** across lanes. Tiles are **freely positioned**:
+  each carries an explicit **`start` beat** (snapped to the 1/4-note grid = integer beats), so gaps
+  (silence) between tiles are allowed. Faint **beat ticks + bar lines** in the track show the snap.
 - **Adjustable horizontal scale**: a strip below the lanes — `[−] [slider] [+]`, **smaller ←→
   bigger**, quantized to notches (`TILE_SCALES = [4,6,9,13,19,28,40]` px/beat; the old fixed 6
   sits near the low end, the rest is zoom-in headroom). Slider snaps to notches, −/+ step one
   notch (disabled at the ends). Zoom keeps the left-edge beat roughly in place (scroll scales
   with it). **View-only** — persists in `notorolla.ui` (`tileScaleIdx`), never flips the dirty bit.
 - Each lane has a **sticky header block** (stays pinned during horizontal scroll): a color
-  stripe + **Mute / Solo**. Room is reserved there for future per-lane controls (volume, name,
-  add/remove, instrument). M/S are a **per-lane tri-state** {none | muted | soloed} — turning one
+  stripe + an **instrument block** (the **Vesperia** name — a label now, the future instrument
+  selector — over an **Edit** button that opens the per-lane instrument editor) + a **knob column**
+  (**Pan** over **Gain**) + the **Mute / Solo** stack. The knobs are mixer-style: click +
+  **vertical-drag** to turn (Shift = fine, **double-click = reset**); Pan has a center detent, Gain is
+  a **dB knob** (−∞…+6 dB, unity detent at 0 dB) storing linear gain. A knob drag is **one undo step**
+  (bracketed on release). Room remains for future per-lane controls (naming, add/remove).
+  M/S are a **per-lane tri-state** {none | muted | soloed} — turning one
   on clears the other for that lane; across lanes there's no exclusivity (mute both, solo both,
   etc. all fine). Audible rule: **solo wins globally** — if any lane is soloed, only soloed lanes
   sound; otherwise every non-muted lane sounds. M/S **save with the project and restore on load**
   (it reloads sounding exactly as saved; New Project resets them), so they're part of the content
   snapshot → toggling one marks the project dirty, and it's an **undoable arrangement edit** (rides
-  tile Undo/Redo). The scheduler skips silenced notes; the roll still **shows** them, **hatched**.
-- **Lanes play simultaneously** from t=0; arrangement length = the longest lane; shorter
-  lanes rest at the tail; the whole thing loops as one unit.
+  tile Undo/Redo).
+- **M/S act in real time (a per-lane gain bus).** Each lane's voices route through its own
+  `GainNode` (a tiny mixer in [src/audio.js](src/audio.js): `laneBus`/`setLaneGain`, voices via
+  `playNote(..., laneId)`); Mute/Solo just ramps that bus to 0/1 (~12 ms, click-free). Because the
+  scheduler keeps scheduling **every** lane's notes regardless of mute, the voices always run into
+  their bus — so muting silences **present tails and future notes at once**, and **unmute reveals
+  whatever's playing on that lane at that instant** (mid-note/tail), like a DAW channel mute. No
+  per-voice/`noteOff` API needed; the lane bus is also the future home of per-lane **volume** (the
+  gain *is* the fader) and per-lane **effect inserts** (upstream of the gain). Un-laned sound (grid
+  playback, audition) goes straight to master, unaffected. The roll still **shows** silenced notes,
+  **hatched** (driven by the baked `muted` flag, independent of the audio path).
+- **Lanes play simultaneously** from t=0; arrangement length = the farthest tile end
+  (`max(start + length)`) across lanes; shorter lanes rest at the tail; the whole thing loops as one
+  unit.
 - A tile's playable length is the **full sum of its column durations** — note *and* rest, including
   trailing rests. Trailing rests are intentional time, so a tile can carry built-in space before
   the next one.
 - Click = select; double-click = open the pattern in the editor (keeps tiles active +
   selected); Delete (button or key) removes; each lane has its own drop zone.
+- **Drag to position / move / copy** (pointer-based; a small movement threshold distinguishes
+  a drag from a click/double-click). The dragged tile lands at the **snapped drop beat**, clamped so
+  it can't overlap the anchored left neighbor. Positioning and ripple are **one rigid operation**:
+  tiles to the right shift right by a **single amount** = just enough to clear the dropped tile —
+  **0 when it already fits** (free positioning, gaps preserved) — and that shift **preserves the
+  gaps among the right-side tiles**. So there's no overlap and **no invalid/rejected drop**; only
+  dropping *off* the lanes cancels. Drag all the way left → contiguous; mid-gap → silence/offset on
+  the left is kept. **Shift = a shallow copy** ("+" badge on the ghost); no modifier = move (keeps
+  the id). **Removing** a tile (Delete, or moving it *out* to the other lane) rigid-ripples
+  everything to its right **left** by the tile's length; **repositioning within a lane** just lifts
+  and re-places (no source ripple-close, so dropping back where it started is a true no-op). Each
+  real change is one undo step; afterward the tile is selected and its lane active. (`moveTile` /
+  `copyTile` / `removeRipple` in [library.js](src/library.js), via the shared `rippleInsertInto` /
+  `rippleRemoveFrom` primitives.)
+- **Prospective preview while dragging** (DAW-style): the lanes show the *result* of the
+  ripple — the rigid shift applied, a dashed **slot** at the dropped tile's snapped spot — computed
+  by running the **same ripple ops on a throwaway copy** (so preview == commit), FLIP-animated,
+  while a floating **ghost** follows the cursor. Crucially this preview is **visual only**: audio,
+  the roll, and the playhead keep playing the **committed** layout (the preview "is not what's
+  playing"). During an active drag the green "playing" badge is suppressed (the playhead still runs)
+  so it doesn't mark a hypothetical slot. **Editing while playing is fully supported** — the drag
+  never touches the committed model until drop; a committed change's audio lands at the next tile
+  boundary / loop per the reconciliation, visual is immediate.
+- The **grab-handle drop** (a new tile from the grid) **appends flush** — as far left as possible
+  (right after the lane's last tile, snapped up to the next beat; beat 0 if empty); reposition later
+  by dragging. Old gapless projects migrate by deriving each tile's `start` from the cumulative order
+  (`ensureTileStarts`), so they open identically.
 - **Active lane** (highlighted) set on drop / select / empty-lane click.
+- **Playhead**: during tile playback a vertical line sweeps each lane track at the current beat
+  (one `.tile-playhead` per track, positioned track-relative so it scrolls with the tiles and aligns
+  across lanes; `tilePlayer.setPlayhead(beat)` from the render loop). It marks **real playback
+  position** — shown even mid-drag (when the green "playing" badge is suppressed). The lanes
+  auto-scroll to follow it (`ensureTileVisible`, not scrolling it behind the sticky lane header).
+- **Beat ruler + play-region markers** (sticky strip on top of the lanes; `_buildRuler`/`drawRuler`).
+  Marked in **0-based beat numbers** (so a ruler number = a tile's `start` beat) with minor ticks
+  every beat and major ticks/numbers every 4 beats (widened at low zoom so labels don't collide).
+  It's a row in the same horizontal scroller — a left **spacer matching the (now fixed-width)
+  lane head** + a ruler track sharing the tiles' width/origin — so beats align and it scrolls in
+  sync. **A play/loop region:** a **start marker (always present, default beat 0)** and an
+  **optional end marker** (`arrangement.playStart` / `playEnd`; `playEnd: null` = "end of the last
+  tile", so it follows the arrangement as it grows). **Left-drag moves either marker** (grab the
+  handle under the cursor — drag the end handle in from the content end to set an end — or an
+  empty-ruler click moves the start); **right-click clears the end marker** (back to auto), and
+  dragging the end to/past the content end also clears it. Context menu suppressed; both snap to the
+  beat grid. Faint dashed guide lines (green/red) mark the
+  bounds through every track, with a tint band on the ruler. **Both Play and Loop honor [start, end)**:
+  the tile-playback provider (`windowedArrangementScore`) windows the arrangement score to the region
+  — notes triggering in `[start, end)`, shifted so the region begins at beat 0, cycle length =
+  region length — so the **scheduler/resync logic is unchanged** (it just sees a shorter score); the
+  render loop adds `playStart` back for the absolute playhead/highlight/scroll. Default markers
+  (0 … arrangement end) = the whole thing, identical to before. Markers **save with the project**
+  (in `Arrangement.toJSON`, dirty-tracked) and are **undoable** (shared arrangement-edit bracket with
+  the mixer knobs; `arrApply` restores them); **New Project resets** to start 0 / end auto. Marker
+  edits land at the **next loop boundary** (provider re-read), not mid-cycle. **Export still renders
+  the whole arrangement** (a "just the marked section" mode is a deferred follow-up). A plain
+  click-to-scrub on the ruler is intentionally forgone in favor of marker-setting.
 
 ### Transport & roll
 - Grid transport (top bar) and tile transport (in the pane) are **mutually exclusive**
   (one shared scheduler; `activeSource`).
+- **Output level meter + master fader** (right of the transport bar). The meter is a **stereo peak**
+  display — **two stacked bars (L over R)**, dB scale, per-bar peak-hold, green→amber→red — tapping
+  the **final post-master/post-compressor** signal (a stereo-upmix tap → `ChannelSplitter` → one
+  `AnalyserNode` per channel; `engine.getPeak()` returns `{l, r}`). The **clip LED** lights at
+  **peak ≥ 0 dBFS on either channel** (where the output/screen-recorder would clamp); click it to
+  reset. A small always-on rAF loop drives it (reads 0 when idle). The **master fader**
+  (`engine.setMasterGain`, anti-zipper ramp; persisted in `notorolla.ui`) sets output level and
+  **the WAV export renders post-fader** (`renderToBuffer` uses the same `masterLevel`).
+- **Stereo signal path:** each lane runs `voices → volume → mute-gate → StereoPanner → master`;
+  master + limiter are channel-agnostic, so the tail is stereo once panners feed it; the offline
+  export is `OfflineAudioContext(2, …)` rebuilding each lane's volume+pan so the **WAV is stereo and
+  matches the live mix** (`encodeWav` was already channel-general). Un-laned grid audio is mono/centered.
+- **Gain calibration (done against the meter):** the master `DynamicsCompressor` is a **transparent
+  ceiling limiter** (`setupLimiter`: threshold −1.5 dB, knee 0, ratio 20, attack 3 ms, release 100 ms)
+  — idle below −1.5 dB (no always-on compression), only holding peaks under 0 dBFS; the **per-voice
+  peak** is `VOICE_PEAK 0.095` (trimmed ~2.7 dB from 0.13 — "Vesperia is persistently too hot" — so
+  **0 dB is a lane's natural resting gain**). Same chain in the offline export. **Level instrumentation
+  (opt-in):** `window.notorollaLevels()` → `{peakL, peakR, maxDb, clips}`, `window.notorollaResetLevels()`,
+  and `window.NOTO_LOG_LEVELS = true` logs each clip (throttled).
 - **Finite loop with stacking**: each loop tap adds **+4 passes**, capped at **8**; the
   button shows complete repeats remaining and blanks on the last pass; auto-shutoff.
+- **Queue, don't interrupt**: tapping Loop while a source is *already playing* — whether
+  looping or a **one-shot still in progress** — promotes it to a loop **in place** (+4 passes)
+  **without restarting**; only a stopped/other source starts fresh. (First instance of the
+  general principle: transport commands queue to a boundary; only Stop interrupts immediately.)
 - **Active pane** concept: exactly one of grid/tiles is active (highlighted frame +
   titlebar); the **piano roll mirrors the active pane** — grid → current pattern, tiles →
   the whole arrangement. General rule: clicking in a pane activates it. Exceptions:
   double-click a tile loads it but keeps tiles active; grab-handle drag keeps grid active.
 - Roll **overlays all lanes** with per-lane colors; the **active lane shows full, others
-  dim** (updates live during playback). Roll **auto-scrolls** to follow the playhead, and
-  to a selected tile's slice.
+  dim** (a *focus* signal; updates live during playback). Lanes that **aren't being heard**
+  (explicitly muted, or silenced because another lane is soloed) render **hatched** — a faint
+  body under a diagonal hatch (an orthogonal *audible-vs-silent* signal), so the roll always
+  shows what you'll hear. Roll **auto-scrolls** to follow the playhead, and to a selected tile's
+  slice.
 - Live edits commit at the loop boundary (per-cycle re-read); thumbnails/roll update
   immediately, audio follows on the next pass.
+- **Tiles are the commit unit ("atoms") for live tile-player edits.** During tile playback an
+  edit reconciles into the *running* cycle at tile granularity (`scheduler.resync`, hooked off
+  `refresh`): a tile **already playing is locked** (keeps the content it started with), while a tile
+  **not yet started is taken live** — so an **appended tile plays this pass**, and an edit to a
+  not-yet-started tile lands when it starts. The **cycle end follows the live arrangement** (extends
+  on append, contracts on shrink), and the playhead stays in sync (its wrap reference tracks the live
+  length). Each note carries its `tileStart`, which is the lock boundary; already-scheduled notes
+  (within the ~100 ms lookahead) are the irreducible exception. **Grid playback** has no tiles, so its
+  commit unit is the **whole-pattern loop** (changes land at the next cycle boundary, as before).
 
 ### Layout
 - Four reorderable panes (Grid, Tile player, Piano roll, Edit instrument); order persists.
@@ -322,6 +458,23 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   that playback also applies articulation (fixed), the export **matches what you hear**.
   Filename defaults to the project name (or a timestamp) + `.mid`.
 
+### Export to audio (WAV)
+- **Export Audio** (Tile-player controls, right of Export MIDI) renders the whole arrangement to a
+  **WAV** (16-bit PCM, mono) — a faster-than-realtime **offline bounce** of the Vesperia. One pass,
+  **mute/solo respected** (silenced notes skipped), **articulation applied**, plus a **release tail**
+  so notes ring out. Filename defaults to the project name (or timestamp) + `.wav`.
+- **How:** `engine.renderToBuffer(notes, durationSec)` builds an `OfflineAudioContext` (mirroring the
+  live master gain + compressor) and renders the notes through the **context-parametric `buildVoice`**
+  — the same synth code the live engine uses (the refactor that also serves a future per-lane voice /
+  effects work). `encodeWav` ([src/wav.js](src/wav.js)) turns the `AudioBuffer` into bytes; download
+  via the existing `downloadBytes`. Works without the live audio context running (uses its sample
+  rate if present, else 44.1 kHz).
+- **Progress:** an **indeterminate** "Rendering…" bar (the button shows "Rendering…", disabled).
+  Offline rendering has no portable progress event — `OfflineAudioContext.suspend()` (which could
+  drive a determinate bar) isn't supported in Firefox, the primary browser — so an honest busy
+  indicator is used. Render is fast (faster than realtime) for one pass anyway.
+- *Deferred:* loop-count / range selection (one pass only), stereo, finer progress.
+
 ---
 
 ## Known limitations / deferred
@@ -331,12 +484,14 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   "slightly non-legato" default is actually audible — and MIDI export (which also applies
   ×articulation) matches playback.
 
-- **No lane controls** yet (add/remove lanes, mute/solo/volume, naming) — the deferred
-  "channel nonsense."
+- **Partial lane controls**: **Mute / Solo** and **adding lanes** are in. Still deferred:
+  **removing** lanes (likely a right-click menu), volume, naming, per-lane instrument.
 - **No phasing**: lanes share one combined loop; independent per-lane loop lengths
   (Reich-style phasing) is a future option.
-- **No interactive lane editing**: can't reorder within a lane, insert mid-lane, or drag
-  tiles between lanes. Ripple is currently implicit (ordered, gapless concatenation).
+- **Interactive lane editing — partial**: drag-reorder/position within a lane, move/copy between
+  lanes (with prospective ripple preview), and **adding lanes** are **in**. Still deferred:
+  **removing lanes**, and **multi-tile** drags (a set of tiles, contiguous or not — the move/copy
+  model is shaped to extend to a list of ids, but the gesture/multi-select that feeds it isn't built).
 - **Per-tile playhead sync** (edits committing at the next tile rather than the next whole
   pass) is tied to interactive lane editing — deferred.
 - One octave per grid by default; **microtones / alternate scales** not built (the tuning
@@ -691,8 +846,11 @@ prerequisite for a tuning-general Triadulator (composer to pick up soon).
 - **Recommended order:** MIDI export → Web MIDI out (live) → in-app Faust/AudioWorklet
   (ambitious, self-contained).
 
-### Record the audio output (deferred — feasible, not hard)
-Capturing Notorolla's own synth output to a file. Two realistic paths, no dependencies:
+### Record the audio output
+**Path B (offline → WAV) is now BUILT** as **Export Audio** for the tile player (see "Export to
+audio (WAV)" above): `OfflineAudioContext` render → `encodeWav` → download, via the now
+context-parametric `buildVoice`. The notes below are the original survey; **Path A** (live
+MediaRecorder capture) and the open scope choices remain available if wanted later.
 - **Path A — live capture (cheap, ~30 lines, no refactor):** connect `master` to a
   `MediaStreamAudioDestinationNode` and feed a **`MediaRecorder`**; download the Blob via the
   existing `downloadBlob` ([src/project.js](src/project.js)). *Catch:* records in **real time**
