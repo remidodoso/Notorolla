@@ -153,7 +153,17 @@
     .instr-row { display: grid; grid-template-columns: 4.5rem 1fr 3.6rem; align-items: center; gap: 0.5rem; cursor: pointer; }
     .instr-label { color: #aeb9d0; font-size: 0.82rem; }
     .instr-row input[type="range"] { width: 100%; }
+    .instr-row input[type="checkbox"].instr-check { justify-self: start; width: 16px; height: 16px; }
     .instr-val { color: #8a93a3; font-size: 0.78rem; text-align: right; font-variant-numeric: tabular-nums; }
+    /* instrument selector */
+    .instr-kind-sel { background: #11141c; color: #cbd2e0; border: 1px solid #2a3040; border-radius: 4px;
+      font-size: 0.85rem; font-weight: 700; padding: 0.2rem 0.4rem; }
+    /* Zindel drawbars: a row of parallel vertical faders */
+    .instr-drawbars { display: flex; gap: 0.55rem; align-items: flex-end; padding-top: 0.2rem; }
+    .instr-bar { display: flex; flex-direction: column; align-items: center; gap: 0.25rem; cursor: pointer; }
+    .instr-bar-input { writing-mode: vertical-rl; direction: rtl; width: 1.1rem; height: 96px; }
+    .instr-bar-val { color: #8a93a3; font-size: 0.68rem; font-variant-numeric: tabular-nums; min-height: 0.9rem; }
+    .instr-bar-label { color: #aeb9d0; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
 
     /* tile player */
     .tile-controls { display: flex; gap: 0.4rem; align-items: center; padding-bottom: 0.6rem; }

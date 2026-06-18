@@ -528,6 +528,7 @@ function openTile(name, id) {
 // that patch in place (heard on the next note) and autosave the right place.
 const instrPane = buildInstrumentPane(document.getElementById('instr'), {
   onChange: persistPatch,
+  onKindChange: changeKind,
   onTest: testInstrument,
   onReset: resetInstrument,
   onCopy: copyPatch,
@@ -537,6 +538,38 @@ const instrPane = buildInstrumentPane(document.getElementById('instr'), {
 // What the editor is currently editing: the grid's neutral patch, or a lane's.
 let editTarget = { patch: gridPatch, laneId: null };
 let patchClipboard = null; // in-memory only (cleared on reload) — Copy/Paste
+
+// Per-target stash of the OTHER kinds' last-used patches, so switching a target
+// from (say) Zindel to Vesperia and back restores the Zindel you'd dialed rather
+// than resetting it. In-memory, per session: the *active* kind always rides the
+// project (it's the lane/grid patch); only the inactive kinds' edits are
+// session-scoped. Keyed by target (a laneId, or 'grid' for the grid patch).
+const patchStash = new Map();
+const stashKey = (laneId) => (laneId == null ? 'grid' : `lane:${laneId}`);
+
+// Replace the current target's patch contents in place (so every reference —
+// lane.patch / gridPatch / editTarget.patch — stays valid) with `next`, wiping
+// the old kind's keys first. Then re-point the pane so it rebuilds for the new
+// kind, and persist.
+function swapTargetPatch(next) {
+  const cur = editTarget.patch;
+  for (const k of Object.keys(cur)) delete cur[k];
+  Object.assign(cur, next);
+  if (editTarget.laneId == null) editGrid(); else editLane(editTarget.laneId);
+  persistPatch();
+}
+
+// Switch the edited target to a different instrument kind, stashing the patch
+// we're leaving and restoring any previously-dialed patch of the kind we're
+// entering (else that kind's factory default).
+function changeKind(kind) {
+  const cur = editTarget.patch;
+  if (cur.kind === kind) return;
+  let stash = patchStash.get(stashKey(editTarget.laneId));
+  if (!stash) { stash = {}; patchStash.set(stashKey(editTarget.laneId), stash); }
+  stash[cur.kind] = clonePatch(cur);
+  swapTargetPatch(stash[kind] ? clonePatch(stash[kind]) : defaultPatch(kind));
+}
 
 // Point the editor at the grid's neutral patch (when the grid pane has focus).
 function editGrid() {
@@ -573,9 +606,9 @@ function copyPatch() {
 
 function pastePatch() {
   if (!patchClipboard) return;
-  Object.assign(editTarget.patch, clonePatch(patchClipboard));
-  instrPane.refresh();
-  persistPatch();
+  // Paste can cross kinds (Copy a Zindel, Paste onto a Vesperia lane), so swap
+  // the whole patch — swapTargetPatch rebuilds the pane for the pasted kind.
+  swapTargetPatch(clonePatch(patchClipboard));
 }
 
 // Audition the target patch on a fixed mid-register note (independent of the
@@ -588,9 +621,8 @@ async function testInstrument() {
 }
 
 function resetInstrument() {
-  Object.assign(editTarget.patch, defaultPatch());
-  instrPane.refresh();
-  persistPatch();
+  // Reset to THIS instrument's defaults (not always Vesperia's).
+  swapTargetPatch(defaultPatch(editTarget.patch.kind));
 }
 
 editGrid(); // start with the editor showing the grid's neutral patch
@@ -729,6 +761,12 @@ function arrRedo() { if (!arrFuture.length) return; arrPast.push(arrSnap()); arr
 
 function appendCurrentTile(laneId) {
   arrRecord();
+  // Dropping into an EMPTY lane seeds it with the grid's instrument (the patch you
+  // were just auditioning), so the tile sounds the way it did in the grid. A lane
+  // that already has tiles keeps its established instrument. Clone so the lane's
+  // patch doesn't alias (and keep being edited by) the grid's.
+  const lane = arrangement.lane(laneId);
+  if (lane && lane.tiles.length === 0) lane.patch = clonePatch(gridPatch);
   arrangement.append(laneId, library.current().name, patternLen);
   arrangement.activeLaneId = laneId;
   refresh();

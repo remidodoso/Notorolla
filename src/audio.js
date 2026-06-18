@@ -47,6 +47,34 @@ function partialGain(baseAmp, k, timbre) {
 // resting gain for a lane.
 const VOICE_PEAK = 0.095;
 
+// Zindel level management. ZINDEL_NORM divides the summed drawbar levels so the
+// *default* registration lands near a single Vesperia voice; heavier
+// registrations get louder (organ-like) and the master limiter backstops peaks.
+// Tunable by ear.
+const ZINDEL_NORM = 2.0;
+
+// Zindel FM: each partial is a sine carrier with a sine modulator at this ratio
+// (1:1 → harmonic sidebands). The Modulation control (0..1) scales the FM index
+// up to ZINDEL_MAX_FM_INDEX; modGain = index × modulator freq keeps the timbre
+// constant across pitch.
+const ZINDEL_MOD_RATIO = 1;
+const ZINDEL_MAX_FM_INDEX = 8;
+
+// Wendelhorn (brass supersaw). The 7 detune positions are Szabo's measured
+// irregular spacing, normalized so the outermost = ±1 (÷0.11002314). The Detune
+// knob scales them to ±WENDEL_MAX_DETUNE_CENTS; the Ensemble LFO depth scales
+// with |position| up to WENDEL_MAX_ENS_CENTS (center = 0, an anchor). Saws are
+// random-phase band-limited PeriodicWaves drawn from a per-context pool.
+// WENDEL_NORM normalizes the summed saws (tunable by ear).
+const WENDEL_OFFSETS = [-1, -0.5716, -0.1774, 0, 0.1810, 0.5650, 0.9766];
+const WENDEL_MAX_DETUNE_CENTS = 50;
+const WENDEL_MAX_ENS_CENTS = 12;
+const WENDEL_NORM = 2.2;
+const WENDEL_SAW_POOL = 12;     // random-phase saw waves cached per context
+const WENDEL_SAW_HARMONICS = 64; // band-limited (the implementation anti-aliases)
+const WENDEL_SHARED_LFOS = 3;   // shared-pool size when Per-saw LFO is off
+const TWO_PI = Math.PI * 2;
+
 // Configure the master DynamicsCompressor as a near-transparent ceiling limiter:
 // a high threshold (so it does nothing at normal levels — no always-on
 // compression), a high ratio + fast attack + short release so it only holds
@@ -327,10 +355,22 @@ export class AudioEngine {
   }
 }
 
-// Build one additive voice into `ctx`, connected to `dest`, shaped by patch `p`.
-// Context-parametric so the same synth serves the live AudioContext and an
-// OfflineAudioContext (export). See AudioEngine.playNote / renderToBuffer.
+// Dispatch a note to the right instrument by patch kind. Context-parametric so
+// the same synths serve the live AudioContext and an OfflineAudioContext
+// (export). Unknown/missing kind falls back to Vesperia. See playNote /
+// renderToBuffer; the patch shapes live in instrument.js.
 function buildVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
+  switch (p && p.kind) {
+    case 'zindel': return buildZindelVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
+    case 'wendelhorn': return buildWendelhornVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
+    default: return buildVesperiaVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
+  }
+}
+
+// Build one Vesperia voice into `ctx`, connected to `dest`, shaped by patch `p`:
+// additive partials through a shared amplitude envelope and a resonant lowpass
+// with its own envelope + key tracking.
+function buildVesperiaVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
   const f0 = freq != null ? freq : degreeToFreq(pitch);
   const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 
@@ -388,6 +428,210 @@ function buildVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
   // Release graph nodes when the last oscillator finishes (live only; an offline
   // context is discarded after rendering, so it doesn't matter there).
   oscs[0].onended = () => { env.disconnect(); tone.disconnect(); };
+}
+
+// Build one Zindel voice: eight drawbar partials, each a 2-op FM stack (sine
+// carrier + sine modulator) with its own copy of the one ADSR. Modulation sets
+// the FM index (0 = pure sine); higher partials run the amplitude envelope faster
+// (Acceleration), so the tone darkens over time without a filter; Spread
+// stretches the partials off the integer harmonics.
+function buildZindelVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
+  const f0 = freq != null ? freq : degreeToFreq(pitch);
+  const bars = [p.d1, p.d2, p.d3, p.d4, p.d5, p.d6, p.d7, p.d8];
+  const releaseTime = time + duration;
+  const norm = velocity * VOICE_PEAK / ZINDEL_NORM;
+  const modIndex = p.modulation * ZINDEL_MAX_FM_INDEX; // 0 = no FM (pure sine)
+
+  bars.forEach((lvl, i) => {
+    if (lvl <= 0.0005) return; // a closed drawbar makes no oscillator
+    const k = i + 1;
+    const mult = 1 + (k - 1) * (1 + p.spread); // integer harmonic at spread 0
+    const carrierFreq = f0 * mult;
+
+    const carrier = ctx.createOscillator();
+    carrier.type = 'sine';
+    carrier.frequency.value = carrierFreq;
+
+    // Per-partial amplitude envelope. ts < 1 for upper partials (faster as
+    // Acceleration rises), so they decay sooner — the filter-less brightness sweep.
+    const ts = 1 / (1 + p.acceleration * (k - 1));
+    const a = Math.max(0.0005, p.attack * ts);
+    const d = Math.max(0.005, p.decay * ts);
+    const r = Math.max(0.005, p.release * ts);
+    const peak = Math.max(lvl * norm, 0.0002);
+    const sustain = Math.max(peak * p.sustain, 0.00001);
+
+    const pg = ctx.createGain();
+    const g = pg.gain;
+    g.setValueAtTime(0.0001, time);
+    g.exponentialRampToValueAtTime(peak, time + a);
+    g.setTargetAtTime(sustain, time + a, d);
+    g.setTargetAtTime(0.0001, releaseTime, r);
+
+    carrier.connect(pg);
+    pg.connect(dest);
+
+    // 2-op FM: a sine modulator drives the carrier's frequency. modGain = index ×
+    // modulator freq, so the spectrum (sideband spread) is constant across pitch.
+    let mod = null, modGain = null;
+    if (modIndex > 0) {
+      const modFreq = carrierFreq * ZINDEL_MOD_RATIO;
+      mod = ctx.createOscillator();
+      mod.type = 'sine';
+      mod.frequency.value = modFreq;
+      modGain = ctx.createGain();
+      modGain.gain.value = modIndex * modFreq;
+      mod.connect(modGain);
+      modGain.connect(carrier.frequency);
+    }
+
+    const stop = releaseTime + Math.max(0.4, r * 6);
+    carrier.start(time);
+    carrier.stop(stop);
+    if (mod) { mod.start(time); mod.stop(stop); }
+    carrier.onended = () => { pg.disconnect(); if (modGain) modGain.disconnect(); }; // live cleanup (no-op offline)
+  });
+}
+
+// Szabo-style supersaw mix: the center saw level falls slightly as Detune opens
+// while the side saws swell in (d = Detune knob 0..1) — so low detune ≈ one saw,
+// high detune ≈ full ensemble.
+function wendelCenterGain(d) { return -0.55366 * d + 0.99785; }
+function wendelSideGain(d) { return Math.max(0, -0.73764 * d * d + 1.2841 * d + 0.044372); }
+
+// A per-context pool of random-phase band-limited sawtooth waves. Web Audio
+// oscillators always start at phase 0 and can't be re-phased, so a stack of
+// identical saws would beat coherently; baking a random phase into each wave (a
+// time shift rotates harmonic h by h·φ) decorrelates them — the "lush" supersaw.
+function wendelSawWaves(ctx) {
+  if (ctx._wendelSaws) return ctx._wendelSaws;
+  const pool = [];
+  const n = WENDEL_SAW_HARMONICS + 1;
+  for (let p = 0; p < WENDEL_SAW_POOL; p++) {
+    const real = new Float32Array(n);
+    const imag = new Float32Array(n);
+    const phase = Math.random() * TWO_PI;
+    for (let h = 1; h < n; h++) {
+      const amp = 1 / h; // sawtooth 1/h rolloff
+      real[h] = amp * Math.sin(h * phase);
+      imag[h] = amp * Math.cos(h * phase);
+    }
+    pool.push(ctx.createPeriodicWave(real, imag, { disableNormalization: false }));
+  }
+  ctx._wendelSaws = pool;
+  return pool;
+}
+
+// A sine oscillator with a random start phase (a 1-harmonic PeriodicWave), so the
+// ensemble LFOs don't all begin moving in the same direction at note-on.
+// disableNormalization keeps the amplitude at ±1 so the depth gain reads in cents.
+function wendelLFO(ctx, rate, phase) {
+  const osc = ctx.createOscillator();
+  const real = new Float32Array([0, Math.sin(phase)]);
+  const imag = new Float32Array([0, Math.cos(phase)]);
+  osc.setPeriodicWave(ctx.createPeriodicWave(real, imag, { disableNormalization: true }));
+  osc.frequency.value = rate;
+  return osc;
+}
+
+// Build one Wendelhorn voice: 7 detuned random-phase saws (Szabo spacing + side
+// swell), each with an uneven slow pitch LFO (Ensemble/Speed) and a pan by
+// detune (Stereo), summed through one ADSR amp envelope and a resonant lowpass
+// with envelope (the brass swell — same shape as Vesperia).
+function buildWendelhornVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
+  const f0 = freq != null ? freq : degreeToFreq(pitch);
+  const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+  const releaseTime = time + duration;
+  const stop = releaseTime + Math.max(0.4, p.release * 6);
+
+  // Amp envelope -> tone (lowpass) -> dest. One envelope for the whole stack.
+  const env = ctx.createGain();
+  const tone = ctx.createBiquadFilter();
+  tone.type = 'lowpass';
+  tone.Q.value = p.reso;
+  env.connect(tone);
+  tone.connect(dest);
+
+  const peak = velocity * VOICE_PEAK;
+  const sustainLevel = Math.max(peak * p.sustain, 0.00001);
+  const g = env.gain;
+  g.setValueAtTime(0.0001, time);
+  g.exponentialRampToValueAtTime(Math.max(peak, 0.0002), time + p.attack);
+  g.setTargetAtTime(sustainLevel, time + p.attack, p.decay);
+  g.setTargetAtTime(0.0001, releaseTime, p.release);
+
+  // Filter envelope + key tracking (opens on attack, settles to base).
+  const nyq = ctx.sampleRate * 0.45;
+  const baseCut = clamp(p.cutoff * Math.pow(f0 / FREF, p.keyTrack), 60, nyq);
+  const peakCut = clamp(baseCut * Math.pow(2, p.filterEnv), 60, nyq);
+  const tf = tone.frequency;
+  tf.setValueAtTime(peakCut, time);
+  tf.setTargetAtTime(baseCut, time + p.attack, FILTER_ENV_TAU);
+
+  const waves = wendelSawWaves(ctx);
+  const cGain = wendelCenterGain(p.detune);
+  const sGain = wendelSideGain(p.detune);
+  const ensembleOn = p.ensemble > 0.0005 && p.speed > 0;
+
+  // Nodes to release when the voice ends (live only; offline ctx is discarded).
+  const extra = [env, tone];
+  const stopOscs = []; // every oscillator we start (saws + LFOs), to stop + clean
+
+  // Shared LFO pool (only when Per-saw LFO is off): a few decorrelated rates.
+  let shared = null;
+  if (ensembleOn && !p.polyLFO) {
+    shared = [];
+    for (let j = 0; j < WENDEL_SHARED_LFOS; j++) {
+      const rate = p.speed * (1 + (j - (WENDEL_SHARED_LFOS - 1) / 2) * 0.06);
+      const lfo = wendelLFO(ctx, rate, Math.random() * TWO_PI);
+      lfo.start(time); lfo.stop(stop);
+      shared.push(lfo); stopOscs.push(lfo); extra.push(lfo);
+    }
+  }
+
+  WENDEL_OFFSETS.forEach((off, i) => {
+    const isCenter = off === 0;
+    const osc = ctx.createOscillator();
+    osc.setPeriodicWave(waves[Math.floor(Math.random() * waves.length)]); // random phase
+    osc.frequency.value = f0;
+    osc.detune.value = off * WENDEL_MAX_DETUNE_CENTS * p.detune; // static spread (cents)
+
+    // Uneven ensemble vibrato: depth scales with |position|, so the center is an
+    // anchor and the outer saws swing most. Modulates the detune param in cents.
+    const depth = Math.abs(off) * WENDEL_MAX_ENS_CENTS * p.ensemble;
+    if (ensembleOn && depth > 0) {
+      let lfo;
+      if (p.polyLFO) {
+        const rate = p.speed * (1 + (Math.random() * 2 - 1) * 0.06); // ±6% jitter
+        lfo = wendelLFO(ctx, rate, Math.random() * TWO_PI);
+        lfo.start(time); lfo.stop(stop);
+        stopOscs.push(lfo); extra.push(lfo);
+      } else {
+        lfo = shared[i % shared.length];
+      }
+      const dg = ctx.createGain();
+      dg.gain.value = depth;
+      lfo.connect(dg);
+      dg.connect(osc.detune);
+      extra.push(dg);
+    }
+
+    const cg = ctx.createGain();
+    cg.gain.value = (isCenter ? cGain : sGain) / WENDEL_NORM;
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = clamp(off * p.stereo, -1, 1); // flat → left, sharp → right
+
+    osc.connect(cg);
+    cg.connect(pan);
+    pan.connect(env);
+    osc.start(time);
+    osc.stop(stop);
+    stopOscs.push(osc);
+    extra.push(cg, pan);
+  });
+
+  // The center saw is always present; use it to release the whole graph.
+  stopOscs[stopOscs.length - 1].onended = () => { for (const n of extra) n.disconnect(); };
 }
 
 const MAX_DELAY = 8; // s — delay-line length ceiling (a whole note at a very slow tempo)

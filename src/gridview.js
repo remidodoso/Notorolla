@@ -858,7 +858,7 @@ function makeCursor(style, durIndex) {
   const mid = size / 2;
 
   if (style === 'glyph') {
-    const glyphs = ['♪', '♩', '♩.', '𝅗𝅥', '𝅘𝅥𝅯']; // matches DURATIONS order (1/16 last)
+    const glyphs = ['♪', '♩', '♩.', '𝅗𝅥', '𝅘𝅥𝅯', '♪.']; // matches DURATIONS order (1/16, 3/16 last)
     x.fillStyle = '#241c14';
     x.font = '20px serif';
     x.textAlign = 'center';

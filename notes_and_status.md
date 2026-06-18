@@ -48,8 +48,8 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 | [src/grid.js](src/grid.js) | `Pattern` (named, 12 columns), `DURATIONS`, `PALETTE`, `COLS`, `BASE_PITCH` |
 | [src/library.js](src/library.js) | `PatternLibrary` (registry, naming, parking), `Arrangement` (lanes/tiles + per-lane mute/solo + `lane.gain`/`lane.pan`/`lane.patch`, play-region `playStart`/`playEnd`, `audibleLaneIds`), `LANE_COLORS` |
 | [src/audio.js](src/audio.js) | `AudioEngine` — additive synth voice (`buildVoice`, context-parametric), per-lane patch resolution (`patchFor`), per-lane **stereo mixer strips** (volume→panner→**delay insert**→mute-gate; `setLaneVolume`/`setLaneGain`/`setLanePan`, `laneMix`, `applyLaneDelay`/`buildDelayInsert`), master limiter (`setupLimiter`) + fader (`setMasterGain`) + **stereo meter tap** (`getPeak`→`{l,r}`); `renderToBuffer` (offline **stereo** bounce, per-lane patch+mix+delay) |
-| [src/instrument.js](src/instrument.js) | the **Vesperia** patch: `DEFAULT_PATCH`, `PARAMS` (editor metadata), slider mapping, `normalizePatch`, `clonePatch` |
-| [src/instrumentpane.js](src/instrumentpane.js) | `buildInstrumentPane` — the retargetable "Edit instrument" pane (grouped sliders, target chip, Test, Copy/Paste, Factory Reset) |
+| [src/instrument.js](src/instrument.js) | the **instrument registry** (`INSTRUMENTS`): per-kind defaults + `PARAMS` (editor metadata) for **Vesperia**, **Zindel** & **Wendelhorn**; kind-aware `defaultPatch(kind)`, `normalizePatch` (numeric + boolean params), `clonePatch`, `paramsFor`, slider mapping |
+| [src/instrumentpane.js](src/instrumentpane.js) | `buildInstrumentPane` — the retargetable, **kind-aware** "Edit instrument" pane (instrument selector, body rebuilt per kind; slider / drawbar-fader / checkbox widgets; target chip, Test, Copy/Paste, Factory Reset) |
 | [src/knob.js](src/knob.js) | `makeKnob` — click-vertical-drag rotary widget (detents, dbl-click reset, gesture-bracketed callbacks) + `PAN_MAP` / `GAIN_MAP` mixer mappings |
 | [src/delay.js](src/delay.js) | per-lane delay config (`defaultDelay`/`normalizeDelay`, `DELAY_TIMES`/`DELAY_MODES`) + `buildDelayEditor` (modal form) |
 | [src/modal.js](src/modal.js) | `openModal` — generic centered modal (Esc / backdrop / × to close, `onClose`) |
@@ -69,16 +69,39 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 
 ## What works today
 
-### Sound — the Vesperia (per-lane editable instrument)
-- Additive synth voice: ~6 sine partials, slight inharmonicity, an **ADSR** amplitude
-  envelope + a **resonant lowpass** with its own envelope and keyboard tracking. Conservative
-  per-voice level (`VOICE_PEAK`) into a transparent **master limiter** (see Transport & roll).
-  Default articulation ~0.88 (slightly detached / non-legato).
-- The voice's parameters live in a **patch** struct ([src/instrument.js](src/instrument.js))
-  the engine reads **at every note-on**, so edits are heard on the next note with no
-  re-wiring. The instrument is the **Vesperia** (the one synth model so far); the
-  struct/`PARAMS` are shaped so a future registry of named instruments is a lookup, not a
-  rewrite.
+### Sound — instruments (a registry of synth kinds, per-lane editable)
+- **The Vesperia** — additive synth voice: ~6 sine partials, slight inharmonicity, an **ADSR**
+  amplitude envelope + a **resonant lowpass** with its own envelope and keyboard tracking.
+  Conservative per-voice level (`VOICE_PEAK`) into a transparent **master limiter** (see
+  Transport & roll). Default articulation ~0.88 (slightly detached / non-legato).
+- **Zindel** — a drawbar additive organ. **8 drawbar levels** (harmonics 1–8, shown as parallel
+  vertical faders, **up = louder**) like Hammond drawbars, plus: **Modulation** (each partial is a
+  **2-op FM stack** — a sine carrier with a 1:1 sine modulator; 0 = pure sine, up adds harmonic
+  sidebands; FM index `modulation × 8`, `modGain = index × modFreq` so brightness is constant
+  across pitch), **Spread** (stretches the partials off the integer harmonics —
+  `mult(k)=1+(k−1)(1+spread)`, 0 = pure harmonic, + = inharmonic/bell), one **ADSR applied per
+  partial**, and **Acceleration** (the *filter substitute*: upper partials run the envelope
+  faster — `ts=1/(1+accel·(k−1))` — so they decay first and the tone darkens over time; there is
+  **no biquad** on Zindel). Factory default = Hammond-ish (full fundamental + octave, a touch of
+  3rd & 5th) with a slightly percussive onset. Levels scaled by `ZINDEL_NORM` (tunable by ear).
+- **Wendelhorn** — a brass "supersaw" ensemble. **7 detuned band-limited saws** with **random
+  start phase** (baked into per-context `PeriodicWave`s — Web Audio oscillators can't be re-phased,
+  so identical saws would beat coherently; rotating each wave's harmonic phases decorrelates them).
+  Detune spacing is **Szabo's irregular positions** (the JP-8000 reverse-engineering) and the side
+  saws **swell in** as Detune opens (center stays ~constant). **Ensemble** = an uneven slow pitch
+  LFO (depth scales with each saw's distance from center — outer saws swing most, center is an
+  anchor), **Speed** = LFO rate 0.1–5 Hz (log) with per-saw rate jitter so they drift
+  independently, **Stereo** = pan-by-detune spread (flat → left, sharp → right), **Per-saw LFO**
+  checkbox = per-saw LFOs (richer, ~13 osc/note) vs a shared 3-LFO pool (lighter) — an A/B for
+  sound/CPU. Into Vesperia's **resonant lowpass + filter envelope** (the brass swell) and a shared
+  ADSR. Levels scaled by `WENDEL_NORM` (tunable by ear). (Future controls pass: a Cubase-style
+  combined Width+Pan panner, user-requested.)
+- **Multi-instrument registry** ([src/instrument.js](src/instrument.js)): each **kind** owns its
+  defaults + `PARAMS` (editor metadata) + description; a patch carries a `kind` tag, the engine
+  dispatches on it in `buildVoice` (a `switch`, one DSP branch per kind), and `normalizePatch` /
+  `defaultPatch(kind)` / `clonePatch` are kind-aware (unknown/missing kind → Vesperia, so old
+  projects upgrade silently). The voice's parameters live in a **patch** struct the engine reads
+  **at every note-on**, so edits are heard on the next note with no re-wiring.
 - **Patches are now per lane.** Each arrangement lane owns its own `lane.patch` (the engine
   resolves a voice's patch via `engine.patchFor(laneId)` → that lane's patch). New lanes start
   from the **factory preset**. Un-laned sound (grid click-to-hear / ♪ Test on the grid) uses a
@@ -88,8 +111,12 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   routing). It edits **one target patch at a time**, retargetable: focusing the **grid** pane
   loads the neutral grid patch; a lane's **Edit** button (lane header, left of M/S) loads that
   lane's patch (and scrolls the pane into view). A color-swatch chip in the header shows which
-  target is being edited ("Grid" / "Lane N"). **Copy / Paste** ferry settings between targets
-  (in-memory clipboard, session only). Grouped sliders:
+  target is being edited ("Grid" / "Lane N"). An **instrument selector** (dropdown in the header)
+  switches the target's **kind**; the pane **rebuilds its body** for that kind's params. Switching
+  away and back is non-destructive — a **per-target stash** keeps each kind's last-dialed patch
+  (session-scoped; the *active* kind always rides the project). **Copy / Paste** ferry settings
+  between targets and **across kinds** (in-memory clipboard, session only); **Factory Reset**
+  restores *this kind's* defaults. Vesperia's grouped sliders:
   - **Amp Envelope** — Attack / Decay / **Sustain** / Release. It's a true ADSR; **Sustain 0
     reproduces the old struck-string decay-to-silence** (Decay = the old ring time-constant),
     and Sustain > 0 holds the note (pad/organ territory).
@@ -127,8 +154,9 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   movement, never diagonal) — **vertical** repitches the column's note, **horizontal** swaps this
   column with the column dragged onto (a clean two-cell exchange); shift-click = accent;
   right-click = note↔rest.
-- Duration brushes {1/16, 1/8, 1/4, 3/8, 1/2} (shown shortest→longest; 1/16 is stored at the end
-  of `DURATIONS` so old `durIndex` values don't shift). Color = a **chilled spectrum** by duration
+- Duration brushes {1/16, 1/8, 3/16, 1/4, 3/8, 1/2} (shown shortest→longest via `DUR_ORDER`; 1/16
+  and 3/16 — a dotted eighth — are stored at the end of `DURATIONS` so old `durIndex` values don't
+  shift). Color = a **chilled spectrum** by duration
   (red 1/16 → yellow 1/8 → green 1/4 → blue 1/2 → violet whole), interpolated in log-duration space
   (`durationColor`), so 3/8 reads green-blue. **Clicking a duration brush with notes selected sets
   those notes' duration** (`applyDuration`, undoable).

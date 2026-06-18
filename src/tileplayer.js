@@ -11,6 +11,7 @@
 import { PALETTE, DURATIONS } from './grid.js';
 import { laneColor, rippleInsertInto, rippleRemoveFrom } from './library.js';
 import { makeKnob, PAN_MAP, GAIN_MAP } from './knob.js';
+import { instrument } from './instrument.js';
 
 // Quantized horizontal-scale notches (px per beat), smaller → bigger. The old
 // fixed scale (6) sits near the low end; most of the ladder is zoom-in headroom.
@@ -72,10 +73,10 @@ export class TilePlayer {
       laneEl.dataset.lane = lane.id;
 
       // Sticky lane-header block (stays pinned during horizontal scroll, like the
-      // old color tag): color stripe + an instrument block (name + Edit) + the
-      // Mute/Solo stack. The instrument name is a label for now (the future
-      // instrument selector); Edit opens the editor on this lane's patch. M and S
-      // are a tri-state — one or the other or neither.
+      // old color tag): color stripe + an instrument block (the lane's instrument
+      // name + Edit) + the Mute/Solo stack. The name reflects the lane's patch kind
+      // (Vesperia / Zindel / …); Edit opens the editor on this lane's patch, where
+      // the kind is changed. M and S are a tri-state — one or the other or neither.
       const head = document.createElement('div');
       head.className = 'lane-head';
       const stripe = document.createElement('span');
@@ -86,8 +87,9 @@ export class TilePlayer {
       info.className = 'lane-info';
       const instr = document.createElement('span');
       instr.className = 'lane-instr';
-      instr.textContent = 'Vesperia'; // the One True Instrument (future: a selector)
-      instr.title = 'Instrument: Vesperia';
+      const instrLabel = instrument(lane.patch && lane.patch.kind).label; // the lane's instrument kind
+      instr.textContent = instrLabel;
+      instr.title = `Instrument: ${instrLabel}`;
       const editBtn = document.createElement('button');
       editBtn.className = 'lane-edit' + (this.editLaneId === lane.id ? ' on' : '');
       editBtn.textContent = 'Edit';

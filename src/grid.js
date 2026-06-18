@@ -12,15 +12,16 @@ import { tuningFreq } from './tuning.js';
 export const COLS = 12;
 export const BASE_PITCH = 60; // C4 — where the default viewport sits
 
-// Note lengths, in beats. 3/8 is a dotted quarter. 1/16 is appended (not inserted
-// in order) so existing stored `durIndex` values stay valid — display/rotation
-// order is handled separately via DUR_ORDER.
+// Note lengths, in beats. 3/8 is a dotted quarter, 3/16 a dotted eighth. 1/16 and
+// 3/16 are appended (not inserted in order) so existing stored `durIndex` values
+// stay valid — display/rotation order is handled separately via DUR_ORDER.
 export const DURATIONS = [
   { name: '1/8', beats: 0.5 },
   { name: '1/4', beats: 1.0 },
   { name: '3/8', beats: 1.5 },
   { name: '1/2', beats: 2.0 },
   { name: '1/16', beats: 0.25 },
+  { name: '3/16', beats: 0.75 },
 ];
 export const DEFAULT_DUR = 1; // index of 1/4
 
