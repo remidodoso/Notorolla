@@ -76,6 +76,9 @@ export class AudioEngine {
     // Resolve a lane's mixer settings (gain linear, pan -1..1). main installs a
     // reader of the live lane values; a new strip initializes from this.
     this.laneMix = () => ({ gain: 1, pan: 0 });
+    // Resolve a lane's delay insert config { on, mode, timeSec, wet, feedback }
+    // (timeSec already tempo-resolved by main). { on:false } = no delay.
+    this.laneDelay = () => ({ on: false });
     // The fallback instrument patch (factory Vesperia). Real playback resolves
     // the patch PER LANE via patchFor: each arrangement lane owns its own patch,
     // and un-laned sound (grid audition) gets the grid/neutral patch. main.js
@@ -86,20 +89,75 @@ export class AudioEngine {
     this.patchFor = () => this.patch;
   }
 
-  // The lane's mixer strip (volume -> gate -> panner -> master), created lazily
-  // and initialized from the mix resolver. null laneId is handled by laneBus.
+  // The lane's mixer strip, created lazily and initialized from the resolvers:
+  //   volume -> panner -> [delay insert] -> gate(mute) -> master
+  // Pan is BEFORE the delay (so ping-pong's hard-L/R isn't re-panned) and the
+  // mute gate is LAST (so mute is instant, yet the delay keeps running while
+  // muted and unmute reveals its tail). null laneId is handled by laneBus.
   laneStrip(laneId) {
     let s = this.laneStrips.get(laneId);
     if (!s) {
       const m = this.laneMix(laneId);
       const volume = this.ctx.createGain(); volume.gain.value = m.gain;
-      const gate = this.ctx.createGain(); gate.gain.value = 1;
       const panner = this.ctx.createStereoPanner(); panner.pan.value = m.pan;
-      volume.connect(gate); gate.connect(panner); panner.connect(this.master);
-      s = { volume, gate, panner };
+      const gate = this.ctx.createGain(); gate.gain.value = 1;
+      volume.connect(panner); panner.connect(gate); gate.connect(this.master);
+      s = { volume, panner, gate, delay: null, delayMode: null };
       this.laneStrips.set(laneId, s);
+      const cfg = this.laneDelay(laneId);
+      if (cfg && cfg.on) { this._insertDelay(s, cfg); s.delay.setTime(cfg.timeSec); s.delay.setWet(cfg.wet); s.delay.setFeedback(cfg.feedback); }
     }
     return s;
+  }
+
+  // Tear down every per-lane strip (on project load / New Project) so they're
+  // rebuilt fresh from the new arrangement — no stale delay inserts (whose
+  // feedback can keep ringing with no input), gains/pans, or orphaned strips for
+  // lanes that no longer exist. Strips rebuild lazily on the next note/apply.
+  resetLanes() {
+    for (const s of this.laneStrips.values()) {
+      if (s.delay) { try { s.delay.dispose(); } catch (e) { /* already gone */ } }
+      s.volume.disconnect();
+      s.panner.disconnect();
+      s.gate.disconnect();
+    }
+    this.laneStrips.clear();
+  }
+
+  // Splice a freshly built delay insert between the panner and the gate.
+  _insertDelay(strip, cfg) {
+    strip.panner.disconnect();
+    const ins = buildDelayInsert(this.ctx, cfg.mode);
+    strip.panner.connect(ins.input);
+    ins.output.connect(strip.gate);
+    strip.delay = ins;
+    strip.delayMode = cfg.mode;
+  }
+
+  // Remove the insert, restoring the dry panner -> gate connection.
+  _removeDelay(strip) {
+    strip.panner.disconnect();
+    strip.delay.dispose();
+    strip.delay = null;
+    strip.delayMode = null;
+    strip.panner.connect(strip.gate);
+  }
+
+  // (Re)configure a lane's delay from the live resolver: build/remove/rebuild on
+  // an on-off or mode change, otherwise just update time/wet/feedback. main calls
+  // this on a modal edit, on tempo change (timeSec follows BPM), and after load/undo.
+  applyLaneDelay(laneId) {
+    if (!this.ctx) return;
+    const strip = this.laneStrip(laneId);
+    const cfg = this.laneDelay(laneId);
+    if (!cfg || !cfg.on) { if (strip.delay) this._removeDelay(strip); return; }
+    if (!strip.delay || strip.delayMode !== cfg.mode) {
+      if (strip.delay) this._removeDelay(strip);
+      this._insertDelay(strip, cfg);
+    }
+    strip.delay.setTime(cfg.timeSec);
+    strip.delay.setWet(cfg.wet);
+    strip.delay.setFeedback(cfg.feedback);
   }
 
   // The destination a lane's voices connect to: its strip input (the volume
@@ -251,7 +309,15 @@ export class AudioEngine {
         const m = this.laneMix(laneId);
         const volume = oac.createGain(); volume.gain.value = m.gain;
         const panner = oac.createStereoPanner(); panner.pan.value = m.pan;
-        volume.connect(panner); panner.connect(master);
+        volume.connect(panner);
+        const d = this.laneDelay(laneId);
+        if (d && d.on) {
+          const ins = buildDelayInsert(oac, d.mode);
+          ins.setTime(d.timeSec); ins.setWet(d.wet); ins.setFeedback(d.feedback);
+          panner.connect(ins.input); ins.output.connect(master);
+        } else {
+          panner.connect(master);
+        }
         s = volume; strips.set(laneId, s);
       }
       return s;
@@ -322,4 +388,57 @@ function buildVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
   // Release graph nodes when the last oscillator finishes (live only; an offline
   // context is discarded after rendering, so it doesn't matter there).
   oscs[0].onended = () => { env.disconnect(); tone.disconnect(); };
+}
+
+const MAX_DELAY = 8; // s — delay-line length ceiling (a whole note at a very slow tempo)
+
+// Build a per-lane delay insert: input -> (dry + wet) -> output, all native Web
+// Audio (no WASM). Context-parametric (live + offline export). Returns the I/O
+// gains plus setters and a dispose(). Wet/Dry is a crossfade (dry = 1 − wet).
+//   mono     — a stereo DelayNode with self-feedback; the echo stays at the dry's pan.
+//   pingpong — input summed to mono, then crossfeed: delayL (hard left, T) feeds
+//              delayR (hard right, 2T) feeds delayL (3T) …, bouncing, feedback = decay.
+function buildDelayInsert(ctx, mode) {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  const dry = ctx.createGain();
+  const wet = ctx.createGain();
+  input.connect(dry); dry.connect(output); wet.connect(output);
+  const nodes = [input, output, dry, wet];
+
+  if (mode === 'pingpong') {
+    const mono = ctx.createGain();
+    mono.channelCount = 1; mono.channelCountMode = 'explicit'; mono.channelInterpretation = 'speakers';
+    const dL = ctx.createDelay(MAX_DELAY);
+    const dR = ctx.createDelay(MAX_DELAY);
+    const pL = ctx.createStereoPanner(); pL.pan.value = -1;
+    const pR = ctx.createStereoPanner(); pR.pan.value = 1;
+    const fbL = ctx.createGain(); // dL -> dR (cross)
+    const fbR = ctx.createGain(); // dR -> dL (cross)
+    input.connect(mono); mono.connect(dL);
+    dL.connect(pL); pL.connect(wet);
+    dL.connect(fbL); fbL.connect(dR);
+    dR.connect(pR); pR.connect(wet);
+    dR.connect(fbR); fbR.connect(dL);
+    nodes.push(mono, dL, dR, pL, pR, fbL, fbR);
+    return {
+      input, output,
+      setTime: (s) => { dL.delayTime.value = s; dR.delayTime.value = s; },
+      setWet: (w) => { wet.gain.value = w; dry.gain.value = 1 - w; },
+      setFeedback: (f) => { fbL.gain.value = f; fbR.gain.value = f; },
+      dispose: () => nodes.forEach((n) => n.disconnect()),
+    };
+  }
+
+  const d = ctx.createDelay(MAX_DELAY);
+  const fb = ctx.createGain();
+  input.connect(d); d.connect(wet); d.connect(fb); fb.connect(d);
+  nodes.push(d, fb);
+  return {
+    input, output,
+    setTime: (s) => { d.delayTime.value = s; },
+    setWet: (w) => { wet.gain.value = w; dry.gain.value = 1 - w; },
+    setFeedback: (f) => { fb.gain.value = f; },
+    dispose: () => nodes.forEach((n) => n.disconnect()),
+  };
 }

@@ -82,7 +82,13 @@ export function buildToolbar(el, state, onChange) {
   const properBtn = button('Proper');
   properBtn.title = 'Only complete triadulations (every remaining pitch filled by a triad)';
   properBtn.onclick = () => { state.proper = !state.proper; refresh(); onChange('proper'); };
-  el.append(triadBtn, confirmBtn, properBtn);
+  const tradBtn = button('trad');
+  tradBtn.title = 'Build triadulations from traditional triads (major / minor / diminished / augmented)';
+  tradBtn.onclick = () => { state.trad = !state.trad; refresh(); onChange('trad'); };
+  const susBtn = button('sus');
+  susBtn.title = 'Build triadulations from suspended chords (sus2 / sus4 — the same set)';
+  susBtn.onclick = () => { state.sus = !state.sus; refresh(); onChange('sus'); };
+  el.append(triadBtn, confirmBtn, properBtn, tradBtn, susBtn);
 
   // Permute tools, acting on the grid's current selection.
   const permuteLabel = label('Permute');
@@ -177,9 +183,11 @@ export function buildToolbar(el, state, onChange) {
     hl.classList.toggle('active', state.highlightRows);
     triadsBtn.classList.toggle('active', state.showTriads);
     properBtn.classList.toggle('active', state.proper);
+    tradBtn.classList.toggle('active', state.trad);
+    susBtn.classList.toggle('active', state.sus);
   }
   refresh();
-  return { refresh, grabHandle, newBtn, cloneBtn, undoBtn, redoBtn, clearBtn, triadBtn, confirmBtn, properBtn, rotateBtn, reverseBtn, sortAscBtn, sortDescBtn, shuffleBtn, shuffleNoRepBtn, transUpBtn, transDownBtn, tuningSel, scaleSel, rootSel };
+  return { refresh, grabHandle, newBtn, cloneBtn, undoBtn, redoBtn, clearBtn, triadBtn, confirmBtn, properBtn, tradBtn, susBtn, rotateBtn, reverseBtn, sortAscBtn, sortDescBtn, shuffleBtn, shuffleNoRepBtn, transUpBtn, transDownBtn, tuningSel, scaleSel, rootSel };
 }
 
 function button(text) {

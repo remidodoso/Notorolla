@@ -17,7 +17,7 @@
 import { DURATIONS, PALETTE, COLS, BASE_PITCH, nextDurIndex } from './grid.js';
 import { isBlackKey, pitchClassName } from './model.js';
 import { degreeToName } from './tuning.js';
-import { inScale, nearestInScale } from './scales.js';
+import { inScale, nearestInScale, stepInScale } from './scales.js';
 import { classifyTriad } from './triads.js';
 import { PAD_LEFT as ROLL_PAD_LEFT, BEAT_WIDTH as ROLL_BEAT_WIDTH } from './pianoroll.js';
 
@@ -30,7 +30,7 @@ const UNIFORM_COL_W = 40;        // Grid mode: every column the same width
 const DOT_R = 7;
 const DRAG_THRESHOLD = 4;        // px of movement that turns a click into a drag
 const TRIAD_BAND = 30;           // px reserved above the lanes for two label rows
-const QUALITY = { maj: 'Maj', min: 'min', dim: 'dim', aug: 'aug' };
+const QUALITY = { maj: 'Maj', min: 'min', dim: 'dim', aug: 'aug', sus: 'sus' };
 
 export const MIN_ROWS = 12;      // never fewer than twelve tones (for now)
 export const MAX_ROWS = 48;
@@ -147,6 +147,24 @@ export class GridView {
     if (Math.max(...degs) + delta > MAX_DEGREE || Math.min(...degs) + delta < MIN_DEGREE) return;
     const before = this._snap();
     for (const i of cols) this.pattern.columns[i].degree += delta;
+    this._commit(before);
+  }
+
+  // Scalar (diatonic) transpose: move each note to the next degree up/down *in
+  // the active scale mask* (dir ±1). Under the Chromatic mask this is the old
+  // ±1 semitone; under pentatonic it steps to the next scale tone (and pulls an
+  // off-scale note onto the mask). Each note steps independently, so intervals
+  // follow the scale rather than staying rigidly parallel. Octave jumps stay
+  // literal via transpose(±DEGREES_PER_OCTAVE). One undo entry; reject if any
+  // note would leave the navigable range.
+  transposeScalar(dir) {
+    const cols = this._permuteTargets();
+    if (!cols.length) return;
+    const { scaleId, root } = this.pattern;
+    const targets = cols.map((i) => stepInScale(scaleId, root, this.pattern.columns[i].degree, dir));
+    if (targets.some((d) => d > MAX_DEGREE || d < MIN_DEGREE)) return;
+    const before = this._snap();
+    cols.forEach((i, k) => { this.pattern.columns[i].degree = targets[k]; });
     this._commit(before);
   }
 
@@ -514,10 +532,20 @@ export class GridView {
     if (this.opts.getShowTriads && this.opts.getShowTriads()) this._drawTriadLabels(ctx);
   }
 
+  // Columns as the triad labeler sees them: the pattern with any Triadulator
+  // prospective (un-set) notes merged in, so proposed chords get labeled too.
+  _labelColumns() {
+    if (!this.prospective.size) return this.pattern.columns;
+    return this.pattern.columns.map((c, i) => {
+      const g = this.prospective.get(i);
+      return g ? { degree: g.degree, isRest: false } : c;
+    });
+  }
+
   // Triads found in adjacent note-triples (12-ET only; three notes in a row, no
   // rest between). Returns { x: center over the middle column, text } for each.
   _triadLabels() {
-    const cols = this.pattern.columns;
+    const cols = this._labelColumns();
     const out = [];
     for (let i = 0; i + 2 < cols.length; i++) {
       const a = cols[i], b = cols[i + 1], c = cols[i + 2];

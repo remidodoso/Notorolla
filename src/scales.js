@@ -32,3 +32,15 @@ export function nearestInScale(scaleId, root, degree) {
   }
   return degree;
 }
+
+// The next in-scale degree strictly above (dir > 0) or below (dir < 0) `degree`
+// — i.e. a scale step. For chromatic this is just degree ± 1 (every degree is
+// in-scale = a chromatic step). An off-scale note lands on the first mask member
+// past it in that direction (so it snaps onto the scale as it moves).
+export function stepInScale(scaleId, root, degree, dir) {
+  const step = dir > 0 ? 1 : -1;
+  for (let d = degree + step; Math.abs(d - degree) <= 24; d += step) {
+    if (inScale(scaleId, root, d)) return d;
+  }
+  return degree + step; // unreachable for the defined masks; degenerate fallback
+}

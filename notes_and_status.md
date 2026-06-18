@@ -47,10 +47,12 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 | [src/tuning.js](src/tuning.js) | row/degree → pitch/frequency seam |
 | [src/grid.js](src/grid.js) | `Pattern` (named, 12 columns), `DURATIONS`, `PALETTE`, `COLS`, `BASE_PITCH` |
 | [src/library.js](src/library.js) | `PatternLibrary` (registry, naming, parking), `Arrangement` (lanes/tiles + per-lane mute/solo + `lane.gain`/`lane.pan`/`lane.patch`, play-region `playStart`/`playEnd`, `audibleLaneIds`), `LANE_COLORS` |
-| [src/audio.js](src/audio.js) | `AudioEngine` — additive synth voice (`buildVoice`, context-parametric), per-lane patch resolution (`patchFor`), per-lane **stereo mixer strips** (volume→mute-gate→panner; `setLaneVolume`/`setLaneGain`/`setLanePan`, `laneMix`), master limiter (`setupLimiter`) + fader (`setMasterGain`) + **stereo meter tap** (`getPeak`→`{l,r}`); `renderToBuffer` (offline **stereo** bounce, per-lane patch+mix) |
+| [src/audio.js](src/audio.js) | `AudioEngine` — additive synth voice (`buildVoice`, context-parametric), per-lane patch resolution (`patchFor`), per-lane **stereo mixer strips** (volume→panner→**delay insert**→mute-gate; `setLaneVolume`/`setLaneGain`/`setLanePan`, `laneMix`, `applyLaneDelay`/`buildDelayInsert`), master limiter (`setupLimiter`) + fader (`setMasterGain`) + **stereo meter tap** (`getPeak`→`{l,r}`); `renderToBuffer` (offline **stereo** bounce, per-lane patch+mix+delay) |
 | [src/instrument.js](src/instrument.js) | the **Vesperia** patch: `DEFAULT_PATCH`, `PARAMS` (editor metadata), slider mapping, `normalizePatch`, `clonePatch` |
 | [src/instrumentpane.js](src/instrumentpane.js) | `buildInstrumentPane` — the retargetable "Edit instrument" pane (grouped sliders, target chip, Test, Copy/Paste, Factory Reset) |
 | [src/knob.js](src/knob.js) | `makeKnob` — click-vertical-drag rotary widget (detents, dbl-click reset, gesture-bracketed callbacks) + `PAN_MAP` / `GAIN_MAP` mixer mappings |
+| [src/delay.js](src/delay.js) | per-lane delay config (`defaultDelay`/`normalizeDelay`, `DELAY_TIMES`/`DELAY_MODES`) + `buildDelayEditor` (modal form) |
+| [src/modal.js](src/modal.js) | `openModal` — generic centered modal (Esc / backdrop / × to close, `onClose`) |
 | [src/scheduler.js](src/scheduler.js) | lookahead scheduler, finite looping, per-cycle re-read (`onCycle`), mid-cycle tile reconciliation (`resync`) |
 | [src/pianoroll.js](src/pianoroll.js) | `PianoRoll` canvas render + playhead; per-note color/alpha |
 | [src/gridview.js](src/gridview.js) | `GridView` — grid editor (render + gestures + viewport + resize) |
@@ -58,7 +60,7 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 | [src/toolbar.js](src/toolbar.js) | grid toolbar (brush, pattern lifecycle, view toggles) |
 | [src/panes.js](src/panes.js) | reorderable vertical panes, order persisted |
 | [src/project.js](src/project.js) | versioned file envelope (`format`/`version`), migrate, save (download) / load (file read) helpers |
-| [src/triads.js](src/triads.js) | Triadulator engine (pure): partition a pitch-class set into traditional triads (proper / partial) |
+| [src/triads.js](src/triads.js) | Triadulator engine (pure): partition a pitch-class set into chords — `trad` (maj/min/dim/aug) and/or `sus` families (proper / partial); `classifyTriad` for labels |
 | [src/midi.js](src/midi.js) | Standard MIDI File writer (pure): note data → bytes (Format 1, tempo, track names) |
 | [src/wav.js](src/wav.js) | WAV encoder (pure): an `AudioBuffer` → 16-bit PCM RIFF bytes |
 | [src/main.js](src/main.js) | wires everything; transport, undo, active pane, persistence, project save/load |
@@ -178,10 +180,15 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
     random among ties," + a random end-for-end flip to de-bias. Verified optimal (0 when feasible,
     theoretical min otherwise).
 - **Mutate tools** (toolbar group after Permute; same selection-or-all targets): **↑ / ↓
-  Transpose** by one pitch class (±1 degree), no-op if it would leave the navigable range,
-  undoable. Arrow keys ↑/↓ do the same; **Shift+↑/↓ = an octave** (the equave — currently always
-  the 12-degree octave; the "disable when a tuning has no equave" gate waits on non-octave scales).
-  Transpose is grid-only.
+  Transpose** — **scalar/diatonic**: each note moves to the next degree **in the active scale mask**
+  (`transposeScalar` → `stepInScale`). Under the **Chromatic** mask that's the old ±1 semitone;
+  under **pentatonic** it steps to the next scale tone (skipping non-mask degrees), each note moving
+  independently so intervals follow the scale, and an off-scale note snaps onto the mask in the move
+  direction. No chromatic nudge *within* a mask (switch to the Chromatic mask for that — consistent
+  with placement already snapping to the mask). Arrow keys ↑/↓ do the same; **Shift+↑/↓ = a literal
+  octave** (the equave — currently always the 12-degree octave; the "disable when a tuning has no
+  equave" gate waits on non-octave scales). No-op if it would leave the navigable range; undoable;
+  grid-only.
   - *Planned permute tools (design open):* **Invert** — needs a chosen axis/pivot to mirror
     pitches around (first/selected note? the centroid? a fixed degree?), TBD. **Transpose** —
     the composer wants it *smarter than "move up/down N"*; e.g. a **"smart transpose / harmonize"**
@@ -192,13 +199,14 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   roll). Active rows highlight; **octave-mates highlight softly**.
 - **Triad labels** ("Show triads" toggle, default on): every run of **three adjacent notes**
   (no rest between) is classified via `classifyTriad` (reuses the Triadulator templates, **12-ET
-  only**) and, if it's a traditional triad, labeled (`C Maj` / `A min` / `G dim` / `E aug` —
-  root + quality, inversion-agnostic) in a band **above the grid**, centered on the middle note,
+  only**) and, if it's a recognized chord, labeled (`C Maj` / `A min` / `G dim` / `E aug` / `C sus`
+  — root + quality, inversion-agnostic) in a band **above the grid**, centered on the middle note,
   packed across **two staggered rows** so neighbours (arpeggios / Stretch / future 16ths) don't
-  collide. Root name via a `pitchClassName` seam (12-ET note names now; non-12 would be the
-  "whatever" class name). The scanner is structured for later **liberalized triads / tetrads /
-  other shapes** (window size + pc-set templates). Committed notes only (not the Triadulator
-  ghosts); no inversion figure.
+  collide. **`sus` is always recognized** (sus2 / sus4 are the same pc-set `{0,2,7}` — named by the
+  sus2 root; disjoint from the trad sets). Root name via a `pitchClassName` seam (12-ET note names
+  now). The scanner is structured for later **liberalized triads / tetrads / other shapes** (window
+  size + pc-set templates). **Now labels the Triadulator's prospective (ghost) notes too**
+  (`_labelColumns` merges `prospective` into the scan), so proposed chords get labeled live.
 - Vertical **resize** (drag handle, min 12 rows) + **wheel scroll** of pitch range, with a
   fixed-position dashed resize guide.
 - **Opening a pattern auto-centers the pitch viewport** on its notes (`centerGridOn`: midpoint of
@@ -240,7 +248,8 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   with it). **View-only** — persists in `notorolla.ui` (`tileScaleIdx`), never flips the dirty bit.
 - Each lane has a **sticky header block** (stays pinned during horizontal scroll): a color
   stripe + an **instrument block** (the **Vesperia** name — a label now, the future instrument
-  selector — over an **Edit** button that opens the per-lane instrument editor) + a **knob column**
+  selector — over an **Edit** button that opens the per-lane instrument editor) + a **"D" delay
+  button** (lit when the lane's delay is on; opens the delay modal) + a **knob column**
   (**Pan** over **Gain**) + the **Mute / Solo** stack. The knobs are mixer-style: click +
   **vertical-drag** to turn (Shift = fine, **double-click = reset**); Pan has a center detent, Gain is
   a **dB knob** (−∞…+6 dB, unity detent at 0 dB) storing linear gain. A knob drag is **one undo step**
@@ -338,10 +347,24 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   reset. A small always-on rAF loop drives it (reads 0 when idle). The **master fader**
   (`engine.setMasterGain`, anti-zipper ramp; persisted in `notorolla.ui`) sets output level and
   **the WAV export renders post-fader** (`renderToBuffer` uses the same `masterLevel`).
-- **Stereo signal path:** each lane runs `voices → volume → mute-gate → StereoPanner → master`;
-  master + limiter are channel-agnostic, so the tail is stereo once panners feed it; the offline
-  export is `OfflineAudioContext(2, …)` rebuilding each lane's volume+pan so the **WAV is stereo and
+- **Stereo signal path:** each lane runs `voices → volume → StereoPanner → [delay insert] → mute-gate
+  → master` (pan is BEFORE the delay so ping-pong's hard-L/R isn't re-panned; the mute gate is LAST so
+  mute is instant yet the delay keeps running while muted and unmute reveals its tail). master +
+  limiter are channel-agnostic, so the tail is stereo once panners feed it; the offline export is
+  `OfflineAudioContext(2, …)` rebuilding each lane's volume+pan+delay so the **WAV is stereo and
   matches the live mix** (`encodeWav` was already channel-general). Un-laned grid audio is mono/centered.
+- **Per-lane delay** (a "track" effect — an insert on the lane strip; `lane.delay = {on, mode, time,
+  wet, feedback}`, saved with the project). **"D" button** in the lane head opens a **modal**
+  (`buildDelayEditor` + generic `openModal`) with On/off, **Mode** (mono echo | crossfeed ping-pong),
+  **Time** (tempo-synced note value 1/16…1 → `beats×60/bpm`), **Wet** and **Feedback** knobs (feedback
+  capped 0.9; the master limiter backstops runaway). `buildDelayInsert(ctx, mode)` (audio.js) builds
+  the native graph: mono = a stereo `DelayNode` with self-feedback (echo stays at the dry's pan);
+  ping-pong = input summed to mono → `delayL` (hard-L, T) cross-feeds `delayR` (hard-R, 2T) cross-feeds
+  `delayL` (3T)…, bouncing, feedback = bounce decay. Built lazily per strip / rebuilt on a mode change;
+  time follows the tempo (`applyLaneDelayAll` on tempo change). A delay-modal session is **one undo
+  step** (snapshot on open, live audio while editing, commit on close); persists + dirty-tracked. No
+  WASM. Effects philosophy (user): delay = per-track; chorus/phaser/drive = future instrument-patch
+  character; reverb = future instrument or shared send bus.
 - **Gain calibration (done against the meter):** the master `DynamicsCompressor` is a **transparent
   ceiling limiter** (`setupLimiter`: threshold −1.5 dB, knee 0, ratio 20, attack 3 ms, release 100 ms)
   — idle below −1.5 dB (no always-on compression), only holding peaks under 0 dBFS; the **per-voice
@@ -393,27 +416,37 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   deselect the tile.
 - **Delete / Backspace** — grid: turn the selected notes into rests (one undo entry); tiles:
   delete the selected tile.
-- **↑ / ↓** (grid) transpose by a pitch class; **Shift+↑/↓** by an octave (selection, or all notes).
+- **↑ / ↓** (grid) transpose by one **scale-mask step** (chromatic mask = a semitone); **Shift+↑/↓**
+  by a literal octave (selection, or all notes).
 - **Space** play/stop the active pane; **Shift+Space** start/extend the loop (plain Space stops it).
   Space is **transport-only** — it never activates a focused button or select (the handler runs
   ahead of the default and `preventDefault`s).
 
 ### Triadulator — "corrupt dodecaphony into tonality"
-- Proposes traditional triads (major/minor/diminished/augmented) built from the pitch
-  classes **not yet used** on the grid — the harmonic *negative space* of your row — and
-  lays them out as **prospective** (un-set) notes following what you've placed.
+- Proposes chords built from the pitch classes **not yet used** on the grid — the harmonic
+  *negative space* of your row — and lays them out as **prospective** (un-set) notes following
+  what you've placed.
+- **Chord families (two toggles, `trad` + `sus`, one or both):** `trad` = the four traditional
+  triads (maj/min/dim/aug, **default on**); `sus` = suspended chords (**default off**). sus2 and
+  sus4 are the **same pc-set** `{0,2,7}` (sus4 is an inversion), so one template covers both and
+  every sus set is named by its **sus2 root**; sus sets are **disjoint** from every trad set (no
+  third), so the families union cleanly. **Combinatorial caveat:** partial trad+sus makes many more
+  3-pc subsets qualify → far more alternatives; `MAX_RESULTS = 200` caps the search (extras beyond
+  200 truncated, deterministic).
 - **Engine** ([src/triads.js](src/triads.js)) is pure and works on pitch-class **sets**, so
-  all **inversions** are inherent ({0,4,7}={4,7,0}=C major). 40 distinct triad-sets in
-  12-EDO (aug is symmetric → 4, not 12). `enumerateTriadulations(pcs, {proper})` returns a
-  deterministic, stable list (proper/best first); rotation is just an index into it.
-- **Proper** (toggle on) = every remaining pc covered by disjoint triads (possible only
+  all **inversions** are inherent ({0,4,7}={4,7,0}=C major). `buildChords(families)` makes the
+  candidate pool; `enumerateTriadulations(pcs, {proper, trad, sus})` returns a deterministic, stable
+  list (proper/best first); rotation is just an index into it. The recursive search is unchanged —
+  only the candidate pool (the membership test) grows with sus.
+- **Proper** (toggle on) = every remaining pc covered by disjoint chords (possible only
   when distinct used pcs ∈ {3,6,9} **and** a partition exists — divisibility is necessary,
-  not sufficient). **Partial** (off) = as many whole triads as possible + leftover.
+  not sufficient; all chords are 3-pc so this is unchanged by sus). **Partial** (off) = as many
+  whole chords as possible + leftover.
 - **Triadulate** button: enabled when ≥3 pitch classes are placed *and* a placeable
   triadulation exists. Press to show the canonical proposal (ghosted dots + dashed ring);
   press again to **rotate** through alternatives (`Triadulate 2/9`) and wrap. **Confirm**
   registers them as real notes (one undo entry, marks the project dirty). Editing the grid,
-  switching patterns, or toggling Proper discards the proposal.
+  switching patterns, or toggling Proper / trad / sus discards the proposal.
 - **Placement** — horizontal: columns strictly after the last placed note (interior rests
   ignored); vertical: each note's octave chosen nearest the **centroid** of placed notes, so
   the proposal is **centered** on your register (this is where inversions become visible —

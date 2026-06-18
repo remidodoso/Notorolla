@@ -167,7 +167,7 @@
     }
     @keyframes prog-slide { from { transform: translateX(-110%); } to { transform: translateX(260%); } }
     /* Both lanes share one horizontal scroll + origin, so tiles align in time. */
-    .tile-lanes { --lane-head-w: 132px; display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; overflow-x: auto; }
+    .tile-lanes { --lane-head-w: 152px; display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; overflow-x: auto; }
     .lane { display: flex; align-items: stretch; width: max-content; }
     /* Beat ruler (sticky top): left spacer aligns with the lane heads, then a
        scrolling track of ticks/numbers carrying the play-region markers. */
@@ -207,6 +207,32 @@
     }
     .lane-edit:hover { background: #272c38; color: #cbd2e0; }
     .lane-edit.on { background: #1e3050; border-color: #3d5a80; color: #cfe0ff; }
+    /* Delay "D" button (between the instrument block and the knobs); lit when on. */
+    .lane-delay {
+      align-self: center; width: 20px; height: 20px; padding: 0; font-size: 0.74rem; font-weight: 700;
+      line-height: 1; border-radius: 4px; background: #20242e; color: #8a93a3; border: 1px solid #313747;
+    }
+    .lane-delay:hover { background: #272c38; color: #cbd2e0; }
+    .lane-delay.on { background: #2a3a26; border-color: #4f7a47; color: #cdeecb; }
+    /* Modal (delay editor, future effect panels) */
+    .modal-overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+      background: rgba(4, 6, 10, 0.62); }
+    .modal-panel { min-width: 300px; max-width: 92vw; background: #11141c; border: 1px solid #2a3040; border-radius: 10px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.5); overflow: hidden; }
+    .modal-head { display: flex; align-items: center; gap: 0.6rem; padding: 0.6rem 0.8rem; border-bottom: 1px solid #1c2029; }
+    .modal-title { flex: 1; font-weight: 700; color: #cbd2e0; font-size: 0.9rem; }
+    .modal-x { width: 24px; height: 24px; padding: 0; font-size: 1.1rem; line-height: 1; border-radius: 4px;
+      background: #20242e; color: #9aa1ad; border: 1px solid #313747; }
+    .modal-x:hover { background: #3a2326; color: #d6a3a8; border-color: #5a2f33; }
+    .delay-editor { padding: 0.8rem; display: flex; flex-direction: column; gap: 0.7rem; }
+    .delay-row { display: flex; align-items: center; gap: 0.6rem; }
+    .delay-label { width: 72px; color: #9aa1ad; font-size: 0.82rem; }
+    .delay-check { width: 16px; height: 16px; }
+    .delay-sel { background: #181c24; color: #cbd2e0; border: 1px solid #313747; border-radius: 4px; padding: 0.2rem 0.4rem; }
+    .delay-val { color: #cbd2e0; font-size: 0.8rem; min-width: 38px; }
+    .seg { padding: 0.28rem 0.6rem; font-size: 0.82rem; border-radius: 4px; background: #20242e; color: #8a93a3; border: 1px solid #313747; }
+    .seg:hover { background: #272c38; color: #cbd2e0; }
+    .seg.on { background: #1e3050; border-color: #3d5a80; color: #cfe0ff; }
     /* Pan (top) + Gain (bottom) knobs: click + vertical-drag, dbl-click resets. */
     .lane-knobs { display: flex; flex-direction: column; gap: 5px; justify-content: center; align-items: center; }
     .lane-knob {

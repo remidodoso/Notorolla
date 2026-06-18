@@ -15,6 +15,9 @@ import { TilePlayer, TILE_SCALES, DEFAULT_SCALE_IDX } from './tileplayer.js';
 import { buildToolbar } from './toolbar.js';
 import { buildInstrumentPane } from './instrumentpane.js';
 import { normalizePatch, defaultPatch, clonePatch } from './instrument.js';
+import { normalizeDelay } from './delay.js';
+import { buildDelayEditor } from './delay.js';
+import { openModal } from './modal.js';
 import { setupPanes } from './panes.js';
 import { VERSION, buildEnvelope, validate, migrate, defaultName, downloadJSON, downloadBytes, readFile } from './project.js';
 
@@ -39,8 +42,10 @@ const state = {
   audition: true,
   cursor: 'dot',
   highlightRows: true,
-  showTriads: true,   // label traditional triads found in adjacent notes
+  showTriads: true,   // label chords (trad + sus) found in adjacent notes
   proper: false,      // Triadulator: when on, only complete (no-leftover) triadulations
+  trad: true,         // Triadulator: build from traditional triads (maj/min/dim/aug)
+  sus: false,         // Triadulator: build from suspended (sus) chords
   topDegree: 71,
   visibleRows: 12,
   activePane: 'grid', // 'grid' | 'tiles' — which pane the roll mirrors
@@ -118,6 +123,21 @@ function applyLaneMix(rampSec = 0.012) {
     engine.setLaneVolume(lane.id, lane.gain, rampSec);
     engine.setLanePan(lane.id, lane.pan, rampSec);
   }
+}
+
+// Resolve a lane's delay insert config for the engine — time follows the tempo
+// (beats × 60/bpm → seconds). { on:false } when the lane has no/disabled delay.
+engine.laneDelay = (laneId) => {
+  const lane = arrangement.lane(laneId);
+  if (!lane || !lane.delay || !lane.delay.on) return { on: false };
+  const d = lane.delay;
+  return { on: true, mode: d.mode, timeSec: d.time * 60 / state.bpm, wet: d.wet, feedback: d.feedback };
+};
+
+// (Re)apply every lane's delay to the engine — after a modal edit, a tempo
+// change (delay time is tempo-synced), or a load/undo.
+function applyLaneDelayAll() {
+  for (const lane of arrangement.lanes) engine.applyLaneDelay(lane.id);
 }
 
 const scheduler = new Scheduler(engine);
@@ -292,7 +312,28 @@ const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, 
   onMixEnd: () => onMixEnd(),
   onMarkerStart: () => onMixStart(),                // reuse the arrangement-edit bracket
   onMarkers: (start, end) => setPlayMarkers(start, end),
+  onDelay: (laneId) => openDelayModal(laneId),
 });
+
+// Open the per-lane delay editor in a modal. The whole editing session is ONE
+// undo step: snapshot on open (the shared arrangement-edit bracket), apply each
+// change to the audio live, and commit on close. No undo while the modal is open.
+function openDelayModal(laneId) {
+  const lane = arrangement.lane(laneId);
+  if (!lane) return;
+  const idx = arrangement.lanes.indexOf(lane);
+  onMixStart(); // capture the pre-edit snapshot
+  const body = buildDelayEditor(lane.delay, { onChange: () => engine.applyLaneDelay(laneId) });
+  openModal({
+    title: `Delay — Lane ${idx + 1}`,
+    body,
+    onClose: () => {
+      engine.applyLaneDelay(laneId);
+      onMixEnd();          // commit one undo step if changed + persist + dirty
+      tilePlayer.render(); // reflect the D-button lit state
+    },
+  });
+}
 
 // Commit a play-region change (from the ruler): clamp, store on the arrangement,
 // and close the undo bracket opened on pointerdown. `end` null = "to last tile".
@@ -670,6 +711,7 @@ function arrApply(json) {
   arrangement.lanes = o.lanes.map((l) => ({
     id: l.id, tiles: l.tiles.map((t) => ({ id: t.id, name: t.name, start: t.start })), mute: !!l.mute, solo: !!l.solo,
     gain: l.gain == null ? 1 : l.gain, pan: l.pan == null ? 0 : l.pan, // mixer IS undoable
+    delay: normalizeDelay(l.delay), // delay edits are undoable too
     patch: livePatch.get(l.id) || normalizePatch(l.patch),
   }));
   arrangement.seq = o.seq || 0;
@@ -677,7 +719,8 @@ function arrApply(json) {
   arrangement.playStart = o.playStart == null ? 0 : o.playStart; // region markers are undoable
   arrangement.playEnd = o.playEnd == null ? null : o.playEnd;
   if (!arrangement.allTiles().some((t) => t.id === arrangement.selectedId)) arrangement.selectedId = null;
-  applyLaneMix(0.012); // restored pan/gain → push to the (existing) lane buses
+  applyLaneMix(0.012);  // restored pan/gain → push to the (existing) lane buses
+  applyLaneDelayAll();  // restored delay → rebuild/update the inserts
   // If the editor was on a lane the undo/redo removed, drop back to the grid.
   if (editTarget && editTarget.laneId != null && !arrangement.lane(editTarget.laneId)) editGrid();
 }
@@ -762,7 +805,7 @@ function triadulationState() {
 
   const remaining = [];
   for (let pc = 0; pc < DEGREES_PER_OCTAVE; pc++) if (!used.has(pc)) remaining.push(pc);
-  const list = enumerateTriadulations(remaining, { proper: state.proper });
+  const list = enumerateTriadulations(remaining, { proper: state.proper, trad: state.trad, sus: state.sus });
   if (!list.length) return { enabled: false, list: [] };
 
   // Placeability: notes go in the columns strictly after the last placed note.
@@ -882,15 +925,15 @@ function onToolbarChange(what) {
     case 'clear': clearPattern(); return;
     case 'triadulate': triadulate(); return;
     case 'confirmTriad': confirmTriadulation(); return;
-    case 'proper': clearProposal(); refresh(); return; // re-triadulate in the new mode
+    case 'proper': case 'trad': case 'sus': clearProposal(); refresh(); return; // re-triadulate in the new mode/families
     case 'rotate': grid.rotateSelection(); return;
     case 'reverse': grid.reverseSelection(); return;
     case 'sortAsc': grid.sortSelection(true); return;
     case 'sortDesc': grid.sortSelection(false); return;
     case 'shuffle': grid.shuffleSelection(); return;
     case 'shuffleNoRep': grid.shuffleNoRepeatSelection(); return;
-    case 'transposeUp': grid.transpose(1); return;
-    case 'transposeDown': grid.transpose(-1); return;
+    case 'transposeUp': grid.transposeScalar(1); return;
+    case 'transposeDown': grid.transposeScalar(-1); return;
     case 'duration': // brush duration set in toolbar; apply to a selection if there is one
       grid.updateCursor();
       if (!grid.applyDuration(state.brush.durIndex)) refresh();
@@ -980,7 +1023,7 @@ function persist() {
   safeSet(ARR_KEY, JSON.stringify(arrangement.toJSON()));
   safeSet(UI_KEY, JSON.stringify({
     bpm: state.bpm, brush: state.brush, mode: state.mode, audition: state.audition,
-    cursor: state.cursor, highlightRows: state.highlightRows, showTriads: state.showTriads, proper: state.proper,
+    cursor: state.cursor, highlightRows: state.highlightRows, showTriads: state.showTriads, proper: state.proper, trad: state.trad, sus: state.sus,
     topDegree: state.topDegree, visibleRows: state.visibleRows, activePane: state.activePane,
     tileScaleIdx: state.tileScaleIdx, masterGain: state.masterGain,
   }));
@@ -1074,7 +1117,9 @@ function loadContent(env) {
   state.activePane = 'grid';
   applyActiveHighlight();
   editGrid(); // the loaded lanes have fresh patch objects; re-point the editor
-  applyLaneMix(0); // push the loaded volume/pan onto the lane buses
+  engine.resetLanes(); // drop stale strips (old delay tails / orphaned lanes) — rebuild fresh
+  applyLaneMix(0);     // push the loaded volume/pan onto the lane buses
+  applyLaneDelayAll(); // and the loaded delays
   refresh();
 }
 
@@ -1223,6 +1268,7 @@ if (savedSnapshot) {
         if (bl.patch == null) { bl.patch = ll.patch; changed = true; }
         if (bl.gain == null) { bl.gain = ll.gain; changed = true; }
         if (bl.pan == null) { bl.pan = ll.pan; changed = true; }
+        if (bl.delay == null) { bl.delay = ll.delay; changed = true; }
       }
       // Region markers (top-level arr fields) added in this version too.
       if (!('playStart' in base.arr)) { base.arr.playStart = arrangement.playStart; base.arr.playEnd = arrangement.playEnd; changed = true; }
@@ -1405,6 +1451,7 @@ tempoLabel.textContent = `${state.bpm} BPM`;
 tempo.addEventListener('input', () => {
   state.bpm = Number(tempo.value);
   tempoLabel.textContent = `${state.bpm} BPM`;
+  applyLaneDelayAll(); // delay time is tempo-synced
   refresh();
 });
 
@@ -1567,9 +1614,10 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !tiles) {
-    e.preventDefault(); // transpose a pitch class; Shift = an octave (the equave)
+    e.preventDefault(); // scale-step within the active mask; Shift = a literal octave (equave)
     const up = e.key === 'ArrowUp';
-    grid.transpose((up ? 1 : -1) * (e.shiftKey ? DEGREES_PER_OCTAVE : 1));
+    if (e.shiftKey) grid.transpose((up ? 1 : -1) * DEGREES_PER_OCTAVE);
+    else grid.transposeScalar(up ? 1 : -1);
     flash(up ? tb.transUpBtn : tb.transDownBtn);
   }
 });

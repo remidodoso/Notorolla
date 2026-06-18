@@ -12,6 +12,7 @@
 
 import { Pattern } from './grid.js';
 import { defaultPatch, normalizePatch } from './instrument.js';
+import { defaultDelay, normalizeDelay } from './delay.js';
 
 export class PatternLibrary {
   // isReferenced(name) -> bool, supplied by the arrangement.
@@ -256,6 +257,7 @@ export class Arrangement {
         tiles: l.tiles.map((t) => ({ id: t.id, name: t.name, start: t.start })),
         mute: !!l.mute, solo: !!l.solo,
         gain: l.gain, pan: l.pan, // mixer: linear volume (1 = 0 dB), pan −1..+1
+        delay: l.delay, // per-lane delay insert
         patch: l.patch, // the lane's instrument settings
       })),
       seq: this.seq,
@@ -274,11 +276,11 @@ export class Arrangement {
     const lane = (l) => ({
       id: l.id, tiles: l.tiles.map(tile), mute: !!l.mute, solo: !!l.solo,
       gain: l.gain == null ? 1 : l.gain, pan: l.pan == null ? 0 : l.pan,
-      patch: normalizePatch(l.patch),
+      delay: normalizeDelay(l.delay), patch: normalizePatch(l.patch),
     });
     const lanes = o.lanes
       ? o.lanes.map(lane)
-      : [{ id: 0, tiles: (o.tiles || []).map(tile), mute: false, solo: false, gain: 1, pan: 0, patch: defaultPatch() }, newLane(1)];
+      : [{ id: 0, tiles: (o.tiles || []).map(tile), mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), patch: defaultPatch() }, newLane(1)];
     const a = new Arrangement(lanes);
     a.seq = o.seq || 0;
     a.activeLaneId = o.activeLaneId ?? lanes[0].id;
@@ -288,7 +290,7 @@ export class Arrangement {
   }
 }
 
-function newLane(id) { return { id, tiles: [], mute: false, solo: false, gain: 1, pan: 0, patch: defaultPatch() }; }
+function newLane(id) { return { id, tiles: [], mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), patch: defaultPatch() }; }
 function sortLane(lane) { lane.tiles.sort((a, b) => a.start - b.start); }
 
 // --- tile positioning: rigid ripple --------------------------------------

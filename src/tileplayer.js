@@ -33,6 +33,7 @@ export class TilePlayer {
   //     onMarkerStart() / onMarkers(startBeat, endBeatOrNull) — play-region ruler:
   //       left-drag either handle (or empty = start), right-click clears the end
   //       (endBeat null = auto / end-of-last-tile).
+  //     onDelay(laneId) — open the lane's delay editor modal.
   constructor(containerEl, library, arrangement, cb) {
     this.container = containerEl;
     this.library = library;
@@ -94,6 +95,14 @@ export class TilePlayer {
       editBtn.onclick = () => this.cb.onEdit(lane.id);
       info.append(instr, editBtn);
 
+      // Delay: a "D" button (lit when the lane's delay is on) opening the editor
+      // modal, between the instrument block and the Pan/Gain knobs.
+      const delayBtn = document.createElement('button');
+      delayBtn.className = 'lane-delay' + (lane.delay && lane.delay.on ? ' on' : '');
+      delayBtn.textContent = 'D';
+      delayBtn.title = 'Delay (per lane)';
+      delayBtn.onclick = () => this.cb.onDelay(lane.id);
+
       // Mixer knobs: Pan on top, Gain below (click + vertical-drag, dbl-click to
       // reset). The widget updates itself live during a drag; main applies the
       // value to the lane bus and brackets the gesture into one undo step.
@@ -121,7 +130,7 @@ export class TilePlayer {
       const muteBtn = laneToggle('M', 'mute', lane.mute, 'Mute this lane', () => this.cb.onMute(lane.id));
       const soloBtn = laneToggle('S', 'solo', lane.solo, 'Solo this lane', () => this.cb.onSolo(lane.id));
       ms.append(muteBtn, soloBtn);
-      head.append(stripe, info, knobs, ms);
+      head.append(stripe, info, delayBtn, knobs, ms);
 
       const track = document.createElement('div');
       track.className = 'lane-track';
