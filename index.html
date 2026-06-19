@@ -168,6 +168,12 @@
     /* tile player */
     .tile-controls { display: flex; gap: 0.4rem; align-items: center; padding-bottom: 0.6rem; }
     .tile-controls button { font-size: 0.82rem; padding: 0.28rem 0.6rem; }
+    .tile-controls button.danger { border-color: #5a2f33; color: #d6a3a8; }
+    .tile-controls button.danger:hover { background: #3a2326; }
+    /* per-lane reset/clear (red "R") at the far left of the lane head */
+    .lane-reset { color: #d6776f; border-color: #5a2f33; background: #1a1216; font-weight: 700;
+      padding: 0.1rem 0.4rem; border: 1px solid #5a2f33; border-radius: 4px; cursor: pointer; line-height: 1; }
+    .lane-reset:hover { background: #3a2326; }
     /* indeterminate "rendering" bar shown during offline audio export */
     .export-prog { width: 120px; height: 6px; border-radius: 3px; background: #1c2029; overflow: hidden; display: none; }
     .export-prog.on { display: inline-block; }
@@ -177,7 +183,7 @@
     }
     @keyframes prog-slide { from { transform: translateX(-110%); } to { transform: translateX(260%); } }
     /* Both lanes share one horizontal scroll + origin, so tiles align in time. */
-    .tile-lanes { --lane-head-w: 152px; display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; overflow-x: auto; }
+    .tile-lanes { --lane-head-w: 178px; display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; overflow-x: auto; }
     .lane { display: flex; align-items: stretch; width: max-content; }
     /* Beat ruler (sticky top): left spacer aligns with the lane heads, then a
        scrolling track of ticks/numbers carrying the play-region markers. */
@@ -305,6 +311,36 @@
       font-size: 0.9rem; font-weight: 700; color: #fff;
       text-shadow: 0 1px 3px rgba(0,0,0,0.9); pointer-events: none; line-height: 1;
     }
+    /* per-tile transform swaths — translucent bands at the bottom marking a
+       transformed tile (height/offset set inline; stacked bottom-up in order).
+       The thumbnail keeps the pattern's identity; color-keyed per transform. */
+    .tile-xform {
+      position: absolute; left: 0; right: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.7rem; font-weight: 700; color: #f3eeff;
+      pointer-events: none; z-index: 3; overflow: hidden;
+    }
+    .tile-xform.xf-transpose { background: rgba(150, 110, 220, 0.55); }
+    .tile-xform.xf-reverse { background: rgba(70, 175, 160, 0.55); color: #eafff8; }
+    .tile-lanes.brush { cursor: cell; }
+    /* transform bar: the brush palette + armed-brush controls + selected-tile chips */
+    .transform-bar { display: flex; align-items: center; gap: 0.6rem; padding-top: 0.6rem; flex-wrap: wrap; font-size: 0.82rem; color: #aeb9d0; }
+    .transform-bar button { font-size: 0.82rem; padding: 0.28rem 0.6rem; }
+    /* brush buttons: black-text-on-color swatch (color-keyed per transform), blue
+       outline when armed (matches the note-duration brush buttons) */
+    .xb-brush { color: #241c14; border: 1px solid rgba(0,0,0,0.3); font-weight: 600; }
+    .xb-brush.xf-transpose, .xb-brush.xf-transpose:hover { background: #a07cde; }
+    .xb-brush.xf-reverse, .xb-brush.xf-reverse:hover { background: #5ec8b4; }
+    .xb-brush.active { outline: 2px solid #5aa9ff; outline-offset: 1px; }
+    .xb-armed { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.1rem 0.5rem; border: 1px solid #3a3350; border-radius: 4px; background: rgba(150,110,220,0.08); }
+    .xb-amt-val { min-width: 2.4rem; text-align: center; font-variant-numeric: tabular-nums; color: #cbd2e0; font-weight: 700; }
+    .xb-scale { background: #11141c; color: #cbd2e0; border: 1px solid #2a3040; border-radius: 4px; padding: 0.18rem 0.35rem; }
+    .xb-sel { display: inline-flex; align-items: center; gap: 0.4rem; }
+    .xb-chip { display: inline-flex; align-items: center; gap: 0.35rem; border-radius: 4px; padding: 0.12rem 0.45rem; }
+    .xb-chip.xf-transpose { background: rgba(150,110,220,0.18); border: 1px solid #4a3d66; color: #d7cdf0; }
+    .xb-chip.xf-reverse { background: rgba(70,175,160,0.18); border: 1px solid #2f5f57; color: #c7efe6; }
+    .xb-chip button { border: none; background: none; color: inherit; cursor: pointer; padding: 0; font-size: 0.95rem; line-height: 1; opacity: 0.8; }
+    .xb-muted { color: #6b7280; }
     /* horizontal-scale strip (quantized: smaller ← slider → bigger) */
     .tile-scale { display: flex; align-items: center; gap: 0.5rem; padding-top: 0.7rem; }
     .tile-scale .ts-end { font-size: 0.72rem; color: #6b7280; }
@@ -370,6 +406,7 @@
           <button id="midiExport" title="Export the arrangement as a Standard MIDI file">Export MIDI</button>
           <button id="audioExport" title="Render the arrangement to a WAV audio file">Export Audio</button>
           <span id="exportProg" class="export-prog" title="Rendering…"></span>
+          <button id="resetPlayer" class="danger" title="Reset the tile player to two empty lanes (undoable)" style="margin-left:auto">Reset player</button>
         </div>
         <div id="tileLane" class="tile-lanes"></div>
         <div class="tile-scale">
@@ -379,6 +416,7 @@
           <button id="tileZoomIn" title="Zoom in (bigger tiles)">+</button>
           <span class="ts-end">bigger</span>
         </div>
+        <div id="transformBar" class="transform-bar"></div>
       </div>
     </section>
 

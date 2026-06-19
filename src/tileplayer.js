@@ -12,6 +12,7 @@ import { PALETTE, DURATIONS } from './grid.js';
 import { laneColor, rippleInsertInto, rippleRemoveFrom } from './library.js';
 import { makeKnob, PAN_MAP, GAIN_MAP } from './knob.js';
 import { instrument } from './instrument.js';
+import { transformKindLabel } from './transforms.js';
 
 // Quantized horizontal-scale notches (px per beat), smaller → bigger. The old
 // fixed scale (6) sits near the low end; most of the ladder is zoom-in headroom.
@@ -28,6 +29,7 @@ const GRAB = 8;         // px radius for grabbing a ruler marker handle
 export class TilePlayer {
   // cb: onTileDown(id, pointerEvent), onOpen(name, id), onDropAppend(laneId),
   //     onLaneClick(laneId), onMute(laneId), onSolo(laneId), onAddLane(),
+  //     onResetLane(laneId) — clear the lane (tiles + instrument), red "R",
   //     onEdit(laneId) — open the instrument editor on that lane's patch,
   //     onMixStart(laneId) / onMixChange(laneId, key, value) / onMixEnd(laneId)
   //       — Pan/Gain knob drag (key is 'pan' | 'gain'); bracket = one undo step.
@@ -83,6 +85,13 @@ export class TilePlayer {
       stripe.className = 'lane-stripe';
       stripe.style.background = color;
 
+      // Red "R": reset/clear this lane (tiles + instrument), far left of the head.
+      const resetBtn = document.createElement('button');
+      resetBtn.className = 'lane-reset';
+      resetBtn.textContent = 'R';
+      resetBtn.title = 'Reset this lane — clear its tiles and restore default instrument/mixer (undoable)';
+      resetBtn.onclick = () => this.cb.onResetLane(lane.id);
+
       const info = document.createElement('div');
       info.className = 'lane-info';
       const instr = document.createElement('span');
@@ -132,7 +141,7 @@ export class TilePlayer {
       const muteBtn = laneToggle('M', 'mute', lane.mute, 'Mute this lane', () => this.cb.onMute(lane.id));
       const soloBtn = laneToggle('S', 'solo', lane.solo, 'Solo this lane', () => this.cb.onSolo(lane.id));
       ms.append(muteBtn, soloBtn);
-      head.append(stripe, info, delayBtn, knobs, ms);
+      head.append(stripe, resetBtn, info, delayBtn, knobs, ms);
 
       const track = document.createElement('div');
       track.className = 'lane-track';
@@ -190,6 +199,25 @@ export class TilePlayer {
           name.textContent = t.name;
 
           el.append(cv, name);
+
+          // Per-tile transforms: translucent swaths across the bottom mark a
+          // transformed tile (the thumbnail itself stays the pattern's identity).
+          // Stacked bottom-up in application order; each ~1/3 of the tile, packed
+          // smaller (capped at 3/4 total) once there are 3+.
+          const transforms = t.transforms || [];
+          if (transforms.length) {
+            const frac = Math.min(1 / 3, 0.75 / transforms.length);
+            transforms.forEach((tf, idx) => {
+              const { kind, label } = transformKindLabel(tf);
+              const sw = document.createElement('div');
+              sw.className = 'tile-xform xf-' + kind;
+              sw.style.height = `${frac * 100}%`;
+              sw.style.bottom = `${idx * frac * 100}%`;
+              sw.textContent = label;
+              el.append(sw);
+            });
+          }
+
           el.addEventListener('pointerdown', (ev) => this.cb.onTileDown(t.id, ev));
           el.addEventListener('dblclick', () => this.cb.onOpen(t.name, t.id));
           track.append(el);
@@ -269,6 +297,14 @@ export class TilePlayer {
       }
     }
     return clone;
+  }
+
+  // Hit-test a viewport point to the tile id under it (for brush painting), or
+  // null. Children (thumbnail/name/swath) resolve up to their .tile.
+  tileAt(clientX, clientY) {
+    const el = document.elementFromPoint(clientX, clientY);
+    const tileEl = el && el.closest ? el.closest('.tile') : null;
+    return tileEl ? Number(tileEl.dataset.id) : null;
   }
 
   // Hit-test a viewport point to a drop target {laneId, start}, where start is

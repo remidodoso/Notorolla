@@ -56,7 +56,8 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 | [src/scheduler.js](src/scheduler.js) | lookahead scheduler, finite looping, per-cycle re-read (`onCycle`), mid-cycle tile reconciliation (`resync`) |
 | [src/pianoroll.js](src/pianoroll.js) | `PianoRoll` canvas render + playhead; per-note color/alpha |
 | [src/gridview.js](src/gridview.js) | `GridView` — grid editor (render + gestures + viewport + resize) |
-| [src/tileplayer.js](src/tileplayer.js) | `TilePlayer` — multi-lane tile rendering + interaction; lane heads (instrument/Edit, Pan/Gain knobs, M/S); beat **ruler + play-region markers** (`_buildRuler`/`drawRuler`) |
+| [src/tileplayer.js](src/tileplayer.js) | `TilePlayer` — multi-lane tile rendering + interaction; lane heads (instrument/Edit, Pan/Gain knobs, M/S); beat **ruler + play-region markers** (`_buildRuler`/`drawRuler`); per-tile transform swath; `tileAt` hit-test |
+| [src/transforms.js](src/transforms.js) | per-tile **nondestructive** pattern transforms (pure): v1 scalar/chromatic **transpose** — `transformDegree`, `setTileTranspose`, `findTranspose`, `normalizeTransforms`, `describeTranspose` |
 | [src/toolbar.js](src/toolbar.js) | grid toolbar (brush, pattern lifecycle, view toggles) |
 | [src/panes.js](src/panes.js) | reorderable vertical panes, order persisted |
 | [src/project.js](src/project.js) | versioned file envelope (`format`/`version`), migrate, save (download) / load (file read) helpers |
@@ -88,13 +89,20 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   start phase** (baked into per-context `PeriodicWave`s — Web Audio oscillators can't be re-phased,
   so identical saws would beat coherently; rotating each wave's harmonic phases decorrelates them).
   Detune spacing is **Szabo's irregular positions** (the JP-8000 reverse-engineering) and the side
-  saws **swell in** as Detune opens (center stays ~constant). **Ensemble** = an uneven slow pitch
-  LFO (depth scales with each saw's distance from center — outer saws swing most, center is an
-  anchor), **Speed** = LFO rate 0.1–5 Hz (log) with per-saw rate jitter so they drift
-  independently, **Stereo** = pan-by-detune spread (flat → left, sharp → right), **Per-saw LFO**
-  checkbox = per-saw LFOs (richer, ~13 osc/note) vs a shared 3-LFO pool (lighter) — an A/B for
-  sound/CPU. Into Vesperia's **resonant lowpass + filter envelope** (the brass swell) and a shared
-  ADSR. Levels scaled by `WENDEL_NORM` (tunable by ear). (Future controls pass: a Cubase-style
+  saws **swell in** as Detune opens (center stays ~constant). **Ensemble** = a slow chorus: an
+  uneven pitch LFO (outer saws swing most, center least, all move; up to 50 cents) **and** it
+  **lifts the side saws to an audible floor** so the drift is heard *at any Detune* (the fix for
+  "ensemble does nothing unless you detune" — at low detune the Szabo mix had silenced the very
+  saws being modulated). Ensemble 0 leaves the clean single-saw behavior intact. **Speed** = LFO
+  rate 0.1–5 Hz (log), ±15% rate spread; **shared 3-LFO pool** (each saw taps one) → **10 osc/note**.
+  **Stereo** = a **source-level M/S widen** (no M/S matrix — done on the saws, so it's cheap and
+  **mono-safe**): an even pan spread by index (flat → left, sharp → right, inner saws pushed out)
+  **plus** a center-saw (the on-tune "Mid") scoop **gated by side energy**, so width opens up where
+  there's detune/ensemble to back it and a near-mono sound is never hollowed out. **Pitch Atk / Pitch Time** = the synth-brass pitch "blip": the
+  note starts up to 200 cents sharp and **exp-decays to pitch** (τ = time/4) over a log 10 ms–1 s
+  window (scheduled on each saw's detune, summing with the ensemble LFO; 0 cents = off). Into
+  Vesperia's **resonant lowpass + filter envelope** (the brass swell) and a shared ADSR. Levels
+  scaled by `WENDEL_NORM` (tunable by ear). (Future controls pass: a Cubase-style
   combined Width+Pan panner, user-requested.)
 - **Multi-instrument registry** ([src/instrument.js](src/instrument.js)): each **kind** owns its
   defaults + `PARAMS` (editor metadata) + description; a patch carries a `kind` tag, the engine
@@ -265,6 +273,41 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   menu later). Each lane is an ordered set of positioned tile references.
 - Drag the grid's **grab handle** into a lane to drop a tile (a width-proportional
   thumbnail; note bars colored by duration; bordered in lane color; name centered).
+- **Fresh-lane instrument seeding**: dropping into a **fresh** lane (`lane.fresh` — brand-new or
+  just-reset, never used) sets that lane's instrument so the tile keeps sounding as it did — the
+  **grid's** patch when dropped from the grab handle, or the **source lane's** patch when a tile is
+  moved/copied in from another lane (a tile carries no patch — its lane does). A lane stops being
+  fresh once it gets a tile **or** its instrument is edited, so a lane you set up and later emptied
+  keeps its sound (it won't be re-seeded). `fresh` persists (optional; old saves default not-fresh).
+- **Reset / clear** (both undoable, no confirm): a red **"R"** at the far left of each lane head
+  **resets that lane** (clears its tiles + restores default instrument/mixer/delay/mute-solo, marks
+  it fresh; the lane stays in the stack), and a **"Reset player"** button (top-right of the tile
+  controls) returns the whole player to **two blank fresh lanes** with the play region cleared.
+  Reset undo restores the **instrument** too: arrangement-undo entries are tagged — a reset is a
+  `full` entry that restores each lane's patch from the snapshot, while normal entries keep
+  live-carrying the current patch (so a tile-move undo never reverts a separate sound edit).
+- **Per-tile transforms (nondestructive) — Transpose + Reverse brushes** ([src/transforms.js](src/transforms.js),
+  applied in `arrangementScore`). Transforms live on the **tile instance** as an **ordered list**,
+  never the pattern, so two tiles can share one pattern yet sound different and editing the pattern
+  still updates both (each re-applying its own transforms). Application is a **note-list pipeline**
+  (`applyTransforms`): **transpose** maps pitch (and re-resolves freq in the tile's tuning),
+  **reverse** retrogrades time — walked in list order (so ordering is honored once a time-op like
+  Rotate joins; transpose+reverse commute, so it doesn't matter yet). A **transform bar** under the
+  lanes holds the **Transpose** and **Reverse** brushes (mutually exclusive, **Esc** disarms): arm
+  one, then **click or click-drag over tiles** to paint it (drag paints, doesn't move). **Transpose**
+  = SET to the brush **Amount** (a second replaces it; 0 clears), with **Scale** = **Auto (from
+  tile)** or an explicit **Major/Minor-pent / Chromatic** override (root always the tile's, **tuning
+  never changed**; walks `stepInScale`). **Reverse** = toggle (the drag *anchor* decides on/off,
+  then that state paints across the sweep) and is **exactly clone-and-reverse** (retrograde within
+  the tile's full length, trailing rests included). Phase-1 policy: at most **one transpose + one
+  reverse** (multiples ignored — `normalizeTransforms` enforces last-transpose-wins + reverse
+  parity; full "minimal-set" reduction deferred). The tile's **thumbnail stays the pattern's
+  identity**; transforms show as **stacked translucent swaths** at the bottom (color-keyed:
+  transpose purple `+n`, reverse teal `◄`; each ~⅓ tall, packed ≤¾ total for 3+) and as ordered
+  removable **chips** in the bar when the tile is selected; the **roll shows the real transformed
+  notes**. Saved per-tile (`tile.transforms`, optional/backward-safe), **undoable** (carried through
+  `arrApply`), **copies carry cloned transforms**. Future Phase 2: append semantics + reorderable
+  chips + **Rotate** (the non-commuting case that forces real ordering UI); hover "tip" deferred.
 - Both lanes share **one horizontal time axis** (a single scale `tilePlayer.ppb`, one shared
   scroll, common origin), so tiles **align in time** across lanes. Tiles are **freely positioned**:
   each carries an explicit **`start` beat** (snapped to the 1/4-note grid = integer beats), so gaps

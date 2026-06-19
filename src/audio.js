@@ -68,11 +68,23 @@ const ZINDEL_MAX_FM_INDEX = 8;
 // WENDEL_NORM normalizes the summed saws (tunable by ear).
 const WENDEL_OFFSETS = [-1, -0.5716, -0.1774, 0, 0.1810, 0.5650, 0.9766];
 const WENDEL_MAX_DETUNE_CENTS = 50;
-const WENDEL_MAX_ENS_CENTS = 12;
+const WENDEL_MAX_ENS_CENTS = 50;  // outer-saw vibrato depth at Ensemble = 1
+const WENDEL_ENS_FLOOR = 0.3;     // min share of that depth for the center saw
+                                  //   (depth scales FLOOR..1 with |offset| — "less to center", not none)
+const WENDEL_ENS_JITTER = 0.15;   // ±fraction the per-saw LFO rates spread (decorrelation)
+// Ensemble lifts the side saws to at least this level (× Ensemble) regardless of
+// the Szabo detune-mix, so their slow LFO drift is an audible chorus even at low
+// Detune — the fix for "ensemble does nothing unless you detune".
+const WENDEL_ENS_SIDE_FLOOR = 0.4;
+// Source-level stereo width (an M/S move done on the saws, not the summed signal —
+// cheaper and mono-safe). Width spreads the saws across the field and attenuates
+// the center (on-tune = the Mid) up to this much, GATED by how much side energy
+// backs it, so a near-mono sound is never hollowed out.
+const WENDEL_SCOOP_MAX = 0.65;
 const WENDEL_NORM = 2.2;
 const WENDEL_SAW_POOL = 12;     // random-phase saw waves cached per context
 const WENDEL_SAW_HARMONICS = 64; // band-limited (the implementation anti-aliases)
-const WENDEL_SHARED_LFOS = 3;   // shared-pool size when Per-saw LFO is off
+const WENDEL_ENS_LFOS = 3;      // shared ensemble-LFO pool size (each saw taps one — keeps CPU down)
 const TWO_PI = Math.PI * 2;
 
 // Configure the master DynamicsCompressor as a near-transparent ceiling limiter:
@@ -569,20 +581,30 @@ function buildWendelhornVoice(ctx, dest, p, pitch, time, duration, velocity, fre
   tf.setTargetAtTime(baseCut, time + p.attack, FILTER_ENV_TAU);
 
   const waves = wendelSawWaves(ctx);
-  const cGain = wendelCenterGain(p.detune);
-  const sGain = wendelSideGain(p.detune);
   const ensembleOn = p.ensemble > 0.0005 && p.speed > 0;
+
+  // Per-saw levels. Side saws follow the Szabo swell, but Ensemble lifts them to a
+  // floor so the chorus is audible at any Detune. Width then scoops the center
+  // (the on-tune Mid) — but only as far as the side energy supports it (so a
+  // low-detune, low-ensemble sound stays centered, never hollowed).
+  const cGain = wendelCenterGain(p.detune);
+  const sGain = Math.max(wendelSideGain(p.detune), WENDEL_ENS_SIDE_FLOOR * p.ensemble);
+  const scoopGate = Math.min(1, sGain / Math.max(cGain, 1e-3));
+  const cGainWide = cGain * (1 - p.stereo * WENDEL_SCOOP_MAX * scoopGate);
+  const lastIdx = WENDEL_OFFSETS.length - 1;
 
   // Nodes to release when the voice ends (live only; offline ctx is discarded).
   const extra = [env, tone];
   const stopOscs = []; // every oscillator we start (saws + LFOs), to stop + clean
 
-  // Shared LFO pool (only when Per-saw LFO is off): a few decorrelated rates.
+  // A small shared pool of decorrelated LFOs (different rates + random phases);
+  // each saw taps one, so the ensemble shimmer stays lively without an oscillator
+  // per saw (7 saws + 3 LFOs/voice, not 7 + 7).
   let shared = null;
-  if (ensembleOn && !p.polyLFO) {
+  if (ensembleOn) {
     shared = [];
-    for (let j = 0; j < WENDEL_SHARED_LFOS; j++) {
-      const rate = p.speed * (1 + (j - (WENDEL_SHARED_LFOS - 1) / 2) * 0.06);
+    for (let j = 0; j < WENDEL_ENS_LFOS; j++) {
+      const rate = p.speed * (1 + (j - (WENDEL_ENS_LFOS - 1) / 2) * WENDEL_ENS_JITTER);
       const lfo = wendelLFO(ctx, rate, Math.random() * TWO_PI);
       lfo.start(time); lfo.stop(stop);
       shared.push(lfo); stopOscs.push(lfo); extra.push(lfo);
@@ -594,21 +616,23 @@ function buildWendelhornVoice(ctx, dest, p, pitch, time, duration, velocity, fre
     const osc = ctx.createOscillator();
     osc.setPeriodicWave(waves[Math.floor(Math.random() * waves.length)]); // random phase
     osc.frequency.value = f0;
-    osc.detune.value = off * WENDEL_MAX_DETUNE_CENTS * p.detune; // static spread (cents)
+    const staticDetune = off * WENDEL_MAX_DETUNE_CENTS * p.detune; // static spread (cents)
 
-    // Uneven ensemble vibrato: depth scales with |position|, so the center is an
-    // anchor and the outer saws swing most. Modulates the detune param in cents.
-    const depth = Math.abs(off) * WENDEL_MAX_ENS_CENTS * p.ensemble;
+    // Pitch attack (synth-brass blip): start `pitchAtk` cents sharp and exp-decay
+    // to the static detune over ~pitchAtkTime. Scheduled on the detune param so it
+    // sums with the ensemble LFO (a connected node). 0 cents = off.
+    if (p.pitchAtk > 0.01 && p.pitchAtkTime > 0) {
+      osc.detune.setValueAtTime(staticDetune + p.pitchAtk, time);
+      osc.detune.setTargetAtTime(staticDetune, time, p.pitchAtkTime / 4);
+    } else {
+      osc.detune.value = staticDetune;
+    }
+
+    // Uneven ensemble vibrato: depth scales FLOOR..1 with |position|, so every saw
+    // moves but the outer ones swing most and the center least. Modulates detune (cents).
+    const depth = (WENDEL_ENS_FLOOR + (1 - WENDEL_ENS_FLOOR) * Math.abs(off)) * WENDEL_MAX_ENS_CENTS * p.ensemble;
     if (ensembleOn && depth > 0) {
-      let lfo;
-      if (p.polyLFO) {
-        const rate = p.speed * (1 + (Math.random() * 2 - 1) * 0.06); // ±6% jitter
-        lfo = wendelLFO(ctx, rate, Math.random() * TWO_PI);
-        lfo.start(time); lfo.stop(stop);
-        stopOscs.push(lfo); extra.push(lfo);
-      } else {
-        lfo = shared[i % shared.length];
-      }
+      const lfo = shared[i % shared.length]; // tap one of the shared pool
       const dg = ctx.createGain();
       dg.gain.value = depth;
       lfo.connect(dg);
@@ -617,9 +641,11 @@ function buildWendelhornVoice(ctx, dest, p, pitch, time, duration, velocity, fre
     }
 
     const cg = ctx.createGain();
-    cg.gain.value = (isCenter ? cGain : sGain) / WENDEL_NORM;
+    cg.gain.value = (isCenter ? cGainWide : sGain) / WENDEL_NORM;
     const pan = ctx.createStereoPanner();
-    pan.pan.value = clamp(off * p.stereo, -1, 1); // flat → left, sharp → right
+    // Even spread by index (flat → left, sharp → right) so the inner saws don't
+    // bunch up at center — a wider image than panning by raw detune offset.
+    pan.pan.value = clamp(((i / lastIdx) * 2 - 1) * p.stereo, -1, 1);
 
     osc.connect(cg);
     cg.connect(pan);

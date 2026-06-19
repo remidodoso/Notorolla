@@ -12,6 +12,7 @@
 
 import { Pattern } from './grid.js';
 import { defaultPatch, normalizePatch } from './instrument.js';
+import { normalizeTransforms } from './transforms.js';
 import { defaultDelay, normalizeDelay } from './delay.js';
 
 export class PatternLibrary {
@@ -181,6 +182,32 @@ export class Arrangement {
     return lane;
   }
 
+  // Reset one lane to a blank slate, KEEPING it in the stack (removing lanes is a
+  // separate concern): empty its tiles and restore default instrument / mixer /
+  // delay / mute-solo, and mark it fresh so the next dropped tile re-seeds it.
+  resetLane(id) {
+    const lane = this.lane(id);
+    if (!lane) return;
+    lane.tiles = [];
+    lane.mute = false; lane.solo = false;
+    lane.gain = 1; lane.pan = 0;
+    lane.delay = defaultDelay();
+    lane.patch = defaultPatch();
+    lane.fresh = true;
+    if (this.selectedId != null && !this.allTiles().some((t) => t.id === this.selectedId)) this.selectedId = null;
+  }
+
+  // Reset the whole tile player to the factory state: two blank, fresh lanes and
+  // the play region back to the whole arrangement (start 0, no end marker). The
+  // tile-id counter (seq) keeps climbing so ids stay unique across the session.
+  resetPlayer() {
+    this.lanes = [newLane(0), newLane(1)];
+    this.activeLaneId = 0;
+    this.selectedId = null;
+    this.playStart = 0;
+    this.playEnd = null;
+  }
+
   // Mute and Solo are a per-lane tri-state {none | muted | soloed}: turning one
   // on clears the other for that lane. Across lanes there's no exclusivity (mute
   // both, solo both, etc. are all fine). Both persist with the project so it
@@ -243,7 +270,10 @@ export class Arrangement {
     const src = this.allTiles().find((t) => t.id === id);
     const to = this.lane(toLaneId);
     if (!src || !to) return null;
+    // A copy is a copy of the INSTANCE, so it carries the source's transforms
+    // (cloned, not shared) — same pattern reference, same per-tile transforms.
     const tile = { id: ++this.seq, name: src.name, start: 0 };
+    if (src.transforms) tile.transforms = src.transforms.map((t) => ({ ...t }));
     rippleInsertInto(to.tiles, tile, start, lenOf);
     return tile.id;
   }
@@ -254,11 +284,12 @@ export class Arrangement {
     return {
       lanes: this.lanes.map((l) => ({
         id: l.id,
-        tiles: l.tiles.map((t) => ({ id: t.id, name: t.name, start: t.start })),
+        tiles: l.tiles.map((t) => ({ id: t.id, name: t.name, start: t.start, transforms: t.transforms })),
         mute: !!l.mute, solo: !!l.solo,
         gain: l.gain, pan: l.pan, // mixer: linear volume (1 = 0 dB), pan −1..+1
         delay: l.delay, // per-lane delay insert
         patch: l.patch, // the lane's instrument settings
+        fresh: !!l.fresh, // never-used lane (adopts a dropped tile's instrument)
       })),
       seq: this.seq,
       activeLaneId: this.activeLaneId,
@@ -272,15 +303,16 @@ export class Arrangement {
     // single-lane format, migrated into lane 0) default to none / undefined start
     // (the loader derives gapless starts via ensureTileStarts) / the factory
     // patch (the caller may re-seed patch-less lanes from the old global patch).
-    const tile = (t) => ({ id: t.id, name: t.name, start: t.start });
+    const tile = (t) => ({ id: t.id, name: t.name, start: t.start, transforms: normalizeTransforms(t.transforms) });
     const lane = (l) => ({
       id: l.id, tiles: l.tiles.map(tile), mute: !!l.mute, solo: !!l.solo,
       gain: l.gain == null ? 1 : l.gain, pan: l.pan == null ? 0 : l.pan,
       delay: normalizeDelay(l.delay), patch: normalizePatch(l.patch),
+      fresh: !!l.fresh, // optional; old saves default not-fresh (won't auto-seed)
     });
     const lanes = o.lanes
       ? o.lanes.map(lane)
-      : [{ id: 0, tiles: (o.tiles || []).map(tile), mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), patch: defaultPatch() }, newLane(1)];
+      : [{ id: 0, tiles: (o.tiles || []).map(tile), mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), patch: defaultPatch(), fresh: false }, newLane(1)];
     const a = new Arrangement(lanes);
     a.seq = o.seq || 0;
     a.activeLaneId = o.activeLaneId ?? lanes[0].id;
@@ -290,7 +322,11 @@ export class Arrangement {
   }
 }
 
-function newLane(id) { return { id, tiles: [], mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), patch: defaultPatch() }; }
+// `fresh` marks a brand-new or just-reset lane (never used). A fresh lane adopts
+// the instrument of the first tile dropped into it (from the grid, or the source
+// lane on a cross-lane move); it stops being fresh once it gets a tile OR its
+// instrument is edited, so a lane you set up and later emptied keeps its sound.
+function newLane(id) { return { id, tiles: [], mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), patch: defaultPatch(), fresh: true }; }
 function sortLane(lane) { lane.tiles.sort((a, b) => a.start - b.start); }
 
 // --- tile positioning: rigid ripple --------------------------------------

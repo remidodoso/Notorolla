@@ -17,6 +17,7 @@ import { buildInstrumentPane } from './instrumentpane.js';
 import { normalizePatch, defaultPatch, clonePatch } from './instrument.js';
 import { normalizeDelay } from './delay.js';
 import { buildDelayEditor } from './delay.js';
+import { applyTransforms, setTileTranspose, setTileReverse, hasReverse, describeTransform, transformKindLabel, normalizeTransforms } from './transforms.js';
 import { openModal } from './modal.js';
 import { setupPanes } from './panes.js';
 import { VERSION, buildEnvelope, validate, migrate, defaultName, downloadJSON, downloadBytes, readFile } from './project.js';
@@ -190,9 +191,18 @@ function arrangementScore() {
       const p = library.patterns.get(tile.name);
       if (!p) continue;
       const s = p.toScore(state.bpm, state.articulation);
-      for (const n of s.notes) {
+      // Per-tile transforms (nondestructive): run the tile's ordered transform
+      // list over its note list (transpose maps pitch + re-resolves freq in the
+      // tile's tuning; reverse retrogrades within the tile length), then offset by
+      // tile.start.
+      const src = tile.transforms
+        ? applyTransforms(
+            s.notes.map((n) => ({ pitch: n.pitch, start: n.start, duration: n.duration, velocity: n.velocity, freq: n.freq })),
+            tile.transforms, { lengthBeats: s.lengthBeats, tuningId: p.tuningId, root: p.root })
+        : s.notes;
+      for (const n of src) {
         const nn = new Note(n.pitch, n.start + tile.start, n.duration, n.velocity);
-        nn.freq = n.freq; // carry each pattern's tuning-resolved frequency
+        nn.freq = n.freq;         // carry each pattern's tuning-resolved frequency
         nn.color = color;
         nn.alpha = alpha;
         nn.laneId = lane.id;      // routes the voice through this lane's gain bus
@@ -306,6 +316,7 @@ const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, 
   onMute: (laneId) => toggleLaneFlag('mute', laneId),
   onSolo: (laneId) => toggleLaneFlag('solo', laneId),
   onAddLane: () => addLane(),
+  onResetLane: (laneId) => resetLane(laneId),
   onEdit: (laneId) => editLane(laneId),
   onMixStart: () => onMixStart(),
   onMixChange: (laneId, key, value) => onMixChange(laneId, key, value),
@@ -366,11 +377,7 @@ function onMixChange(laneId, key, value) {
   else { lane.gain = value; engine.setLaneVolume(laneId, value, 0.01); }
 }
 function onMixEnd() {
-  if (mixBefore != null && arrSnap() !== mixBefore) { // a net change → one undo step
-    arrPast.push(mixBefore);
-    if (arrPast.length > HISTORY_LIMIT) arrPast.shift();
-    arrFuture.length = 0;
-  }
+  if (mixBefore != null) arrCommit(mixBefore); // a net change → one undo step
   mixBefore = null;
   persist(); // autosave + dirty (knobs already drove the audio live)
   updateTransportButtons(); // reflect the new arrangement-undo entry immediately
@@ -425,6 +432,8 @@ let tileDrag = null;   // { id, fromLaneId, preview } while a drag is active
 // listeners (so they survive the re-renders the preview triggers).
 function onTileDown(id, ev) {
   if (ev.button != null && ev.button !== 0) return;
+  if (brushMode === 'transpose') return onTransposePaint(id, ev); // armed brush → paint, not move/select
+  if (brushMode === 'reverse') return onReversePaint(id, ev);
   const startX = ev.clientX, startY = ev.clientY;
   let dragging = false;
 
@@ -474,15 +483,21 @@ function endTileDrag(e) {
   if (!preview) { refresh(); return; } // dropped off the lanes → cancel
   const copy = e.shiftKey;             // authoritative copy state at the drop
 
+  // Moving/copying a tile into a FRESH lane (brand-new / just-reset) seeds that
+  // lane's instrument from the SOURCE lane (a tile carries no patch — its lane
+  // does), so the tile keeps sounding the way it did. A lane that's been used
+  // keeps its own instrument.
+  const destLane = arrangement.lane(preview.toLaneId);
+  const seedFromSource = destLane && destLane.fresh && preview.toLaneId !== preview.fromLaneId;
+  const srcPatch = seedFromSource ? (arrangement.lane(preview.fromLaneId) || {}).patch : null;
+
   const before = arrSnap();
   const newId = copy
     ? arrangement.copyTile(preview.id, preview.toLaneId, preview.start, patternLen)
     : (arrangement.moveTile(preview.id, preview.toLaneId, preview.start, patternLen), preview.id);
-  if (arrSnap() !== before) {           // only a real change makes an undo entry
-    arrPast.push(before);
-    if (arrPast.length > HISTORY_LIMIT) arrPast.shift();
-    arrFuture.length = 0;
-  }
+  arrCommit(before);
+  if (srcPatch) destLane.patch = clonePatch(srcPatch); // adopt the source instrument
+  if (destLane) destLane.fresh = false;                // the lane now has a tile
   arrangement.activeLaneId = preview.toLaneId;
   arrangement.selectedId = newId;
   refresh();
@@ -504,12 +519,204 @@ function selectTile(id) {
   tilePlayer.setActiveLane(arrangement.activeLaneId);
   updateRollContent(); scrollRollToSelected();
   tileDeleteBtn.disabled = false;
+  refreshTransformBar();
   persist();
+}
+
+// --- transform brushes: paint per-tile transforms (Transpose, Reverse) --------
+//
+// Armed via the transform bar (one brush at a time). While a brush is armed, a
+// click / click-drag over tiles PAINTS it onto each instead of the normal
+// select/move: Transpose SETs the tile's transpose to the brush amount (a second
+// transpose replaces it; amount 0 clears); Reverse toggles the tile, with the drag
+// anchor deciding the on/off state that's then painted across the sweep. Transforms
+// are nondestructive (an ordered list applied in arrangementScore) and undoable.
+let brushMode = null;                                  // null | 'transpose' | 'reverse'
+const transposeOpts = { amount: 1, scaleId: 'auto' };  // persists across arming
+
+// Paint the transpose brush onto one tile. Scale 'auto' = the tile's own mask
+// (else the chosen mask); root is always the tile's.
+function paintTranspose(tid) {
+  const tile = arrangement.allTiles().find((t) => t.id === tid);
+  if (!tile) return;
+  const p = library.patterns.get(tile.name);
+  const root = p ? p.root : 0;
+  const scaleId = transposeOpts.scaleId === 'auto' ? (p ? p.scaleId : 'chromatic') : transposeOpts.scaleId;
+  setTileTranspose(tile, transposeOpts.amount, scaleId, root);
+}
+
+// A paint gesture (click or click-drag across tiles) = one undo step. `apply(tid)`
+// mutates one tile; it runs on the anchor and each tile the drag sweeps (once each).
+function paintGesture(startId, apply) {
+  const before = arrSnap();
+  const painted = new Set();
+  const touch = (tid) => {
+    if (tid == null || painted.has(tid)) return;
+    painted.add(tid);
+    apply(tid);
+    tilePlayer.render(); // show the swath(s) live as the sweep touches each tile
+  };
+  touch(startId);
+  const onMove = (e) => touch(tilePlayer.tileAt(e.clientX, e.clientY));
+  const onUp = () => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    arrCommit(before);
+    selectTile(startId); // reflect it in the transform bar + roll, persist
+  };
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+}
+
+function onTransposePaint(startId, ev) {
+  if (ev.button != null && ev.button !== 0) return;
+  paintGesture(startId, paintTranspose);
+}
+
+// Reverse: the anchor tile toggles to a new state, then that state is painted
+// across the whole sweep (so a drag sets them all the same, not flip-flopping).
+function onReversePaint(startId, ev) {
+  if (ev.button != null && ev.button !== 0) return;
+  const anchor = arrangement.allTiles().find((t) => t.id === startId);
+  const target = anchor ? !hasReverse(anchor.transforms) : true;
+  paintGesture(startId, (tid) => {
+    const tile = arrangement.allTiles().find((t) => t.id === tid);
+    if (tile) setTileReverse(tile, target);
+  });
+}
+
+// Arm/disarm a brush (mutually exclusive; clicking the armed one or Esc disarms).
+function setBrush(mode) {
+  brushMode = brushMode === mode ? null : mode;
+  tileLaneEl.classList.toggle('brush', !!brushMode);
+  refreshTransformBar();
+}
+function disarmBrush() { if (brushMode) setBrush(brushMode); }
+function bumpBrush(d) {
+  transposeOpts.amount = Math.max(-24, Math.min(24, transposeOpts.amount + d));
+  refreshTransformBar();
+}
+
+// Remove one transform from a tile (a chip's ✕), undoable.
+function removeTileTransform(id, kind) {
+  const tile = arrangement.allTiles().find((t) => t.id === id);
+  if (!tile) return;
+  const before = arrSnap();
+  if (kind === 'transpose') setTileTranspose(tile, 0);
+  else if (kind === 'reverse') setTileReverse(tile, false);
+  arrCommit(before);
+  refresh();
+}
+
+// Reset one lane to a blank slate (the red "R"): clear its tiles + restore the
+// default instrument / mixer / delay / mute-solo, and mark it fresh again. The
+// lane stays in the stack. Undoable as a `full` entry (so the instrument too).
+function resetLane(id) {
+  const before = arrSnap();
+  arrangement.resetLane(id);
+  arrCommit(before, true);
+  patchStash.delete(stashKey(id)); // forget stashed per-kind patches for this lane
+  applyLaneMix(0.012);  // gain/pan back to unity/center on the bus
+  applyLaneDelayAll();  // delay off → remove the insert
+  if (editTarget.laneId === id) editLane(id); // re-point the pane onto the new default patch
+  refresh();
+}
+
+// Reset the whole tile player ("Reset player"): back to two blank, fresh lanes
+// and the play region cleared. Undoable as a `full` entry.
+function resetPlayer() {
+  const before = arrSnap();
+  arrangement.resetPlayer();
+  arrCommit(before, true);
+  patchStash.clear();    // the old lanes are gone
+  engine.resetLanes();   // tear down every strip (delay tails / orphaned lanes)
+  editGrid();            // the edited lane may no longer exist → back to the grid
+  applyLaneMix(0);       // initialize the two fresh lanes' buses
+  applyLaneDelayAll();
+  refresh();
+}
+
+// The transform bar: the Transpose + Reverse brush toggles, Transpose's armed
+// controls (amount stepper + scale select), and the selected tile's ordered
+// transform chips (each clearable). One bar, two roles (tool palette + per-tile
+// readout). Built once; refreshTransformBar syncs state.
+const transformBarEl = document.getElementById('transformBar');
+let xbTransBtn, xbRevBtn, xbArmedEl, xbAmountEl, xbScaleSel, xbSelEl;
+
+function buildTransformBar() {
+  transformBarEl.innerHTML = '';
+  const mkBtn = (text, title, onclick) => { const b = document.createElement('button'); b.textContent = text; b.title = title; b.onclick = onclick; return b; };
+
+  xbTransBtn = document.createElement('button');
+  xbTransBtn.className = 'xb-brush xf-transpose';
+  xbTransBtn.textContent = 'Transpose';
+  xbTransBtn.title = 'Transpose brush — arm, then click or drag over tiles to transpose them (Esc disarms)';
+  xbTransBtn.onclick = () => setBrush('transpose');
+
+  // Transpose's controls (amount + scale), shown only when it's armed.
+  xbArmedEl = document.createElement('span');
+  xbArmedEl.className = 'xb-armed';
+  xbAmountEl = document.createElement('span');
+  xbAmountEl.className = 'xb-amt-val';
+  xbScaleSel = document.createElement('select');
+  xbScaleSel.className = 'xb-scale';
+  xbScaleSel.title = 'The scale the steps walk (Auto = each tile’s own mask)';
+  for (const [val, label] of [['auto', 'Auto (from tile)'], ['major-pent', 'Major pentatonic'], ['minor-pent', 'Minor pentatonic'], ['chromatic', 'Chromatic']]) {
+    const o = document.createElement('option'); o.value = val; o.textContent = label; xbScaleSel.append(o);
+  }
+  xbScaleSel.onchange = () => { transposeOpts.scaleId = xbScaleSel.value; };
+  xbArmedEl.append(mkBtn('−', 'Down one step', () => bumpBrush(-1)), xbAmountEl, mkBtn('+', 'Up one step', () => bumpBrush(1)), xbScaleSel);
+
+  xbRevBtn = document.createElement('button');
+  xbRevBtn.className = 'xb-brush xf-reverse';
+  xbRevBtn.textContent = '◄ Reverse';
+  xbRevBtn.title = 'Reverse brush — arm, then click or drag over tiles to reverse them (Esc disarms)';
+  xbRevBtn.onclick = () => setBrush('reverse');
+
+  xbSelEl = document.createElement('span');
+  xbSelEl.className = 'xb-sel';
+
+  transformBarEl.append(xbTransBtn, xbArmedEl, xbRevBtn, xbSelEl);
+  refreshTransformBar();
+}
+
+function refreshTransformBar() {
+  if (!xbTransBtn) return;
+  xbTransBtn.classList.toggle('active', brushMode === 'transpose');
+  xbRevBtn.classList.toggle('active', brushMode === 'reverse');
+  xbArmedEl.style.display = brushMode === 'transpose' ? '' : 'none';
+  xbAmountEl.textContent = (transposeOpts.amount > 0 ? '+' : '') + transposeOpts.amount;
+  xbScaleSel.value = transposeOpts.scaleId;
+
+  // The selected tile's transforms, as ordered removable chips.
+  xbSelEl.innerHTML = '';
+  const id = arrangement.selectedId;
+  const tile = id != null ? arrangement.allTiles().find((t) => t.id === id) : null;
+  const transforms = tile && tile.transforms ? tile.transforms : [];
+  if (transforms.length) {
+    for (const t of transforms) {
+      const { kind } = transformKindLabel(t);
+      const chip = document.createElement('span');
+      chip.className = 'xb-chip xf-' + kind;
+      chip.append(document.createTextNode(describeTransform(t) + ' '));
+      const x = document.createElement('button');
+      x.textContent = '✕'; x.title = 'Remove this transform';
+      x.onclick = () => removeTileTransform(id, kind);
+      chip.append(x);
+      xbSelEl.append(chip);
+    }
+  } else if (tile) {
+    const m = document.createElement('span');
+    m.className = 'xb-muted';
+    m.textContent = 'no transforms';
+    xbSelEl.append(m);
+  }
 }
 
 // Double-click: load the tile's pattern into the editor (by reference) but keep
 // the tile player active and the tile selected.
 function openTile(name, id) {
+  if (brushMode) return; // ignore opens while a brush is armed
   setActive('tiles');
   clearProposal();
   grid.clearSelection();
@@ -595,8 +802,12 @@ function editLane(laneId) {
 // Persist a patch edit: the grid patch is a workspace preference (its own key);
 // a lane patch is musical content, so it rides the arrangement autosave + dirty.
 function persistPatch() {
-  if (editTarget.laneId == null) safeSet(GRIDPATCH_KEY, JSON.stringify(gridPatch));
-  else persist();
+  if (editTarget.laneId == null) { safeSet(GRIDPATCH_KEY, JSON.stringify(gridPatch)); return; }
+  // A deliberately-edited instrument means the lane has been "used" — so a tile
+  // dropped in later won't auto-overwrite it (see lane.fresh).
+  const lane = arrangement.lane(editTarget.laneId);
+  if (lane) lane.fresh = false;
+  persist();
 }
 
 function copyPatch() {
@@ -729,22 +940,35 @@ function redo() {
 
 // --- arrangement undo / redo ------------------------------------------
 
-const arrPast = [];
+const arrPast = [];   // each entry: { snap, full } — see arrCommit
 const arrFuture = [];
 function arrSnap() { return JSON.stringify(arrangement.toJSON()); }
-function arrRecord() { arrPast.push(arrSnap()); if (arrPast.length > HISTORY_LIMIT) arrPast.shift(); arrFuture.length = 0; }
-function arrApply(json) {
+// Push a completed change. A `full` entry (lane / player reset) restores each
+// lane's PATCH from the snapshot on undo too; a normal entry live-carries the
+// current patch so a tile-move undo never reverts a separate sound edit.
+function arrCommit(before, full = false) {
+  if (arrSnap() === before) return; // no net change → no undo entry
+  arrPast.push({ snap: before, full });
+  if (arrPast.length > HISTORY_LIMIT) arrPast.shift();
+  arrFuture.length = 0;
+}
+function arrRecord() { arrPast.push({ snap: arrSnap(), full: false }); if (arrPast.length > HISTORY_LIMIT) arrPast.shift(); arrFuture.length = 0; }
+function arrApply(json, full = false) {
   const o = JSON.parse(json);
   // Instrument tweaks aren't part of tile undo/redo (the editor is a live panel,
-  // as the global patch was). Carry each lane's CURRENT patch across by id, so
-  // undoing a tile move never reverts a later sound edit; a lane reappearing on
-  // redo (after an addLane undo) takes its snapshot patch.
+  // as the global patch was). Normally carry each lane's CURRENT patch across by
+  // id, so undoing a tile move never reverts a later sound edit (a lane reappearing
+  // on redo takes its snapshot patch). A `full` entry — a lane/player reset, which
+  // changes the patch on purpose — restores the snapshot patch so it's undoable.
   const livePatch = new Map(arrangement.lanes.map((l) => [l.id, l.patch]));
   arrangement.lanes = o.lanes.map((l) => ({
-    id: l.id, tiles: l.tiles.map((t) => ({ id: t.id, name: t.name, start: t.start })), mute: !!l.mute, solo: !!l.solo,
+    id: l.id,
+    tiles: l.tiles.map((t) => ({ id: t.id, name: t.name, start: t.start, transforms: normalizeTransforms(t.transforms) })),
+    mute: !!l.mute, solo: !!l.solo,
     gain: l.gain == null ? 1 : l.gain, pan: l.pan == null ? 0 : l.pan, // mixer IS undoable
     delay: normalizeDelay(l.delay), // delay edits are undoable too
-    patch: livePatch.get(l.id) || normalizePatch(l.patch),
+    patch: full ? normalizePatch(l.patch) : (livePatch.get(l.id) || normalizePatch(l.patch)),
+    fresh: !!l.fresh,
   }));
   arrangement.seq = o.seq || 0;
   if (o.activeLaneId != null) arrangement.activeLaneId = o.activeLaneId;
@@ -756,18 +980,19 @@ function arrApply(json) {
   // If the editor was on a lane the undo/redo removed, drop back to the grid.
   if (editTarget && editTarget.laneId != null && !arrangement.lane(editTarget.laneId)) editGrid();
 }
-function arrUndo() { if (!arrPast.length) return; arrFuture.push(arrSnap()); arrApply(arrPast.pop()); refresh(); }
-function arrRedo() { if (!arrFuture.length) return; arrPast.push(arrSnap()); arrApply(arrFuture.pop()); refresh(); }
+function arrUndo() { if (!arrPast.length) return; const e = arrPast.pop(); arrFuture.push({ snap: arrSnap(), full: e.full }); arrApply(e.snap, e.full); refresh(); }
+function arrRedo() { if (!arrFuture.length) return; const e = arrFuture.pop(); arrPast.push({ snap: arrSnap(), full: e.full }); arrApply(e.snap, e.full); refresh(); }
 
 function appendCurrentTile(laneId) {
   arrRecord();
-  // Dropping into an EMPTY lane seeds it with the grid's instrument (the patch you
-  // were just auditioning), so the tile sounds the way it did in the grid. A lane
-  // that already has tiles keeps its established instrument. Clone so the lane's
-  // patch doesn't alias (and keep being edited by) the grid's.
+  // Dropping into a FRESH lane (brand-new / just-reset) seeds it with the grid's
+  // instrument (the patch you were just auditioning), so the tile sounds the way
+  // it did in the grid. A lane that's been used keeps its established instrument.
+  // Clone so the lane's patch doesn't alias (and keep being edited by) the grid's.
   const lane = arrangement.lane(laneId);
-  if (lane && lane.tiles.length === 0) lane.patch = clonePatch(gridPatch);
+  if (lane && lane.fresh) lane.patch = clonePatch(gridPatch);
   arrangement.append(laneId, library.current().name, patternLen);
+  if (lane) lane.fresh = false; // the lane now has a tile
   arrangement.activeLaneId = laneId;
   refresh();
 }
@@ -999,6 +1224,7 @@ function refresh() {
   updateSelectionTools();
   updateScaleControls();
   updateTransportButtons();
+  refreshTransformBar();
   persist();
 }
 
@@ -1340,6 +1566,7 @@ const gridName = document.getElementById('gridName');
 
 midiExportBtn.addEventListener('click', exportMidi);
 audioExportBtn.addEventListener('click', exportAudio);
+document.getElementById('resetPlayer').addEventListener('click', resetPlayer);
 
 let rafId = null;
 
@@ -1632,7 +1859,7 @@ window.addEventListener('keydown', (e) => {
   if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
   const k = e.key.toLowerCase();
 
-  if (e.key === 'Escape') { selectNone(); return; }
+  if (e.key === 'Escape') { if (brushMode) { disarmBrush(); return; } selectNone(); return; }
 
   if (mod && k === 'z') { // undo / shift = redo
     e.preventDefault();
@@ -1666,6 +1893,7 @@ ensureTileStarts(); // derive positions for tiles restored from an old gapless a
 grid.updateCursor();
 applyActiveHighlight();
 updateScaleStrip();
+buildTransformBar();
 if (arrangement.selectedId != null) tilePlayer.setSelected(arrangement.selectedId);
 refresh();
 

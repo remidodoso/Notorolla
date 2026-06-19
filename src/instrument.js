@@ -18,6 +18,7 @@ const C4 = 261.6255653;
 const secs = (v) => (v < 1 ? `${Math.round(v * 1000)} ms` : `${v.toFixed(2)} s`);
 const pct = (v) => `${Math.round(v * 100)}%`;
 const hz = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)} kHz` : `${Math.round(v)} Hz`);
+const cents = (v) => `${Math.round(v)} ¢`;
 
 // --- Vesperia: additive partials through a shared amplitude envelope and a
 // resonant lowpass with its own envelope + key tracking. -----------------------
@@ -139,7 +140,6 @@ const WENDELHORN_DEFAULTS = {
   ensemble: 0.4,
   speed: 4.5,
   stereo: 0.3,
-  polyLFO: true,
 
   // Filter (brass): the envelope opens the cutoff on attack then settles (blat).
   cutoff: 2200,
@@ -152,6 +152,11 @@ const WENDELHORN_DEFAULTS = {
   decay: 0.3,
   sustain: 0.85,
   release: 0.12,
+
+  // Pitch attack: the synth-brass "blip" — start this many cents sharp and
+  // exp-decay to pitch over pitchAtkTime. 0 cents = off.
+  pitchAtk: 25,
+  pitchAtkTime: 0.08,
 };
 
 const WENDELHORN_PARAMS = [
@@ -163,8 +168,11 @@ const WENDELHORN_PARAMS = [
     title: 'Rate of the ensemble modulation. Each saw is jittered slightly so they drift independently.' },
   { key: 'stereo', group: 'Ensemble', label: 'Stereo', min: 0, max: 1, fmt: pct,
     title: 'Spreads the saws across the stereo field by detune (flat → left, sharp → right).' },
-  { key: 'polyLFO', group: 'Ensemble', label: 'Per-saw LFO', bool: true, fmt: (v) => (v ? 'per-saw' : 'shared'),
-    title: 'Per-saw LFOs (richer, more oscillators) vs a shared 3-LFO pool (lighter). Try both for sound / CPU.' },
+
+  { key: 'pitchAtk', group: 'Pitch', label: 'Pitch Atk', min: 0, max: 200, fmt: cents,
+    title: 'Synth-brass pitch blip: the note starts this many cents sharp and decays to pitch. 0 = off.' },
+  { key: 'pitchAtkTime', group: 'Pitch', label: 'Pitch Time', min: 0.01, max: 1, log: true, fmt: secs,
+    title: 'How long the pitch blip takes to settle (exponential decay).' },
 
   { key: 'cutoff', group: 'Filter', label: 'Cutoff', min: 120, max: 14000, log: true, fmt: hz,
     title: 'Lowpass cutoff (base, before key tracking).' },
