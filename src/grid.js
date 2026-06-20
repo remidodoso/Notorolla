@@ -1,15 +1,18 @@
 // grid.js — the looping grid pattern model (mono mode).
 //
-// Twelve columns laid left-to-right in time. Each column holds exactly one
-// thing: a note (a pitch "degree", optionally accented) or a rest (a cosmetic
-// placeholder that still consumes its duration). Pitch is stored as an absolute
-// degree (see tuning.js), NOT a screen row, so resizing/scrolling the visible
-// range never loses notes.
+// Columns laid left-to-right in time. Each column holds exactly one thing: a note
+// (a pitch "degree", optionally accented) or a rest (a cosmetic placeholder that
+// still consumes its duration). Pitch is stored as an absolute degree (see
+// tuning.js), NOT a screen row, so resizing/scrolling the visible range never loses
+// notes. The COLUMN COUNT is per-pattern (= columns.length, persisted with the
+// pattern); a fresh pattern starts with DEFAULT_COLS and can be resized in [MIN,MAX].
 
 import { Note, Score } from './model.js';
 import { tuningFreq } from './tuning.js';
 
-export const COLS = 12;
+export const DEFAULT_COLS = 12; // columns a fresh pattern starts with
+export const MIN_COLS = 1;
+export const MAX_COLS = 48;
 export const BASE_PITCH = 60; // C4 — where the default viewport sits
 
 // Note lengths, in beats. 3/8 is a dotted quarter, 3/16 a dotted eighth. 1/16 and
@@ -70,14 +73,14 @@ export class Pattern {
     this.root = 0;
   }
 
-  // A blank pattern: twelve quarter-rests climbing the diagonal (col i one
-  // degree higher), C4 up to B4 — looks good, and reads as empty (no notes).
-  static initial(name = 'A') {
-    const cols = [];
-    for (let i = 0; i < COLS; i++) {
-      cols.push({ durIndex: DEFAULT_DUR, isRest: true, degree: BASE_PITCH + i, accent: false });
+  // A blank pattern: `cols` quarter-rests climbing the diagonal (col i one degree
+  // higher) from C4 — looks good, and reads as empty (no notes).
+  static initial(name = 'A', cols = DEFAULT_COLS) {
+    const out = [];
+    for (let i = 0; i < cols; i++) {
+      out.push({ durIndex: DEFAULT_DUR, isRest: true, degree: BASE_PITCH + i, accent: false });
     }
-    return new Pattern(cols, name);
+    return new Pattern(out, name);
   }
 
   // No notes (rests only) — used to decide whether a floating pattern is worth

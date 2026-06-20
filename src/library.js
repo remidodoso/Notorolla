@@ -14,6 +14,7 @@ import { Pattern } from './grid.js';
 import { defaultPatch, normalizePatch } from './instrument.js';
 import { normalizeTransforms } from './transforms.js';
 import { defaultDelay, normalizeDelay } from './delay.js';
+import { defaultChorus, normalizeChorus } from './chorus.js';
 
 export class PatternLibrary {
   // isReferenced(name) -> bool, supplied by the arrangement.
@@ -75,8 +76,9 @@ export class PatternLibrary {
 
   newPattern() {
     if (!this.canCreate()) return null;
+    const cols = this.current() ? this.current().columns.length : undefined; // inherit the working width
     this._leaveCurrent();
-    const p = this._add(Pattern.initial(this._mint()));
+    const p = this._add(Pattern.initial(this._mint(), cols));
     this.currentName = p.name;
     return p;
   }
@@ -109,10 +111,11 @@ export class PatternLibrary {
     return this.current();
   }
 
-  // Empty the current pattern in place (so referencing tiles empty too).
+  // Empty the current pattern in place (so referencing tiles empty too). Keeps the
+  // pattern's own column count (clearing a 16-wide pattern leaves it 16 wide).
   clearCurrent() {
     const c = this.current();
-    c.columns = Pattern.initial(c.name).columns;
+    c.columns = Pattern.initial(c.name, c.columns.length).columns;
   }
 
   toJSON() {
@@ -192,6 +195,7 @@ export class Arrangement {
     lane.mute = false; lane.solo = false;
     lane.gain = 1; lane.pan = 0;
     lane.delay = defaultDelay();
+    lane.chorus = defaultChorus();
     lane.patch = defaultPatch();
     lane.fresh = true;
     if (this.selectedId != null && !this.allTiles().some((t) => t.id === this.selectedId)) this.selectedId = null;
@@ -288,6 +292,7 @@ export class Arrangement {
         mute: !!l.mute, solo: !!l.solo,
         gain: l.gain, pan: l.pan, // mixer: linear volume (1 = 0 dB), pan −1..+1
         delay: l.delay, // per-lane delay insert
+        chorus: l.chorus, // per-lane Juno chorus insert
         patch: l.patch, // the lane's instrument settings
         fresh: !!l.fresh, // never-used lane (adopts a dropped tile's instrument)
       })),
@@ -307,12 +312,12 @@ export class Arrangement {
     const lane = (l) => ({
       id: l.id, tiles: l.tiles.map(tile), mute: !!l.mute, solo: !!l.solo,
       gain: l.gain == null ? 1 : l.gain, pan: l.pan == null ? 0 : l.pan,
-      delay: normalizeDelay(l.delay), patch: normalizePatch(l.patch),
+      delay: normalizeDelay(l.delay), chorus: normalizeChorus(l.chorus), patch: normalizePatch(l.patch),
       fresh: !!l.fresh, // optional; old saves default not-fresh (won't auto-seed)
     });
     const lanes = o.lanes
       ? o.lanes.map(lane)
-      : [{ id: 0, tiles: (o.tiles || []).map(tile), mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), patch: defaultPatch(), fresh: false }, newLane(1)];
+      : [{ id: 0, tiles: (o.tiles || []).map(tile), mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), chorus: defaultChorus(), patch: defaultPatch(), fresh: false }, newLane(1)];
     const a = new Arrangement(lanes);
     a.seq = o.seq || 0;
     a.activeLaneId = o.activeLaneId ?? lanes[0].id;
@@ -326,7 +331,7 @@ export class Arrangement {
 // the instrument of the first tile dropped into it (from the grid, or the source
 // lane on a cross-lane move); it stops being fresh once it gets a tile OR its
 // instrument is edited, so a lane you set up and later emptied keeps its sound.
-function newLane(id) { return { id, tiles: [], mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), patch: defaultPatch(), fresh: true }; }
+function newLane(id) { return { id, tiles: [], mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), chorus: defaultChorus(), patch: defaultPatch(), fresh: true }; }
 function sortLane(lane) { lane.tiles.sort((a, b) => a.start - b.start); }
 
 // --- tile positioning: rigid ripple --------------------------------------

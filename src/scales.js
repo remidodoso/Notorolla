@@ -1,34 +1,57 @@
-// scales.js — scale "masks": a chosen subset of the 12 pitch-classes, used to
+// scales.js — scale "masks": a chosen subset of the pitch-classes, used to
 // highlight in-scale rows and snap edits. A mask is independent of tuning — it's
 // about *which* degrees you want, not how they sound. Pentatonic-over-12-ET and
 // pentatonic-over-JI are the same mask on different tunings.
 //
 // pcs are pitch-classes relative to the scale's root (0). A pattern stores a
-// `root` (0..11) that rotates the mask onto any starting note.
+// `root` that rotates the mask onto any starting note. The modulus is the tuning's
+// EDO (degrees per octave) — passed in as `edo` (default 12); a 16-ET mask runs the
+// same logic with edo = 16.
 
+// Each mask is tagged with the EDO it belongs to, so the picker can show only the
+// scales valid for the pattern's tuning. `chromatic` is universal (edo: null) — it
+// means "every degree is in scale" regardless of EDO (it's special-cased below and
+// never consults its pcs). The 16-ET masks are Mavila: a chain of the flat ~675¢
+// fifth (9 steps) gives the anti-diatonic Mavila[7] (2 2 2 3 2 2 3) and its
+// pentatonic — the natural xen "diatonic" of 16-ET.
 export const SCALES = [
-  { id: 'chromatic',  name: 'Chromatic',          pcs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },
-  { id: 'major-pent', name: 'Major pentatonic',   pcs: [0, 2, 4, 7, 9] },
-  { id: 'minor-pent', name: 'Minor pentatonic',   pcs: [0, 3, 5, 7, 10] },
+  { id: 'chromatic',   name: 'Chromatic',         edo: null, pcs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },
+  { id: 'major-pent',  name: 'Major pentatonic',  edo: 12,   pcs: [0, 2, 4, 7, 9] },
+  { id: 'minor-pent',  name: 'Minor pentatonic',  edo: 12,   pcs: [0, 3, 5, 7, 10] },
+  { id: 'mavila7',     name: 'Mavila (7)',        edo: 16,   pcs: [0, 2, 4, 6, 9, 11, 13] },
+  { id: 'mavila-pent', name: 'Mavila pentatonic', edo: 16,   pcs: [0, 2, 4, 9, 11] },
 ];
 
 export function scaleById(id) {
   return SCALES.find((s) => s.id === id) || SCALES[0];
 }
 
-// Is `degree` (absolute) a member of `scaleId` rooted at `root`?
-export function inScale(scaleId, root, degree) {
+// The scales valid for an `edo`: chromatic (universal) plus the masks tagged with
+// that EDO. Used to populate the picker for the pattern's tuning.
+export function scalesFor(edo) {
+  return SCALES.filter((s) => s.edo == null || s.edo === edo);
+}
+
+// Is `scaleId` a valid mask for this `edo`? (So switching tuning can drop a mask
+// that no longer applies, back to chromatic.)
+export function scaleValidForEdo(scaleId, edo) {
+  return scalesFor(edo).some((s) => s.id === scaleId);
+}
+
+// Is `degree` (absolute) a member of `scaleId` rooted at `root`, in an `edo`-tone
+// octave?
+export function inScale(scaleId, root, degree, edo = 12) {
   if (scaleId === 'chromatic') return true;
-  const pc = (((degree - root) % 12) + 12) % 12;
+  const pc = (((degree - root) % edo) + edo) % edo;
   return scaleById(scaleId).pcs.includes(pc);
 }
 
 // Nearest in-scale degree to `degree` (ties → the lower). Identity for chromatic.
-export function nearestInScale(scaleId, root, degree) {
+export function nearestInScale(scaleId, root, degree, edo = 12) {
   if (scaleId === 'chromatic') return degree;
-  for (let r = 0; r < 12; r++) {
-    if (inScale(scaleId, root, degree - r)) return degree - r;
-    if (inScale(scaleId, root, degree + r)) return degree + r;
+  for (let r = 0; r < edo; r++) {
+    if (inScale(scaleId, root, degree - r, edo)) return degree - r;
+    if (inScale(scaleId, root, degree + r, edo)) return degree + r;
   }
   return degree;
 }
@@ -37,10 +60,10 @@ export function nearestInScale(scaleId, root, degree) {
 // — i.e. a scale step. For chromatic this is just degree ± 1 (every degree is
 // in-scale = a chromatic step). An off-scale note lands on the first mask member
 // past it in that direction (so it snaps onto the scale as it moves).
-export function stepInScale(scaleId, root, degree, dir) {
+export function stepInScale(scaleId, root, degree, dir, edo = 12) {
   const step = dir > 0 ? 1 : -1;
-  for (let d = degree + step; Math.abs(d - degree) <= 24; d += step) {
-    if (inScale(scaleId, root, d)) return d;
+  for (let d = degree + step; Math.abs(d - degree) <= 2 * edo; d += step) {
+    if (inScale(scaleId, root, d, edo)) return d;
   }
   return degree + step; // unreachable for the defined masks; degenerate fallback
 }

@@ -92,7 +92,7 @@ export function buildInstrumentPane(containerEl, cb) {
         cols.set(spec.group, col);
       }
       if (spec.bar) barRows.get(spec.group).append(barCell(spec));
-      else cols.get(spec.group).append(spec.bool ? boolRow(spec) : sliderRow(spec));
+      else cols.get(spec.group).append(spec.bool ? boolRow(spec) : spec.sel ? selRow(spec) : sliderRow(spec));
     }
     builtKind = kind;
   }
@@ -128,6 +128,27 @@ export function buildInstrumentPane(containerEl, cb) {
     bind(spec, input, valEl);
     cell.append(valEl, input, name);
     return cell;
+  }
+
+  // A dropdown row (an enum param, e.g. Tervik's Algorithm): label · select. The
+  // select itself shows the chosen option, so there's no separate value readout.
+  function selRow(spec) {
+    const row = document.createElement('label');
+    row.className = 'instr-row';
+    row.title = spec.title || '';
+    const name = document.createElement('span');
+    name.className = 'instr-label';
+    name.textContent = spec.label;
+    const input = document.createElement('select');
+    input.className = 'instr-sel';
+    for (const o of spec.options) {
+      const opt = document.createElement('option');
+      opt.value = o.id; opt.textContent = o.label;
+      input.append(opt);
+    }
+    bind(spec, input, null);
+    row.append(name, input);
+    return row;
   }
 
   // A checkbox row (a boolean param): label · checkbox · state text.
@@ -166,6 +187,12 @@ export function buildInstrumentPane(containerEl, cb) {
         valEl.textContent = spec.fmt(input.checked);
         cb.onChange();
       });
+    } else if (spec.sel) {
+      input.addEventListener('change', () => {
+        if (!patch) return;
+        patch[spec.key] = input.value;
+        cb.onChange();
+      });
     } else {
       input.addEventListener('input', () => {
         if (!patch) return;
@@ -186,6 +213,8 @@ export function buildInstrumentPane(containerEl, cb) {
       if (spec.bool) {
         input.checked = !!patch[spec.key];
         valEl.textContent = spec.fmt(!!patch[spec.key]);
+      } else if (spec.sel) {
+        input.value = patch[spec.key];
       } else {
         input.value = Math.round(toPos(spec, patch[spec.key]) * 1000);
         valEl.textContent = spec.fmt(patch[spec.key]);

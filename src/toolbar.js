@@ -5,7 +5,7 @@
 // and never feed back here. Also hosts the Audition, Grid/Stretch, and cursor
 // toggles. Mutates the shared `state`; calls onChange(what) after any change.
 
-import { DURATIONS, PALETTE, DUR_ORDER } from './grid.js';
+import { DURATIONS, PALETTE, DUR_ORDER, MIN_COLS, MAX_COLS } from './grid.js';
 import { TUNING_LIST } from './tuning.js';
 import { SCALES } from './scales.js';
 
@@ -82,13 +82,12 @@ export function buildToolbar(el, state, onChange) {
   const properBtn = button('Proper');
   properBtn.title = 'Only complete triadulations (every remaining pitch filled by a triad)';
   properBtn.onclick = () => { state.proper = !state.proper; refresh(); onChange('proper'); };
-  const tradBtn = button('trad');
-  tradBtn.title = 'Build triadulations from traditional triads (major / minor / diminished / augmented)';
-  tradBtn.onclick = () => { state.trad = !state.trad; refresh(); onChange('trad'); };
-  const susBtn = button('sus');
-  susBtn.title = 'Build triadulations from suspended chords (sus2 / sus4 — the same set)';
-  susBtn.onclick = () => { state.sus = !state.sus; refresh(); onChange('sus'); };
-  el.append(triadBtn, confirmBtn, properBtn, tradBtn, susBtn);
+  // The chord-family toggles are rebuilt per tuning (the families a tuning offers —
+  // trad/sus in 12-ET, septimal in 16-ET) via setFamilyButtons; state.families is a
+  // map of enabled family ids.
+  const familyBox = document.createElement('span');
+  familyBox.className = 'tb-families';
+  el.append(triadBtn, confirmBtn, properBtn, familyBox);
 
   // Permute tools, acting on the grid's current selection.
   const permuteLabel = label('Permute');
@@ -157,6 +156,24 @@ export function buildToolbar(el, state, onChange) {
     el.append(b);
   });
 
+  // Per-pattern column count: a "Cols  − N +" stepper (the pattern's own width).
+  el.append(sep(), label('Cols'));
+  const colsDec = button('−');
+  colsDec.title = 'Remove the last column from this pattern';
+  colsDec.onclick = () => onChange('colsDec');
+  const colsVal = document.createElement('span');
+  colsVal.className = 'tb-cols-val';
+  const colsInc = button('+');
+  colsInc.title = 'Add a column to this pattern';
+  colsInc.onclick = () => onChange('colsInc');
+  el.append(colsDec, colsVal, colsInc);
+  // Reflect the current pattern's column count, disabling at the limits.
+  function setCols(n) {
+    colsVal.textContent = String(n);
+    colsDec.disabled = n <= MIN_COLS;
+    colsInc.disabled = n >= MAX_COLS;
+  }
+
   el.append(sep(), label('Cursor'));
   [['Dot', 'dot'], ['Glyph', 'glyph']].forEach(([t, v]) => {
     const b = button(t);
@@ -174,6 +191,40 @@ export function buildToolbar(el, state, onChange) {
   el.append(sep(), clearBtn);
 
   // Sync the active highlights to the current state.
+  // Rebuild a <select>'s options ({value,label}[]), keeping the current value if
+  // it's still present. Used to retune the root + scale pickers when the tuning's
+  // EDO changes (12 letter roots / 16 hex roots; 12-ET masks / 16-ET Mavila masks).
+  function setSelectOptions(sel, items) {
+    const prev = sel.value;
+    sel.innerHTML = '';
+    for (const o of items) {
+      const opt = document.createElement('option');
+      opt.value = o.value; opt.textContent = o.label;
+      sel.append(opt);
+    }
+    if (items.some((o) => o.value === prev)) sel.value = prev;
+  }
+  const setRootOptions = (items) => setSelectOptions(rootSel, items);
+  const setScaleOptions = (items) => setSelectOptions(scaleSel, items);
+
+  // Rebuild the chord-family toggle buttons for the current tuning. `items` =
+  // [{ id, label, title }]; each toggles state.families[id] and re-triadulates.
+  function setFamilyButtons(items) {
+    familyBox.innerHTML = '';
+    for (const it of items) {
+      const b = button(it.label);
+      b._family = it.id;
+      if (it.title) b.title = it.title;
+      b.classList.toggle('active', !!state.families[it.id]);
+      b.onclick = () => {
+        state.families[it.id] = !state.families[it.id];
+        b.classList.toggle('active', !!state.families[it.id]);
+        onChange('family');
+      };
+      familyBox.append(b);
+    }
+  }
+
   function refresh() {
     durBtns.forEach((b) => b.classList.toggle('active', state.brush.durIndex === b._dur));
     artBtns.forEach((b) => b.classList.toggle('active', b._accent === state.brush.accent));
@@ -183,11 +234,10 @@ export function buildToolbar(el, state, onChange) {
     hl.classList.toggle('active', state.highlightRows);
     triadsBtn.classList.toggle('active', state.showTriads);
     properBtn.classList.toggle('active', state.proper);
-    tradBtn.classList.toggle('active', state.trad);
-    susBtn.classList.toggle('active', state.sus);
+    for (const b of familyBox.children) b.classList.toggle('active', !!state.families[b._family]);
   }
   refresh();
-  return { refresh, grabHandle, newBtn, cloneBtn, undoBtn, redoBtn, clearBtn, triadBtn, confirmBtn, properBtn, tradBtn, susBtn, rotateBtn, reverseBtn, sortAscBtn, sortDescBtn, shuffleBtn, shuffleNoRepBtn, transUpBtn, transDownBtn, tuningSel, scaleSel, rootSel };
+  return { refresh, setRootOptions, setScaleOptions, setFamilyButtons, setCols, grabHandle, newBtn, cloneBtn, undoBtn, redoBtn, clearBtn, triadBtn, confirmBtn, properBtn, rotateBtn, reverseBtn, sortAscBtn, sortDescBtn, shuffleBtn, shuffleNoRepBtn, transUpBtn, transDownBtn, tuningSel, scaleSel, rootSel };
 }
 
 function button(text) {

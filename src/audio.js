@@ -87,6 +87,21 @@ const WENDEL_SAW_HARMONICS = 64; // band-limited (the implementation anti-aliase
 const WENDEL_ENS_LFOS = 3;      // shared ensemble-LFO pool size (each saw taps one — keeps CPU down)
 const TWO_PI = Math.PI * 2;
 
+// Tervik (3-op FM). Op 0 (= "Op 1" in the UI) is always the final carrier and its
+// ADSR is the reference/amp envelope. routes[i] for op i: -1 = carrier (to output),
+// else the index of the op whose frequency this op modulates. A modulator's depth =
+// index × its own frequency (pitch-constant brightness, like Zindel), where index =
+// Level × TERVIK_MAX_INDEX. TERVIK_NORM normalizes the summed carriers (tune by ear).
+const TERVIK_MAX_INDEX = 10;
+const TERVIK_NORM = 1.0;
+const TERVIK_FB_HARMONICS = 24; // band-limited saw partials blended in by Feedback
+const TERVIK_ALGOS = {
+  stack:    [-1, 0, 1],   // Op3 → Op2 → Op1
+  y:        [-1, 0, 0],   // (Op2 + Op3) → Op1
+  pair:     [-1, -1, 1],  // Op3 → Op2 ; Op1
+  parallel: [-1, -1, -1], // Op1, Op2, Op3 all carriers
+};
+
 // Configure the master DynamicsCompressor as a near-transparent ceiling limiter:
 // a high threshold (so it does nothing at normal levels — no always-on
 // compression), a high ratio + fast attack + short release so it only holds
@@ -119,6 +134,9 @@ export class AudioEngine {
     // Resolve a lane's delay insert config { on, mode, timeSec, wet, feedback }
     // (timeSec already tempo-resolved by main). { on:false } = no delay.
     this.laneDelay = () => ({ on: false });
+    // Resolve a lane's chorus insert config { on, mode } (mode = Juno I/II/I+II;
+    // rate/depth are fixed presets in buildChorusInsert). { on:false } = no chorus.
+    this.laneChorus = () => ({ on: false });
     // The fallback instrument patch (factory Vesperia). Real playback resolves
     // the patch PER LANE via patchFor: each arrangement lane owns its own patch,
     // and un-laned sound (grid audition) gets the grid/neutral patch. main.js
@@ -130,10 +148,12 @@ export class AudioEngine {
   }
 
   // The lane's mixer strip, created lazily and initialized from the resolvers:
-  //   volume -> panner -> [delay insert] -> gate(mute) -> master
-  // Pan is BEFORE the delay (so ping-pong's hard-L/R isn't re-panned) and the
-  // mute gate is LAST (so mute is instant, yet the delay keeps running while
-  // muted and unmute reveals its tail). null laneId is handled by laneBus.
+  //   volume -> panner -> [chorus insert] -> [delay insert] -> gate(mute) -> master
+  // Pan is BEFORE the inserts (so ping-pong's hard-L/R and the chorus's stereo
+  // aren't re-panned) and the mute gate is LAST (so mute is instant, yet the
+  // inserts keep running while muted and unmute reveals their tails). The inserts
+  // are an ordered chain (chorus then delay); _relink rebuilds the edges between
+  // the panner, whichever inserts are active, and the gate. null laneId → laneBus.
   laneStrip(laneId) {
     let s = this.laneStrips.get(laneId);
     if (!s) {
@@ -142,20 +162,25 @@ export class AudioEngine {
       const panner = this.ctx.createStereoPanner(); panner.pan.value = m.pan;
       const gate = this.ctx.createGain(); gate.gain.value = 1;
       volume.connect(panner); panner.connect(gate); gate.connect(this.master);
-      s = { volume, panner, gate, delay: null, delayMode: null };
+      s = { volume, panner, gate, chorus: null, chorusMode: null, delay: null, delayMode: null };
       this.laneStrips.set(laneId, s);
+      const ch = this.laneChorus(laneId);
+      if (ch && ch.on) { s.chorus = buildChorusInsert(this.ctx, ch.mode); s.chorusMode = ch.mode; }
       const cfg = this.laneDelay(laneId);
-      if (cfg && cfg.on) { this._insertDelay(s, cfg); s.delay.setTime(cfg.timeSec); s.delay.setWet(cfg.wet); s.delay.setFeedback(cfg.feedback); }
+      if (cfg && cfg.on) { s.delay = buildDelayInsert(this.ctx, cfg.mode); s.delayMode = cfg.mode; s.delay.setTime(cfg.timeSec); s.delay.setWet(cfg.wet); s.delay.setFeedback(cfg.feedback); }
+      if (s.chorus || s.delay) this._relink(s);
     }
     return s;
   }
 
   // Tear down every per-lane strip (on project load / New Project) so they're
-  // rebuilt fresh from the new arrangement — no stale delay inserts (whose
-  // feedback can keep ringing with no input), gains/pans, or orphaned strips for
-  // lanes that no longer exist. Strips rebuild lazily on the next note/apply.
+  // rebuilt fresh from the new arrangement — no stale inserts (a delay's feedback
+  // can keep ringing, a chorus's LFOs keep sweeping, with no input), gains/pans,
+  // or orphaned strips for lanes that no longer exist. Strips rebuild lazily on
+  // the next note/apply.
   resetLanes() {
     for (const s of this.laneStrips.values()) {
+      if (s.chorus) { try { s.chorus.dispose(); } catch (e) { /* already gone */ } }
       if (s.delay) { try { s.delay.dispose(); } catch (e) { /* already gone */ } }
       s.volume.disconnect();
       s.panner.disconnect();
@@ -164,40 +189,53 @@ export class AudioEngine {
     this.laneStrips.clear();
   }
 
-  // Splice a freshly built delay insert between the panner and the gate.
-  _insertDelay(strip, cfg) {
+  // Rebuild the insert-chain edges: panner -> [chorus] -> [delay] -> gate, skipping
+  // whichever inserts are absent. Only the edges between neighbors are touched; the
+  // inserts' internal nodes (delay buffers/feedback, chorus LFOs) keep running, so
+  // re-linking on one insert's change doesn't disturb the other's tail.
+  _relink(strip) {
     strip.panner.disconnect();
-    const ins = buildDelayInsert(this.ctx, cfg.mode);
-    strip.panner.connect(ins.input);
-    ins.output.connect(strip.gate);
-    strip.delay = ins;
-    strip.delayMode = cfg.mode;
+    if (strip.chorus) strip.chorus.output.disconnect();
+    if (strip.delay) strip.delay.output.disconnect();
+    let head = strip.panner;
+    for (const ins of [strip.chorus, strip.delay]) {
+      if (!ins) continue;
+      head.connect(ins.input);
+      head = ins.output;
+    }
+    head.connect(strip.gate);
   }
 
-  // Remove the insert, restoring the dry panner -> gate connection.
-  _removeDelay(strip) {
-    strip.panner.disconnect();
-    strip.delay.dispose();
-    strip.delay = null;
-    strip.delayMode = null;
-    strip.panner.connect(strip.gate);
+  // (Re)configure a lane's chorus from the live resolver: build/remove on an
+  // on-off or mode change, then relink. main calls this on a modal edit and after
+  // load/undo. Unlike the delay the chorus has no live params (rate/depth are
+  // fixed Juno presets), so any change is a rebuild.
+  applyLaneChorus(laneId) {
+    if (!this.ctx) return;
+    const strip = this.laneStrip(laneId);
+    const cfg = this.laneChorus(laneId);
+    const want = cfg && cfg.on ? cfg.mode : null;
+    if (strip.chorusMode === want) return;
+    if (strip.chorus) { strip.chorus.dispose(); strip.chorus = null; strip.chorusMode = null; }
+    if (want) { strip.chorus = buildChorusInsert(this.ctx, want); strip.chorusMode = want; }
+    this._relink(strip);
   }
 
   // (Re)configure a lane's delay from the live resolver: build/remove/rebuild on
-  // an on-off or mode change, otherwise just update time/wet/feedback. main calls
-  // this on a modal edit, on tempo change (timeSec follows BPM), and after load/undo.
+  // an on-off or mode change (then relink), otherwise just update time/wet/feedback.
+  // main calls this on a modal edit, on tempo change (timeSec follows BPM), and
+  // after load/undo.
   applyLaneDelay(laneId) {
     if (!this.ctx) return;
     const strip = this.laneStrip(laneId);
     const cfg = this.laneDelay(laneId);
-    if (!cfg || !cfg.on) { if (strip.delay) this._removeDelay(strip); return; }
-    if (!strip.delay || strip.delayMode !== cfg.mode) {
-      if (strip.delay) this._removeDelay(strip);
-      this._insertDelay(strip, cfg);
+    const want = cfg && cfg.on ? cfg.mode : null;
+    if (strip.delayMode !== want) {
+      if (strip.delay) { strip.delay.dispose(); strip.delay = null; strip.delayMode = null; }
+      if (want) { strip.delay = buildDelayInsert(this.ctx, want); strip.delayMode = want; }
+      this._relink(strip);
     }
-    strip.delay.setTime(cfg.timeSec);
-    strip.delay.setWet(cfg.wet);
-    strip.delay.setFeedback(cfg.feedback);
+    if (strip.delay) { strip.delay.setTime(cfg.timeSec); strip.delay.setWet(cfg.wet); strip.delay.setFeedback(cfg.feedback); }
   }
 
   // The destination a lane's voices connect to: its strip input (the volume
@@ -350,14 +388,17 @@ export class AudioEngine {
         const volume = oac.createGain(); volume.gain.value = m.gain;
         const panner = oac.createStereoPanner(); panner.pan.value = m.pan;
         volume.connect(panner);
+        // Mirror the live insert chain panner -> [chorus] -> [delay] -> master.
+        let head = panner;
+        const ch = this.laneChorus(laneId);
+        if (ch && ch.on) { const ci = buildChorusInsert(oac, ch.mode); head.connect(ci.input); head = ci.output; }
         const d = this.laneDelay(laneId);
         if (d && d.on) {
           const ins = buildDelayInsert(oac, d.mode);
           ins.setTime(d.timeSec); ins.setWet(d.wet); ins.setFeedback(d.feedback);
-          panner.connect(ins.input); ins.output.connect(master);
-        } else {
-          panner.connect(master);
+          head.connect(ins.input); head = ins.output;
         }
+        head.connect(master);
         s = volume; strips.set(laneId, s);
       }
       return s;
@@ -375,6 +416,7 @@ function buildVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
   switch (p && p.kind) {
     case 'zindel': return buildZindelVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
     case 'wendelhorn': return buildWendelhornVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
+    case 'tervik': return buildTervikVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
     default: return buildVesperiaVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
   }
 }
@@ -503,6 +545,88 @@ function buildZindelVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
     if (mod) { mod.start(time); mod.stop(stop); }
     carrier.onended = () => { pg.disconnect(); if (modGain) modGain.disconnect(); }; // live cleanup (no-op offline)
   });
+}
+
+// A per-context cache of sine→saw blended waves for Tervik's modulators (the
+// Feedback morph). Feedback 0 = pure sine (fundamental only); toward 1 the band-
+// limited saw harmonics (1/h) fade in. disableNormalization keeps the fundamental
+// at unit amplitude, so the modulation-index math stays stable at low feedback.
+function tervikModWave(ctx, feedback) {
+  const key = Math.round(Math.min(1, Math.max(0, feedback)) * 20); // 21 cache buckets
+  const cache = ctx._tervikWaves || (ctx._tervikWaves = new Map());
+  if (cache.has(key)) return cache.get(key);
+  const amt = key / 20;
+  const n = TERVIK_FB_HARMONICS + 1;
+  const real = new Float32Array(n);
+  const imag = new Float32Array(n);
+  for (let h = 1; h < n; h++) imag[h] = h === 1 ? 1 : amt / h;
+  const wave = ctx.createPeriodicWave(real, imag, { disableNormalization: true });
+  cache.set(key, wave);
+  return wave;
+}
+
+// ADSR onto a gain/depth param: 0 → peak (attack), → sustain×peak (decay), hold,
+// → 0 (release at note-off). Shared by Tervik's carriers and modulators (for a
+// modulator `peak` is the FM depth in Hz, for a carrier it's the amplitude).
+function tervikEnvelope(param, env, time, releaseTime, peak) {
+  const top = Math.max(peak, 0.0002);
+  const sustain = Math.max(top * env.s, 0.0000001);
+  param.setValueAtTime(0.0001, time);
+  param.exponentialRampToValueAtTime(top, time + env.a);
+  param.setTargetAtTime(sustain, time + env.a, env.d); // decay → sustain
+  param.setTargetAtTime(0.0000001, releaseTime, env.r); // key off
+}
+
+// Build one Tervik voice: a 3-operator FM voice. Op 1 (index 0) is always the
+// final carrier and its ADSR is the reference/amp envelope; the Algorithm routes
+// Ops 2 & 3 as modulators (into another op's frequency) or as extra carriers. A
+// modulator's depth = index × its own frequency (constant brightness across pitch,
+// as in Zindel); Ops 2 & 3 may FOLLOW Op 1's envelope (Level = the amount) instead
+// of their own ADSR. Feedback morphs Ops 2 & 3 from sine toward a band-limited saw.
+function buildTervikVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
+  const f0 = freq != null ? freq : degreeToFreq(pitch);
+  const releaseTime = time + duration;
+  const routes = TERVIK_ALGOS[p.algo] || TERVIK_ALGOS.stack;
+  const carrierNorm = velocity * VOICE_PEAK / TERVIK_NORM;
+  const modWave = tervikModWave(ctx, p.feedback);
+
+  const ops = [
+    { ratio: p.ratio1, level: p.level1, env: { a: p.a1, d: p.d1, s: p.s1, r: p.r1 }, follow: false },
+    { ratio: p.ratio2, level: p.level2, env: { a: p.a2, d: p.d2, s: p.s2, r: p.r2 }, follow: !!p.follow2 },
+    { ratio: p.ratio3, level: p.level3, env: { a: p.a3, d: p.d3, s: p.s3, r: p.r3 }, follow: !!p.follow3 },
+  ];
+  const refEnv = ops[0].env; // Op 1's ADSR — the reference Ops 2 & 3 can follow
+
+  // Op 1 is a pure sine; Ops 2 & 3 carry the Feedback waveshape (sine → saw).
+  const oscs = ops.map((o, i) => {
+    const osc = ctx.createOscillator();
+    if (i === 0) osc.type = 'sine';
+    else osc.setPeriodicWave(modWave);
+    osc.frequency.value = o.ratio * f0;
+    return osc;
+  });
+
+  const gains = [];
+  ops.forEach((o, i) => {
+    const env = o.follow ? refEnv : o.env;
+    const g = ctx.createGain();
+    if (routes[i] < 0) {
+      // Carrier: amplitude-enveloped to the output (carriers sum at dest).
+      tervikEnvelope(g.gain, env, time, releaseTime, o.level * carrierNorm);
+      oscs[i].connect(g); g.connect(dest);
+    } else {
+      // Modulator: enveloped FM depth into the target op's frequency.
+      const depth = (o.level * TERVIK_MAX_INDEX) * (o.ratio * f0);
+      tervikEnvelope(g.gain, env, time, releaseTime, depth);
+      oscs[i].connect(g); g.connect(oscs[routes[i]].frequency);
+    }
+    gains.push(g);
+  });
+
+  // The amp tail follows Op 1's release (the reference/amp envelope).
+  const stop = releaseTime + Math.max(0.5, p.r1 * 6);
+  oscs.forEach((osc) => { osc.start(time); osc.stop(stop); });
+  oscs[0].onended = () => { gains.forEach((g) => g.disconnect()); }; // live cleanup (no-op offline)
 }
 
 // Szabo-style supersaw mix: the center saw level falls slightly as Detune opens
@@ -710,5 +834,68 @@ function buildDelayInsert(ctx, mode) {
     setWet: (w) => { wet.gain.value = w; dry.gain.value = 1 - w; },
     setFeedback: (f) => { fb.gain.value = f; },
     dispose: () => nodes.forEach((n) => n.disconnect()),
+  };
+}
+
+// --- Juno-60 chorus insert ----------------------------------------------------
+// A bucket-brigade (BBD) chorus: the dry signal passes through untouched while a
+// short (~5 ms) delay line is swept by a slow triangle LFO — the pitch wobble from
+// sweeping the delay IS the chorus. The famous Juno stereo comes from one delay
+// line mixed +to-left / −to-right (anti-phase), which throws a wide hollow image
+// and (authentically) collapses toward mono when L+R are summed. The two front-
+// panel modes are LFO rate/depth presets; I+II runs both LFOs at once. A gentle
+// lowpass models the BBD's limited bandwidth. Context-parametric (live + offline).
+const CHORUS_MAX_DELAY = 0.05; // s — delay-line ceiling (well above the swept range)
+const CHORUS_BASE = 0.0052;    // s — nominal BBD delay (~5 ms), the sweep centre
+const CHORUS_WET = 0.7;        // wet level each side (dry stays unity)
+const CHORUS_BBD_LP = 9000;    // Hz — bucket-brigade bandwidth softening
+// Per mode: the triangle LFO(s) that modulate the delay time, as { rate Hz, depth s }.
+// Rates are the measured Juno-60 chorus rates; depths are tuned to its sweep.
+const CHORUS_LFOS = {
+  'I':    [{ rate: 0.513, depth: 0.0016 }],
+  'II':   [{ rate: 0.863, depth: 0.0031 }],
+  'I+II': [{ rate: 0.513, depth: 0.0016 }, { rate: 0.863, depth: 0.0031 }],
+};
+
+function buildChorusInsert(ctx, mode) {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  const dry = ctx.createGain();
+  input.connect(dry); dry.connect(output); // dry keeps the incoming stereo/pan
+  const nodes = [input, output, dry];
+  const lfos = [];
+
+  // Wet path: sum to mono (single BBD line) -> swept delay -> bandwidth lowpass.
+  const mono = ctx.createGain();
+  mono.channelCount = 1; mono.channelCountMode = 'explicit'; mono.channelInterpretation = 'speakers';
+  const delay = ctx.createDelay(CHORUS_MAX_DELAY);
+  delay.delayTime.value = CHORUS_BASE;
+  const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = CHORUS_BBD_LP;
+  input.connect(mono); mono.connect(delay); delay.connect(lp);
+
+  // Anti-phase stereo: the wet goes +to-left and −to-right via a 2-in merger.
+  const merger = ctx.createChannelMerger(2);
+  const wetL = ctx.createGain(); wetL.gain.value = CHORUS_WET;
+  const wetR = ctx.createGain(); wetR.gain.value = -CHORUS_WET;
+  lp.connect(wetL); lp.connect(wetR);
+  wetL.connect(merger, 0, 0); wetR.connect(merger, 0, 1);
+  merger.connect(output);
+  nodes.push(mono, delay, lp, merger, wetL, wetR);
+
+  // Triangle LFO(s) modulate the delay time (multiple sum on the AudioParam).
+  for (const c of (CHORUS_LFOS[mode] || CHORUS_LFOS['I'])) {
+    const lfo = ctx.createOscillator(); lfo.type = 'triangle'; lfo.frequency.value = c.rate;
+    const depth = ctx.createGain(); depth.gain.value = c.depth;
+    lfo.connect(depth); depth.connect(delay.delayTime);
+    lfo.start();
+    nodes.push(depth); lfos.push(lfo);
+  }
+
+  return {
+    input, output,
+    dispose: () => {
+      lfos.forEach((o) => { try { o.stop(); } catch (e) { /* already stopped */ } });
+      nodes.concat(lfos).forEach((n) => n.disconnect());
+    },
   };
 }

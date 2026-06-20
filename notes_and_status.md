@@ -33,8 +33,17 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 - **Time is in beats**, tempo-independent, throughout the model; seconds are derived only
   at the audio layer (`Score.secondsPerBeat`). This is where generative rhythm plugs in.
 - **Pitch goes through a tuning seam** ([src/tuning.js](src/tuning.js)): `degreeToFreq` /
-  `degreeToName`. Today a "degree" is just a MIDI number (12-TET), but this is the one
-  place microtones / alternate scales will change.
+  `degreeToName(degree, tuningId)` / `pitchClassName(pc, tuningId)`, plus `tuningFreq(degree, tuningId, root)`
+  per pattern and **`edoOf(tuningId)`** — the **degrees-per-octave is a property of the tuning** (not a
+  global constant), so the pitch-class logic (scales, triads, the grid's octave math) takes `edo` as a
+  parameter. Tunings: **12-ET**, **Just (5-limit)**, and **16-ET** (`2^((d−60)/16)`, anchored so degree 60
+  stays middle C; octave = 16 degrees; pitch-classes named in **hex `0–f`**). Naming is per-tuning (12-ET
+  letters, non-12 hex); the grid renders octave-every-`edo`, drops black keys for non-12 (tints the class-0
+  home row instead). **Scale masks are EDO-tagged** ([src/scales.js](src/scales.js) `scalesFor(edo)`): the
+  picker shows Chromatic (universal) + the tuning's masks — 12-ET pentatonics, or 16-ET **Mavila[7]** `{0,2,4,6,9,11,13}`
+  + Mavila pentatonic; switching tuning drops an out-of-EDO mask back to Chromatic. **Roll** still mirrors with
+  12-ET-flavored black-key/octave cosmetics (notes sit at the right degree + sound correct; per-tuning roll
+  shading is a deferred polish — it ties into mixed-tuning arrangements).
 
 ---
 
@@ -44,14 +53,15 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 |---|---|
 | [index.html](index.html) | Layout (transport bar + reorderable panes), all CSS |
 | [src/model.js](src/model.js) | `Note`, `Score` (beats, tempo, articulation, explicit length), MIDI↔freq, note names, black-key test |
-| [src/tuning.js](src/tuning.js) | row/degree → pitch/frequency seam |
-| [src/grid.js](src/grid.js) | `Pattern` (named, 12 columns), `DURATIONS`, `PALETTE`, `COLS`, `BASE_PITCH` |
+| [src/tuning.js](src/tuning.js) | row/degree → pitch/frequency seam; per-pattern `tuningFreq` + **`edoOf(tuningId)`** (degrees-per-octave is a tuning property); 12-ET / Just / **16-ET**; per-tuning `degreeToName`/`pitchClassName` (12-ET letters, non-12 hex) |
+| [src/grid.js](src/grid.js) | `Pattern` (named; **per-pattern column count** = `columns.length`, `DEFAULT_COLS`/`MIN_COLS`/`MAX_COLS`, `Pattern.initial(name, cols)`), `DURATIONS`, `PALETTE`, `BASE_PITCH` |
 | [src/library.js](src/library.js) | `PatternLibrary` (registry, naming, parking), `Arrangement` (lanes/tiles + per-lane mute/solo + `lane.gain`/`lane.pan`/`lane.patch`, play-region `playStart`/`playEnd`, `audibleLaneIds`), `LANE_COLORS` |
-| [src/audio.js](src/audio.js) | `AudioEngine` — additive synth voice (`buildVoice`, context-parametric), per-lane patch resolution (`patchFor`), per-lane **stereo mixer strips** (volume→panner→**delay insert**→mute-gate; `setLaneVolume`/`setLaneGain`/`setLanePan`, `laneMix`, `applyLaneDelay`/`buildDelayInsert`), master limiter (`setupLimiter`) + fader (`setMasterGain`) + **stereo meter tap** (`getPeak`→`{l,r}`); `renderToBuffer` (offline **stereo** bounce, per-lane patch+mix+delay) |
-| [src/instrument.js](src/instrument.js) | the **instrument registry** (`INSTRUMENTS`): per-kind defaults + `PARAMS` (editor metadata) for **Vesperia**, **Zindel** & **Wendelhorn**; kind-aware `defaultPatch(kind)`, `normalizePatch` (numeric + boolean params), `clonePatch`, `paramsFor`, slider mapping |
-| [src/instrumentpane.js](src/instrumentpane.js) | `buildInstrumentPane` — the retargetable, **kind-aware** "Edit instrument" pane (instrument selector, body rebuilt per kind; slider / drawbar-fader / checkbox widgets; target chip, Test, Copy/Paste, Factory Reset) |
+| [src/audio.js](src/audio.js) | `AudioEngine` — additive synth voice (`buildVoice`, context-parametric), per-lane patch resolution (`patchFor`), per-lane **stereo mixer strips** (volume→panner→**[chorus insert]→[delay insert]**→mute-gate; ordered insert chain via `_relink`; `setLaneVolume`/`setLaneGain`/`setLanePan`, `laneMix`, `applyLaneChorus`/`buildChorusInsert`, `applyLaneDelay`/`buildDelayInsert`), master limiter (`setupLimiter`) + fader (`setMasterGain`) + **stereo meter tap** (`getPeak`→`{l,r}`); `renderToBuffer` (offline **stereo** bounce, per-lane patch+mix+chorus+delay) |
+| [src/instrument.js](src/instrument.js) | the **instrument registry** (`INSTRUMENTS`): per-kind defaults + `PARAMS` (editor metadata) for **Vesperia**, **Zindel**, **Wendelhorn** & **Tervik**; kind-aware `defaultPatch(kind)`, `normalizePatch` (numeric + boolean + **enum/select** params), `clonePatch`, `paramsFor`, slider mapping |
+| [src/instrumentpane.js](src/instrumentpane.js) | `buildInstrumentPane` — the retargetable, **kind-aware** "Edit instrument" pane (instrument selector, body rebuilt per kind; slider / drawbar-fader / checkbox / **dropdown** widgets; target chip, Test, Copy/Paste, Factory Reset) |
 | [src/knob.js](src/knob.js) | `makeKnob` — click-vertical-drag rotary widget (detents, dbl-click reset, gesture-bracketed callbacks) + `PAN_MAP` / `GAIN_MAP` mixer mappings |
 | [src/delay.js](src/delay.js) | per-lane delay config (`defaultDelay`/`normalizeDelay`, `DELAY_TIMES`/`DELAY_MODES`) + `buildDelayEditor` (modal form) |
+| [src/chorus.js](src/chorus.js) | per-lane Juno-60 chorus config (`defaultChorus`/`normalizeChorus`, `CHORUS_MODES` = I/II/I+II) + `buildChorusEditor` (modal form; On + Mode only) |
 | [src/modal.js](src/modal.js) | `openModal` — generic centered modal (Esc / backdrop / × to close, `onClose`) |
 | [src/scheduler.js](src/scheduler.js) | lookahead scheduler, finite looping, per-cycle re-read (`onCycle`), mid-cycle tile reconciliation (`resync`) |
 | [src/pianoroll.js](src/pianoroll.js) | `PianoRoll` canvas render + playhead; per-note color/alpha |
@@ -61,7 +71,7 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 | [src/toolbar.js](src/toolbar.js) | grid toolbar (brush, pattern lifecycle, view toggles) |
 | [src/panes.js](src/panes.js) | reorderable vertical panes, order persisted |
 | [src/project.js](src/project.js) | versioned file envelope (`format`/`version`), migrate, save (download) / load (file read) helpers |
-| [src/triads.js](src/triads.js) | Triadulator engine (pure): partition a pitch-class set into chords — `trad` (maj/min/dim/aug) and/or `sus` families (proper / partial); `classifyTriad` for labels |
+| [src/triads.js](src/triads.js) | Triadulator engine (pure): partition a pitch-class set into chords — families `trad` (maj/min/dim/aug) + `sus` (12-ET), `septimal` (16-ET: 4:5:7 `[0,5,13]`, supermajor `[0,6,13]`); `enumerateTriadulations(pcs, {families, edo})` / `classifyTriad(pcs, edo)`. Templates tagged by **EDO**, pools per-edo; `familiesFor(edo)`/`familyLabel` drive the per-tuning family toggles |
 | [src/midi.js](src/midi.js) | Standard MIDI File writer (pure): note data → bytes (Format 1, tempo, track names) |
 | [src/wav.js](src/wav.js) | WAV encoder (pure): an `AudioBuffer` → 16-bit PCM RIFF bytes |
 | [src/main.js](src/main.js) | wires everything; transport, undo, active pane, persistence, project save/load |
@@ -104,6 +114,19 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   Vesperia's **resonant lowpass + filter envelope** (the brass swell) and a shared ADSR. Levels
   scaled by `WENDEL_NORM` (tunable by ear). (Future controls pass: a Cubase-style
   combined Width+Pan panner, user-requested.)
+- **Tervik** — a lightweight **3-operator FM** synth (the cheap-polyphony / FM-complexity instrument):
+  only **3 oscillators/voice**, so it's by far the cheapest voice. **Op 1 is always the final carrier**
+  and its ADSR is the **reference/amp envelope**; a 4-way **Algorithm** selects how Ops 2 & 3 route —
+  **Stack** (3→2→1), **Y** ((2+3)→1), **Pair** (3→2 · 1), **Parallel** (1·2·3) — as modulators (into
+  another op's frequency) or extra carriers. Each modulator's **depth = index × its own frequency**
+  (`index = Level × TERVIK_MAX_INDEX`), so brightness stays even across pitch (the Zindel trick). Ops 2
+  & 3 each have a **Follow Op 1** toggle: off = its own ADSR, on = shaped by Op 1's envelope with **Level
+  as the "amount"** (one slider serves both — the user's scheme). **Feedback** morphs Ops 2 & 3 from sine
+  toward a band-limited saw (a cheap stand-in for true operator feedback — Op 1 stays sine; blended
+  `PeriodicWave`s cached per context). Default = a DX-style **electric piano** (Op 3 at 14:1 with a fast-
+  decaying index = the metallic "tine" over a 1:1 body). Carriers summed, scaled by `TERVIK_NORM` (tunable).
+  Introduced the editor's **enum/`select`** param type (the Algorithm dropdown). v1: when Follow is on, that
+  op's own A/D/S/R sliders stay visible but inert (graying-out is a fast follow-up if wanted).
 - **Multi-instrument registry** ([src/instrument.js](src/instrument.js)): each **kind** owns its
   defaults + `PARAMS` (editor metadata) + description; a patch carries a `kind` tag, the engine
   dispatches on it in `buildVoice` (a `switch`, one DSP branch per kind), and `normalizePatch` /
@@ -154,8 +177,11 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
     `notorolla.patch` key is vestigial afterward.
 
 ### Grid editor (one pattern at a time)
-- **12 columns** (time) × resizable pitch rows (one chromatic octave by default, C4 at
-  bottom). Notes stored by **absolute degree**, so resizing/scrolling never loses notes.
+- **Per-pattern column count** (time) × resizable pitch rows (one octave by default, C4 at
+  bottom). A pattern's width = `columns.length` (default `DEFAULT_COLS` = 12, range `[MIN_COLS, MAX_COLS]`);
+  a toolbar **"Cols − N +"** stepper resizes the current pattern (grow appends rests on the diagonal,
+  shrink drops trailing columns — undoable, persisted with the pattern; New/Clone inherit the width,
+  Clear keeps it). Notes stored by **absolute degree**, so resizing/scrolling never loses notes.
 - Mono mode (one note/rest per column). Gestures: click a note = if the brush duration differs,
   **adopt the brush duration first**, else **rotate** to the next duration (beats order); click a
   rest = place; click a different row = repitch; **click-drag is axis-locked** (decided on first
@@ -319,8 +345,8 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   with it). **View-only** — persists in `notorolla.ui` (`tileScaleIdx`), never flips the dirty bit.
 - Each lane has a **sticky header block** (stays pinned during horizontal scroll): a color
   stripe + an **instrument block** (the **Vesperia** name — a label now, the future instrument
-  selector — over an **Edit** button that opens the per-lane instrument editor) + a **"D" delay
-  button** (lit when the lane's delay is on; opens the delay modal) + a **knob column**
+  selector — over an **Edit** button that opens the per-lane instrument editor) + a **stacked effect
+  column** (**"D" delay** on top, **"C" chorus** under; each lit when its effect is on, opening its modal) + a **knob column**
   (**Pan** over **Gain**) + the **Mute / Solo** stack. The knobs are mixer-style: click +
   **vertical-drag** to turn (Shift = fine, **double-click = reset**); Pan has a center detent, Gain is
   a **dB knob** (−∞…+6 dB, unity detent at 0 dB) storing linear gain. A knob drag is **one undo step**
@@ -418,12 +444,15 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   reset. A small always-on rAF loop drives it (reads 0 when idle). The **master fader**
   (`engine.setMasterGain`, anti-zipper ramp; persisted in `notorolla.ui`) sets output level and
   **the WAV export renders post-fader** (`renderToBuffer` uses the same `masterLevel`).
-- **Stereo signal path:** each lane runs `voices → volume → StereoPanner → [delay insert] → mute-gate
-  → master` (pan is BEFORE the delay so ping-pong's hard-L/R isn't re-panned; the mute gate is LAST so
-  mute is instant yet the delay keeps running while muted and unmute reveals its tail). master +
-  limiter are channel-agnostic, so the tail is stereo once panners feed it; the offline export is
-  `OfflineAudioContext(2, …)` rebuilding each lane's volume+pan+delay so the **WAV is stereo and
-  matches the live mix** (`encodeWav` was already channel-general). Un-laned grid audio is mono/centered.
+- **Stereo signal path:** each lane runs `voices → volume → StereoPanner → [chorus insert] → [delay insert]
+  → mute-gate → master` (pan is BEFORE the inserts so ping-pong's hard-L/R and the chorus's stereo aren't
+  re-panned; the mute gate is LAST so mute is instant yet the inserts keep running while muted and unmute
+  reveals their tails). The inserts are an **ordered chain** (chorus then delay); `_relink(strip)` rebuilds
+  only the edges between the panner, whichever inserts are active, and the gate — so toggling one insert
+  doesn't disturb the other's tail. master + limiter are channel-agnostic, so the tail is stereo once
+  panners feed it; the offline export is `OfflineAudioContext(2, …)` rebuilding each lane's
+  volume+pan+chorus+delay so the **WAV is stereo and matches the live mix** (`encodeWav` was already
+  channel-general). Un-laned grid audio is mono/centered.
 - **Per-lane delay** (a "track" effect — an insert on the lane strip; `lane.delay = {on, mode, time,
   wet, feedback}`, saved with the project). **"D" button** in the lane head opens a **modal**
   (`buildDelayEditor` + generic `openModal`) with On/off, **Mode** (mono echo | crossfeed ping-pong),
@@ -434,8 +463,19 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   `delayL` (3T)…, bouncing, feedback = bounce decay. Built lazily per strip / rebuilt on a mode change;
   time follows the tempo (`applyLaneDelayAll` on tempo change). A delay-modal session is **one undo
   step** (snapshot on open, live audio while editing, commit on close); persists + dirty-tracked. No
-  WASM. Effects philosophy (user): delay = per-track; chorus/phaser/drive = future instrument-patch
-  character; reverb = future instrument or shared send bus.
+  WASM. Effects philosophy (user): delay = per-track; chorus = per-track (below); drive = future
+  instrument-patch character; reverb = future instrument or shared send bus.
+- **Per-lane chorus — Juno-60 emulation** (a "track" effect — an insert *before* the delay;
+  `lane.chorus = {on, mode}`, saved with the project). **"C" button** in the lane head opens a **modal**
+  (`buildChorusEditor` + `openModal`) with just On/off and a **Mode** switch (I | II | I+II) — authentic
+  to the Juno, **rate/depth are fixed presets, no user knobs**. `buildChorusInsert(ctx, mode)` (audio.js)
+  builds a **BBD chorus**: the dry passes through (keeping its pan) while a mono-summed copy runs a short
+  (~5 ms) `DelayNode` swept by **triangle LFO(s)** (the pitch wobble = the chorus); a gentle lowpass models
+  BBD bandwidth. The famous Juno stereo is **one delay line mixed +to-left / −to-right** (anti-phase via a
+  `ChannelMerger`), so it spreads wide and **collapses toward mono on an L+R sum** (authentic). Modes are
+  LFO presets — I: 0.513 Hz, II: 0.863 Hz (the measured Juno-60 rates), I+II runs both at once. Built
+  lazily per strip / rebuilt on a mode change (`applyLaneChorus`); chorus-modal session is **one undo
+  step**, same bracket as the delay. No WASM. ([src/chorus.js](src/chorus.js) owns the config + editor.)
 - **Gain calibration (done against the meter):** the master `DynamicsCompressor` is a **transparent
   ceiling limiter** (`setupLimiter`: threshold −1.5 dB, knee 0, ratio 20, attack 3 ms, release 100 ms)
   — idle below −1.5 dB (no always-on compression), only holding peaks under 0 dBFS; the **per-voice
@@ -505,10 +545,14 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   3-pc subsets qualify → far more alternatives; `MAX_RESULTS = 200` caps the search (extras beyond
   200 truncated, deterministic).
 - **Engine** ([src/triads.js](src/triads.js)) is pure and works on pitch-class **sets**, so
-  all **inversions** are inherent ({0,4,7}={4,7,0}=C major). `buildChords(families)` makes the
-  candidate pool; `enumerateTriadulations(pcs, {proper, trad, sus})` returns a deterministic, stable
-  list (proper/best first); rotation is just an index into it. The recursive search is unchanged —
-  only the candidate pool (the membership test) grows with sus.
+  all **inversions** are inherent ({0,4,7}={4,7,0}=C major). `chordsFor(edo, families)` makes the
+  candidate pool (templates tagged by EDO); `enumerateTriadulations(pcs, {proper, families, edo})` returns
+  a deterministic, stable list (proper/best first); rotation is just an index into it. The recursive search
+  is unchanged — only the candidate pool (the membership test) changes with the EDO + enabled families.
+  **Families are per-tuning** (12-ET: `trad`+`sus`; 16-ET: `septimal` = 4:5:7 `[0,5,13]` + supermajor
+  `[0,6,13]`, built on the strong 7/4 since there's no good fifth): the toolbar's family toggles are rebuilt
+  from `familiesFor(edo)` when the tuning changes (`state.families` is a per-id enabled map); the labeler
+  recognizes every family the tuning offers, with hex roots in 16-ET.
 - **Proper** (toggle on) = every remaining pc covered by disjoint chords (possible only
   when distinct used pcs ∈ {3,6,9} **and** a partition exists — divisibility is necessary,
   not sufficient; all chords are 3-pc so this is unchanged by sus). **Partial** (off) = as many
@@ -523,9 +567,9 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   the proposal is **centered** on your register (this is where inversions become visible —
   only matters once the grid spans more than one octave). Overflow (partial only): keep
   whole triads that fit. Proposed notes are **playable** — grid playback merges them in.
-- **Abstract by design**: analysis is always over the 12 chromatic pitch classes
-  (`DEGREES_PER_OCTAVE`) regardless of grid height/width; the engine knows nothing about
-  columns or octaves (the placement helper in main.js is the only grid-aware part).
+- **Abstract by design**: analysis is over the pattern's pitch classes — the **tuning's EDO**
+  (`edoOf(pattern.tuningId)`, threaded into the engine) regardless of grid height/width; the engine
+  knows nothing about columns or octaves (the placement helper in main.js is the only grid-aware part).
 - New territory — to our knowledge this exact tool hasn't been built before, so the canonical
   ordering / partial enumeration / centering heuristics are first-cut and open to tuning.
 
@@ -981,8 +1025,10 @@ Effects on the built-in synth, **no WASM needed**, using native Web Audio nodes 
 - **Delay — excellent, trivial.** DelayNode + feedback gain + wet/dry, optional lowpass in the
   feedback for darkening repeats. **Tempo-synced** (1/8, dotted-1/8, 1/4) is nearly free since the
   model knows BPM — a strong fit for a loop/ostinato tool. Build-first candidate.
-- **Chorus — very good, easy.** 1–3 short DelayNodes (~15–35 ms) with LFO-modulated `delayTime`,
-  mixed with dry. Same module yields **flanger / vibrato / tremolo** by changing ranges.
+- **Chorus — BUILT (per-lane, Juno-60).** A BBD chorus insert before the delay: ~5 ms `DelayNode`
+  swept by triangle LFO(s), anti-phase +L/−R stereo, On + Mode (I/II/I+II) only — see the Per-lane
+  chorus note above. (The same module would yield **flanger / vibrato / tremolo** by changing ranges,
+  if wanted later.)
 - **Reverb — good (better than "ok").** `ConvolverNode` is true convolution reverb; it needs an
   impulse response. Recommended: **synthesize the IR in code** (exponentially-decaying noise, with
   decay-time / pre-delay / tone / width knobs) — keeps the **no-sample / no-dependency** stance and

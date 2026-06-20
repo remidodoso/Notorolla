@@ -14,9 +14,9 @@
 //   shift-click ........... toggle accent (notes only)
 //   right-click ........... toggle note <-> rest
 
-import { DURATIONS, PALETTE, COLS, BASE_PITCH, nextDurIndex } from './grid.js';
-import { isBlackKey, pitchClassName } from './model.js';
-import { degreeToName } from './tuning.js';
+import { DURATIONS, PALETTE, DEFAULT_DUR, MIN_COLS, MAX_COLS, BASE_PITCH, nextDurIndex } from './grid.js';
+import { isBlackKey } from './model.js';
+import { degreeToName, pitchClassName, edoOf } from './tuning.js';
 import { inScale, nearestInScale, stepInScale } from './scales.js';
 import { classifyTriad } from './triads.js';
 import { PAD_LEFT as ROLL_PAD_LEFT, BEAT_WIDTH as ROLL_BEAT_WIDTH } from './pianoroll.js';
@@ -30,7 +30,7 @@ const UNIFORM_COL_W = 40;        // Grid mode: every column the same width
 const DOT_R = 7;
 const DRAG_THRESHOLD = 4;        // px of movement that turns a click into a drag
 const TRIAD_BAND = 30;           // px reserved above the lanes for two label rows
-const QUALITY = { maj: 'Maj', min: 'min', dim: 'dim', aug: 'aug', sus: 'sus' };
+const QUALITY = { maj: 'Maj', min: 'min', dim: 'dim', aug: 'aug', sus: 'sus', sept: '4:5:7', sup: 'sup' };
 
 export const MIN_ROWS = 12;      // never fewer than twelve tones (for now)
 export const MAX_ROWS = 48;
@@ -155,13 +155,14 @@ export class GridView {
   // ±1 semitone; under pentatonic it steps to the next scale tone (and pulls an
   // off-scale note onto the mask). Each note steps independently, so intervals
   // follow the scale rather than staying rigidly parallel. Octave jumps stay
-  // literal via transpose(±DEGREES_PER_OCTAVE). One undo entry; reject if any
+  // literal via transpose(±edo). One undo entry; reject if any
   // note would leave the navigable range.
   transposeScalar(dir) {
     const cols = this._permuteTargets();
     if (!cols.length) return;
     const { scaleId, root } = this.pattern;
-    const targets = cols.map((i) => stepInScale(scaleId, root, this.pattern.columns[i].degree, dir));
+    const edo = edoOf(this.pattern.tuningId);
+    const targets = cols.map((i) => stepInScale(scaleId, root, this.pattern.columns[i].degree, dir, edo));
     if (targets.some((d) => d > MAX_DEGREE || d < MIN_DEGREE)) return;
     const before = this._snap();
     cols.forEach((i, k) => { this.pattern.columns[i].degree = targets[k]; });
@@ -341,7 +342,7 @@ export class GridView {
   // Snap a degree to the nearest in-scale degree (identity when chromatic), so
   // placing/dragging notes stays within the pattern's scale mask.
   _snapToScale(d) {
-    return nearestInScale(this.pattern.scaleId, this.pattern.root, d);
+    return nearestInScale(this.pattern.scaleId, this.pattern.root, d, edoOf(this.pattern.tuningId));
   }
 
   // --- column geometry (time axis) -------------------------------------
@@ -355,16 +356,38 @@ export class GridView {
     return { x: PAD_LEFT + i * UNIFORM_COL_W, w: UNIFORM_COL_W };
   }
   _columnAt(px) {
+    const cols = this.pattern.columns.length;
     if (this.mode === 'stretch') {
       let x = PAD_LEFT;
-      for (let i = 0; i < COLS; i++) {
+      for (let i = 0; i < cols; i++) {
         const w = DURATIONS[this.pattern.columns[i].durIndex].beats * ROLL_BEAT_WIDTH;
         if (px < x + w) return i;
         x += w;
       }
-      return COLS - 1;
+      return cols - 1;
     }
-    return clamp(Math.floor((px - PAD_LEFT) / UNIFORM_COL_W), 0, COLS - 1);
+    return clamp(Math.floor((px - PAD_LEFT) / UNIFORM_COL_W), 0, cols - 1);
+  }
+
+  // The current pattern's column count, and a resize (grow = append rests
+  // continuing the diagonal; shrink = drop trailing columns). One undo entry; the
+  // count rides the pattern's toJSON snapshot, so it persists + undoes for free.
+  columnCount() { return this.pattern.columns.length; }
+  setColumns(n) {
+    const target = Math.max(MIN_COLS, Math.min(MAX_COLS, n | 0));
+    const cur = this.pattern.columns.length;
+    if (target === cur) return;
+    const before = this._snap();
+    if (target > cur) {
+      let deg = cur ? this.pattern.columns[cur - 1].degree + 1 : BASE_PITCH;
+      for (let i = cur; i < target; i++) {
+        this.pattern.columns.push({ durIndex: DEFAULT_DUR, isRest: true, degree: clamp(deg, MIN_DEGREE, MAX_DEGREE), accent: false });
+        deg++;
+      }
+    } else {
+      this.pattern.columns.length = target; // drop trailing columns (notes included)
+    }
+    this._commit(before);
   }
 
   // --- drawing ----------------------------------------------------------
@@ -374,7 +397,7 @@ export class GridView {
       (s, c) => s + DURATIONS[c.durIndex].beats, 0);
     this.canvas.width = this.mode === 'stretch'
       ? PAD_LEFT + totalBeats * ROLL_BEAT_WIDTH + PAD_RIGHT
-      : PAD_LEFT + COLS * UNIFORM_COL_W + PAD_RIGHT;
+      : PAD_LEFT + this.pattern.columns.length * UNIFORM_COL_W + PAD_RIGHT;
     this.canvas.height = this._topPad() + this._rows * ROW_H + PAD_BOTTOM;
   }
 
@@ -387,6 +410,11 @@ export class GridView {
     const bottom = this._bottomDegree;
     ctx.clearRect(0, 0, W, H);
 
+    // Pitch-class math runs in the pattern's tuning (EDO): octave = `edo` degrees,
+    // labels in that tuning's naming (12-ET letters, 16-ET hex).
+    const tuningId = this.pattern.tuningId;
+    const edo = edoOf(tuningId);
+
     // Which pitches carry a note (exact degree = strong highlight; the same
     // pitch-class in other octaves = soft highlight).
     const active = new Set();
@@ -395,28 +423,30 @@ export class GridView {
       for (const c of this.pattern.columns) {
         if (c.isRest) continue;
         active.add(c.degree);
-        activePC.add(((c.degree % 12) + 12) % 12);
+        activePC.add(((c.degree % edo) + edo) % edo);
       }
     }
 
-    // The root (tonic) is marked when it actually matters — i.e. a just tuning
+    // The root (tonic) is marked when it actually matters — i.e. a just/xen tuning
     // or a non-chromatic mask. In plain 12-ET chromatic there's no tonic to show.
-    const rootPc = ((this.pattern.root % 12) + 12) % 12;
-    const rootShown = this.pattern.tuningId !== '12-et' || this.pattern.scaleId !== 'chromatic';
+    const rootPc = ((this.pattern.root % edo) + edo) % edo;
+    const rootShown = tuningId !== '12-et' || this.pattern.scaleId !== 'chromatic';
 
-    // Pitch lanes (black keys shaded, active lanes tinted) + labels w/ octave.
+    // Pitch lanes + labels w/ octave. 12-ET shades the piano black keys; non-12
+    // tunings have no black keys, so the octave-home row (class 0) is tinted instead
+    // to keep the octave boundaries readable.
     const topPad = this._topPad();
     for (let k = 0; k < this._rows; k++) {
       const d = top - k;
       const y = topPad + k * ROW_H;
-      const pc = ((d % 12) + 12) % 12;
+      const pc = ((d % edo) + edo) % edo;
       const isActive = active.has(d);
       const isOctave = !isActive && activePC.has(pc);
       const isRoot = rootShown && pc === rootPc;
-      ctx.fillStyle = isBlackKey(d) ? '#13151c' : '#171a22';
+      ctx.fillStyle = edo === 12 ? (isBlackKey(d) ? '#13151c' : '#171a22') : (pc === 0 ? '#1b2030' : '#171a22');
       ctx.fillRect(0, y, W, ROW_H);
       // In-scale rows get a faint cool wash (only when a non-chromatic mask is on).
-      if (this.pattern.scaleId !== 'chromatic' && inScale(this.pattern.scaleId, this.pattern.root, d)) {
+      if (this.pattern.scaleId !== 'chromatic' && inScale(this.pattern.scaleId, this.pattern.root, d, edo)) {
         ctx.fillStyle = 'rgba(90, 169, 255, 0.06)';
         ctx.fillRect(0, y, W, ROW_H);
       }
@@ -435,14 +465,15 @@ export class GridView {
       ctx.font = `${isRoot ? 'bold ' : ''}11px system-ui, sans-serif`;
       ctx.textBaseline = 'middle';
       ctx.textAlign = 'left';
-      ctx.fillText(degreeToName(d), 6, y + ROW_H / 2);
+      ctx.fillText(degreeToName(d, tuningId), 6, y + ROW_H / 2);
     }
 
     // Column separators (including the right edge).
     ctx.strokeStyle = '#262a35';
     ctx.lineWidth = 1;
-    for (let i = 0; i < COLS; i++) this._vline(this._colGeom(i).x, H);
-    const last = this._colGeom(COLS - 1);
+    const cols = this.pattern.columns.length;
+    for (let i = 0; i < cols; i++) this._vline(this._colGeom(i).x, H);
+    const last = this._colGeom(cols - 1);
     this._vline(last.x + last.w, H);
 
     // Dots: filled = note, open circle = rest; off-window notes get an edge hint.
@@ -550,10 +581,10 @@ export class GridView {
     for (let i = 0; i + 2 < cols.length; i++) {
       const a = cols[i], b = cols[i + 1], c = cols[i + 2];
       if (a.isRest || b.isRest || c.isRest) continue;
-      const t = classifyTriad([a.degree, b.degree, c.degree]);
+      const t = classifyTriad([a.degree, b.degree, c.degree], edoOf(this.pattern.tuningId));
       if (!t) continue;
       const g = this._colGeom(i + 1);
-      out.push({ x: g.x + g.w / 2, text: `${pitchClassName(t.root)} ${QUALITY[t.quality]}` });
+      out.push({ x: g.x + g.w / 2, text: `${pitchClassName(t.root, this.pattern.tuningId)} ${QUALITY[t.quality]}` });
     }
     return out;
   }

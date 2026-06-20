@@ -37,6 +37,7 @@ export class TilePlayer {
   //       left-drag either handle (or empty = start), right-click clears the end
   //       (endBeat null = auto / end-of-last-tile).
   //     onDelay(laneId) — open the lane's delay editor modal.
+  //     onChorus(laneId) — open the lane's chorus editor modal.
   constructor(containerEl, library, arrangement, cb) {
     this.container = containerEl;
     this.library = library;
@@ -106,8 +107,13 @@ export class TilePlayer {
       editBtn.onclick = () => this.cb.onEdit(lane.id);
       info.append(instr, editBtn);
 
-      // Delay: a "D" button (lit when the lane's delay is on) opening the editor
-      // modal, between the instrument block and the Pan/Gain knobs.
+      // Chorus + Delay: small "C"/"D" buttons (lit when on) opening their editor
+      // modals, between the instrument block and the Pan/Gain knobs.
+      const chorusBtn = document.createElement('button');
+      chorusBtn.className = 'lane-chorus' + (lane.chorus && lane.chorus.on ? ' on' : '');
+      chorusBtn.textContent = 'C';
+      chorusBtn.title = 'Chorus (per lane)';
+      chorusBtn.onclick = () => this.cb.onChorus(lane.id);
       const delayBtn = document.createElement('button');
       delayBtn.className = 'lane-delay' + (lane.delay && lane.delay.on ? ' on' : '');
       delayBtn.textContent = 'D';
@@ -141,7 +147,11 @@ export class TilePlayer {
       const muteBtn = laneToggle('M', 'mute', lane.mute, 'Mute this lane', () => this.cb.onMute(lane.id));
       const soloBtn = laneToggle('S', 'solo', lane.solo, 'Solo this lane', () => this.cb.onSolo(lane.id));
       ms.append(muteBtn, soloBtn);
-      head.append(stripe, resetBtn, info, delayBtn, knobs, ms);
+      // Stack the effect buttons in one narrow column: Delay on top, Chorus under.
+      const fx = document.createElement('div');
+      fx.className = 'lane-fx';
+      fx.append(delayBtn, chorusBtn);
+      head.append(stripe, resetBtn, info, fx, knobs, ms);
 
       const track = document.createElement('div');
       track.className = 'lane-track';

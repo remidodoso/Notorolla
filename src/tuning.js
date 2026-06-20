@@ -8,9 +8,14 @@
 // its 12-ET pitch and the others bend to pure ratios. True size != 12 scales
 // (no octave, lattices) come later and will widen this seam further.
 
-import { noteToFreq, noteName } from './model.js';
+import { noteToFreq, noteName, pitchClassName as letterClassName } from './model.js';
 
-export const DEGREES_PER_OCTAVE = 12;
+const HEX = '0123456789abcdef';
+
+// Degrees per octave (the EDO) is now a property of the TUNING, not a global
+// constant — the seam that lets non-12 tunings (16-ET, …) coexist with 12-ET. Read
+// it per pattern via edoOf(pattern.tuningId); the pitch-class logic (scales, triads,
+// the grid's octave math) takes it as a parameter rather than assuming 12.
 
 // A 5-limit just chromatic scale (ratios from the root, one per pitch-class).
 // The C-D-E-G-A subset is exactly the just major pentatonic.
@@ -23,15 +28,27 @@ const TUNINGS = {
   '12-et': {
     id: '12-et',
     label: '12-ET',
+    edo: 12,
     freq: (degree) => noteToFreq(degree),
   },
   'ji-5limit': {
     id: 'ji-5limit',
     label: 'Just (5-limit)',
+    edo: 12, // a 12-degree just chromatic — still 12 pitch-classes per octave
     freq: (degree, root) => {
       const rel = (((degree - root) % 12) + 12) % 12;     // semitones above the root pc below
       return noteToFreq(degree - rel) * JI_5LIMIT[rel];   // that root's 12-ET freq × just ratio
     },
+  },
+  // 16-tone equal temperament: a xenharmonic octave division (steps of 75¢). No
+  // good fifth, but an exact tritone and a strong 7/4 (see project notes). Anchored
+  // so degree 60 still sounds at middle C — switching a pattern to 16-ET keeps its
+  // home note's pitch; the octave is 16 degrees, named in hex (0–f).
+  '16-et': {
+    id: '16-et',
+    label: '16-ET',
+    edo: 16,
+    freq: (degree) => noteToFreq(60) * Math.pow(2, (degree - 60) / 16),
   },
 };
 
@@ -42,7 +59,32 @@ export function tuningFreq(degree, tuningId = '12-et', root = 0) {
   return (TUNINGS[tuningId] || TUNINGS['12-et']).freq(degree, root);
 }
 
+// Degrees per octave for a tuning (the EDO / equave division). The modulus the
+// pitch-class logic uses; defaults to 12 for an unknown tuning.
+export function edoOf(tuningId = '12-et') {
+  return (TUNINGS[tuningId] || TUNINGS['12-et']).edo;
+}
+
 // The default (12-ET) seam — kept so the audio fallback and any caller without a
 // tuning context still works exactly as before.
 export const degreeToFreq = (degree) => noteToFreq(degree);
-export const degreeToName = (degree) => noteName(degree);
+
+// A pitch-class's name in a tuning: 12-ET uses letters (C, C#, …); non-12 tunings
+// have no letter names, so a hex digit of the class index (0–f for 16-ET). pc is
+// taken mod the tuning's EDO.
+export function pitchClassName(pc, tuningId = '12-et') {
+  const edo = edoOf(tuningId);
+  const i = (((pc % edo) + edo) % edo);
+  if (edo === 12) return letterClassName(i);
+  return i < 16 ? HEX[i] : String(i);
+}
+
+// A degree's full name (class + octave) in a tuning. 12-ET = the MIDI note name
+// (unchanged); non-12 = hex class + octave (class = degree mod edo, octave =
+// floor(degree / edo)). Used for the grid's row labels.
+export function degreeToName(degree, tuningId = '12-et') {
+  const edo = edoOf(tuningId);
+  if (edo === 12) return noteName(degree);
+  const cls = (((degree % edo) + edo) % edo);
+  return `${pitchClassName(cls, tuningId)}${Math.floor(degree / edo)}`;
+}

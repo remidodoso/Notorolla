@@ -6,8 +6,9 @@ import { PianoRoll } from './pianoroll.js';
 import { Note, Score } from './model.js';
 import { Pattern, BASE_PITCH } from './grid.js';
 import { PatternLibrary, Arrangement, laneColor } from './library.js';
-import { enumerateTriadulations } from './triads.js';
-import { DEGREES_PER_OCTAVE, tuningFreq } from './tuning.js';
+import { enumerateTriadulations, familiesFor, familyLabel } from './triads.js';
+import { edoOf, tuningFreq, pitchClassName } from './tuning.js';
+import { scalesFor, scaleValidForEdo } from './scales.js';
 import { notesToMidi } from './midi.js';
 import { encodeWav } from './wav.js';
 import { GridView } from './gridview.js';
@@ -17,6 +18,7 @@ import { buildInstrumentPane } from './instrumentpane.js';
 import { normalizePatch, defaultPatch, clonePatch } from './instrument.js';
 import { normalizeDelay } from './delay.js';
 import { buildDelayEditor } from './delay.js';
+import { normalizeChorus, buildChorusEditor } from './chorus.js';
 import { applyTransforms, setTileTranspose, setTileReverse, hasReverse, describeTransform, transformKindLabel, normalizeTransforms } from './transforms.js';
 import { openModal } from './modal.js';
 import { setupPanes } from './panes.js';
@@ -43,10 +45,9 @@ const state = {
   audition: true,
   cursor: 'dot',
   highlightRows: true,
-  showTriads: true,   // label chords (trad + sus) found in adjacent notes
+  showTriads: true,   // label chords found in adjacent notes (every family the tuning offers)
   proper: false,      // Triadulator: when on, only complete (no-leftover) triadulations
-  trad: true,         // Triadulator: build from traditional triads (maj/min/dim/aug)
-  sus: false,         // Triadulator: build from suspended (sus) chords
+  families: { trad: true, sus: false, septimal: true }, // Triadulator: enabled chord families (per id)
   topDegree: 71,
   visibleRows: 12,
   activePane: 'grid', // 'grid' | 'tiles' — which pane the roll mirrors
@@ -54,6 +55,13 @@ const state = {
   masterGain: 0.9,    // master fader (0..1.4); applied live and to the export
 };
 Object.assign(state, readJSON(UI_KEY) || {});
+// Migrate older persisted UI state (top-level trad/sus booleans) to the per-id
+// families map, and make sure the map exists and seeds new families on.
+if (!state.families || typeof state.families !== 'object') {
+  state.families = { trad: state.trad !== false, sus: !!state.sus, septimal: true };
+}
+if (state.families.septimal === undefined) state.families.septimal = true;
+delete state.trad; delete state.sus;
 
 let activePane = state.activePane;
 
@@ -139,6 +147,19 @@ engine.laneDelay = (laneId) => {
 // change (delay time is tempo-synced), or a load/undo.
 function applyLaneDelayAll() {
   for (const lane of arrangement.lanes) engine.applyLaneDelay(lane.id);
+}
+
+// Resolve a lane's chorus insert config for the engine. { on:false } when the lane
+// has no/disabled chorus; rate/depth are fixed presets, so only the mode crosses.
+engine.laneChorus = (laneId) => {
+  const lane = arrangement.lane(laneId);
+  if (!lane || !lane.chorus || !lane.chorus.on) return { on: false };
+  return { on: true, mode: lane.chorus.mode };
+};
+
+// (Re)apply every lane's chorus to the engine — after a modal edit or a load/undo.
+function applyLaneChorusAll() {
+  for (const lane of arrangement.lanes) engine.applyLaneChorus(lane.id);
 }
 
 const scheduler = new Scheduler(engine);
@@ -324,6 +345,7 @@ const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, 
   onMarkerStart: () => onMixStart(),                // reuse the arrangement-edit bracket
   onMarkers: (start, end) => setPlayMarkers(start, end),
   onDelay: (laneId) => openDelayModal(laneId),
+  onChorus: (laneId) => openChorusModal(laneId),
 });
 
 // Open the per-lane delay editor in a modal. The whole editing session is ONE
@@ -342,6 +364,25 @@ function openDelayModal(laneId) {
       engine.applyLaneDelay(laneId);
       onMixEnd();          // commit one undo step if changed + persist + dirty
       tilePlayer.render(); // reflect the D-button lit state
+    },
+  });
+}
+
+// Open the per-lane chorus editor in a modal — same one-undo-step bracket as the
+// delay modal (snapshot on open, apply live on each change, commit on close).
+function openChorusModal(laneId) {
+  const lane = arrangement.lane(laneId);
+  if (!lane) return;
+  const idx = arrangement.lanes.indexOf(lane);
+  onMixStart(); // capture the pre-edit snapshot
+  const body = buildChorusEditor(lane.chorus, { onChange: () => engine.applyLaneChorus(laneId) });
+  openModal({
+    title: `Chorus — Lane ${idx + 1}`,
+    body,
+    onClose: () => {
+      engine.applyLaneChorus(laneId);
+      onMixEnd();          // commit one undo step if changed + persist + dirty
+      tilePlayer.render(); // reflect the C-button lit state
     },
   });
 }
@@ -618,6 +659,7 @@ function resetLane(id) {
   patchStash.delete(stashKey(id)); // forget stashed per-kind patches for this lane
   applyLaneMix(0.012);  // gain/pan back to unity/center on the bus
   applyLaneDelayAll();  // delay off → remove the insert
+  applyLaneChorusAll(); // chorus off → remove the insert
   if (editTarget.laneId === id) editLane(id); // re-point the pane onto the new default patch
   refresh();
 }
@@ -633,6 +675,7 @@ function resetPlayer() {
   editGrid();            // the edited lane may no longer exist → back to the grid
   applyLaneMix(0);       // initialize the two fresh lanes' buses
   applyLaneDelayAll();
+  applyLaneChorusAll();
   refresh();
 }
 
@@ -849,6 +892,7 @@ tilesPaneEl.addEventListener('pointerdown', () => setActive('tiles'));
 
 function setActive(pane) {
   if (activePane === pane) return;
+  disarmBrush(); // a tile brush belongs to the tiles pane; leaving it puts the brush away
   activePane = pane;
   state.activePane = pane;
   if (pane === 'grid') { arrangement.selectedId = null; tilePlayer.setSelected(null); editGrid(); }
@@ -967,6 +1011,7 @@ function arrApply(json, full = false) {
     mute: !!l.mute, solo: !!l.solo,
     gain: l.gain == null ? 1 : l.gain, pan: l.pan == null ? 0 : l.pan, // mixer IS undoable
     delay: normalizeDelay(l.delay), // delay edits are undoable too
+    chorus: normalizeChorus(l.chorus), // chorus edits are undoable too
     patch: full ? normalizePatch(l.patch) : (livePatch.get(l.id) || normalizePatch(l.patch)),
     fresh: !!l.fresh,
   }));
@@ -977,6 +1022,7 @@ function arrApply(json, full = false) {
   if (!arrangement.allTiles().some((t) => t.id === arrangement.selectedId)) arrangement.selectedId = null;
   applyLaneMix(0.012);  // restored pan/gain → push to the (existing) lane buses
   applyLaneDelayAll();  // restored delay → rebuild/update the inserts
+  applyLaneChorusAll(); // restored chorus → rebuild the inserts
   // If the editor was on a lane the undo/redo removed, drop back to the grid.
   if (editTarget && editTarget.laneId != null && !arrangement.lane(editTarget.laneId)) editGrid();
 }
@@ -1057,18 +1103,21 @@ function clearPattern() {
 
 // What's currently triadulatable: the enabled state and the list of placeable
 // triadulations (proper or partial, per the Proper toggle). The analysis is over
-// the 12 chromatic pitch classes regardless of grid height ("still 12 pitches").
+// the pattern's pitch classes (its tuning's EDO) regardless of grid height.
 function triadulationState() {
-  const cols = library.current().columns;
+  const pattern = library.current();
+  const cols = pattern.columns;
+  const edo = edoOf(pattern.tuningId);
   const used = new Set();
   for (const c of cols) {
-    if (!c.isRest) used.add(((c.degree % DEGREES_PER_OCTAVE) + DEGREES_PER_OCTAVE) % DEGREES_PER_OCTAVE);
+    if (!c.isRest) used.add(((c.degree % edo) + edo) % edo);
   }
   if (used.size < 3) return { enabled: false, list: [] };
 
   const remaining = [];
-  for (let pc = 0; pc < DEGREES_PER_OCTAVE; pc++) if (!used.has(pc)) remaining.push(pc);
-  const list = enumerateTriadulations(remaining, { proper: state.proper, trad: state.trad, sus: state.sus });
+  for (let pc = 0; pc < edo; pc++) if (!used.has(pc)) remaining.push(pc);
+  const families = familiesFor(edo).filter((id) => state.families[id]); // enabled families for this tuning
+  const list = enumerateTriadulations(remaining, { proper: state.proper, families, edo });
   if (!list.length) return { enabled: false, list: [] };
 
   // Placeability: notes go in the columns strictly after the last placed note.
@@ -1085,13 +1134,13 @@ function lastNoteColumn(cols) {
   return last;
 }
 
-// Degree ≡ pc (mod 12) closest to `centroid`: centers the proposal in the
+// Degree ≡ pc (mod edo) closest to `centroid`: centers the proposal in the
 // register of the placed notes, and (on a multi-octave grid) picks the inversion.
-function nearestDegreeForPC(pc, centroid) {
+function nearestDegreeForPC(pc, centroid, edo) {
   const base = Math.round(centroid);
-  const off = ((((base - pc) % DEGREES_PER_OCTAVE) + DEGREES_PER_OCTAVE) % DEGREES_PER_OCTAVE);
+  const off = ((((base - pc) % edo) + edo) % edo);
   const d = base - off; // largest degree <= base with this pitch class
-  return Math.abs(d - centroid) <= Math.abs(d + DEGREES_PER_OCTAVE - centroid) ? d : d + DEGREES_PER_OCTAVE;
+  return Math.abs(d - centroid) <= Math.abs(d + edo - centroid) ? d : d + edo;
 }
 
 // Turn a chosen triadulation into prospective columns. Horizontal: after the
@@ -1111,7 +1160,8 @@ function proposalColumns(tri) {
   const placed = cols.filter((c) => !c.isRest).map((c) => c.degree);
   const centroid = placed.length ? placed.reduce((a, b) => a + b, 0) / placed.length : BASE_PITCH;
   const durIndex = state.brush.durIndex;
-  return pcs.map((pc, k) => ({ col: startCol + k, degree: nearestDegreeForPC(pc, centroid), durIndex }));
+  const edo = edoOf(library.current().tuningId);
+  return pcs.map((pc, k) => ({ col: startCol + k, degree: nearestDegreeForPC(pc, centroid, edo), durIndex }));
 }
 
 // Identity of a triadulation list, so repeated presses on an unchanged grid
@@ -1188,7 +1238,7 @@ function onToolbarChange(what) {
     case 'clear': clearPattern(); return;
     case 'triadulate': triadulate(); return;
     case 'confirmTriad': confirmTriadulation(); return;
-    case 'proper': case 'trad': case 'sus': clearProposal(); refresh(); return; // re-triadulate in the new mode/families
+    case 'proper': case 'family': clearProposal(); refresh(); return; // re-triadulate in the new mode/families
     case 'rotate': grid.rotateSelection(); return;
     case 'reverse': grid.reverseSelection(); return;
     case 'sortAsc': grid.sortSelection(true); return;
@@ -1197,11 +1247,20 @@ function onToolbarChange(what) {
     case 'shuffleNoRep': grid.shuffleNoRepeatSelection(); return;
     case 'transposeUp': grid.transposeScalar(1); return;
     case 'transposeDown': grid.transposeScalar(-1); return;
+    case 'colsInc': grid.setColumns(grid.columnCount() + 1); return;
+    case 'colsDec': grid.setColumns(grid.columnCount() - 1); return;
     case 'duration': // brush duration set in toolbar; apply to a selection if there is one
       grid.updateCursor();
       if (!grid.applyDuration(state.brush.durIndex)) refresh();
       return;
-    case 'tuning': library.current().tuningId = tb.tuningSel.value; refresh(); return;
+    case 'tuning': {
+      const cur = library.current();
+      cur.tuningId = tb.tuningSel.value;
+      // Drop a scale mask that doesn't belong to the new tuning's EDO (e.g. a 12-ET
+      // pentatonic when switching to 16-ET) back to Chromatic, which is universal.
+      if (!scaleValidForEdo(cur.scaleId, edoOf(cur.tuningId))) cur.scaleId = 'chromatic';
+      refresh(); return;
+    }
     case 'scale': library.current().scaleId = tb.scaleSel.value; refresh(); return;
     case 'scaleRoot': library.current().root = Number(tb.rootSel.value); refresh(); return;
     default: grid.updateCursor(); refresh();
@@ -1228,9 +1287,23 @@ function refresh() {
   persist();
 }
 
-// Reflect the current pattern's pitch context in the toolbar selectors.
+// Tooltips for the chord-family toggles (the buttons themselves are rebuilt per
+// tuning from familiesFor(edo)).
+const FAMILY_TITLES = {
+  trad: 'Build triadulations from traditional triads (major / minor / diminished / augmented)',
+  sus: 'Build triadulations from suspended chords (sus2 / sus4 — the same set)',
+  septimal: '16-ET septimal triads (4:5:7 and the supermajor) — built on the strong 7/4',
+};
+
+// Reflect the current pattern's pitch context in the toolbar selectors. The root
+// picker is rebuilt for the tuning's EDO (12 letter names / 16 hex names).
 function updateScaleControls() {
   const cur = library.current();
+  const edo = edoOf(cur.tuningId);
+  tb.setRootOptions(Array.from({ length: edo }, (_, i) => ({ value: String(i), label: pitchClassName(i, cur.tuningId) })));
+  tb.setScaleOptions(scalesFor(edo).map((s) => ({ value: s.id, label: s.name })));
+  tb.setFamilyButtons(familiesFor(edo).map((id) => ({ id, label: familyLabel(id), title: FAMILY_TITLES[id] })));
+  tb.setCols(cur.columns.length);
   tb.tuningSel.value = cur.tuningId;
   tb.scaleSel.value = cur.scaleId;
   tb.rootSel.value = String(cur.root);
@@ -1287,7 +1360,7 @@ function persist() {
   safeSet(ARR_KEY, JSON.stringify(arrangement.toJSON()));
   safeSet(UI_KEY, JSON.stringify({
     bpm: state.bpm, brush: state.brush, mode: state.mode, audition: state.audition,
-    cursor: state.cursor, highlightRows: state.highlightRows, showTriads: state.showTriads, proper: state.proper, trad: state.trad, sus: state.sus,
+    cursor: state.cursor, highlightRows: state.highlightRows, showTriads: state.showTriads, proper: state.proper, families: state.families,
     topDegree: state.topDegree, visibleRows: state.visibleRows, activePane: state.activePane,
     tileScaleIdx: state.tileScaleIdx, masterGain: state.masterGain,
   }));
@@ -1384,6 +1457,7 @@ function loadContent(env) {
   engine.resetLanes(); // drop stale strips (old delay tails / orphaned lanes) — rebuild fresh
   applyLaneMix(0);     // push the loaded volume/pan onto the lane buses
   applyLaneDelayAll(); // and the loaded delays
+  applyLaneChorusAll(); // and the loaded choruses
   refresh();
 }
 
@@ -1533,6 +1607,7 @@ if (savedSnapshot) {
         if (bl.gain == null) { bl.gain = ll.gain; changed = true; }
         if (bl.pan == null) { bl.pan = ll.pan; changed = true; }
         if (bl.delay == null) { bl.delay = ll.delay; changed = true; }
+        if (bl.chorus == null) { bl.chorus = ll.chorus; changed = true; }
       }
       // Region markers (top-level arr fields) added in this version too.
       if (!('playStart' in base.arr)) { base.arr.playStart = arrangement.playStart; base.arr.playEnd = arrangement.playEnd; changed = true; }
@@ -1881,7 +1956,7 @@ window.addEventListener('keydown', (e) => {
   if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !tiles) {
     e.preventDefault(); // scale-step within the active mask; Shift = a literal octave (equave)
     const up = e.key === 'ArrowUp';
-    if (e.shiftKey) grid.transpose((up ? 1 : -1) * DEGREES_PER_OCTAVE);
+    if (e.shiftKey) grid.transpose((up ? 1 : -1) * edoOf(library.current().tuningId));
     else grid.transposeScalar(up ? 1 : -1);
     flash(up ? tb.transUpBtn : tb.transDownBtn);
   }

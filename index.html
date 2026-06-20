@@ -122,6 +122,8 @@
     }
     .tbtn.swatch { color: #241c14; border-color: rgba(0,0,0,0.25); font-weight: 600; }
     .tbtn.active { outline: 2px solid #5aa9ff; outline-offset: 1px; }
+    .tbtn:disabled { opacity: 0.4; cursor: default; }
+    .tb-cols-val { min-width: 1.5em; text-align: center; color: #cbd2e0; font-variant-numeric: tabular-nums; font-size: 0.82rem; }
     .tbtn.danger { border-color: #5a2f33; color: #d6a3a8; }
     .tbtn.danger:hover { background: #3a2326; }
     .grab {
@@ -154,6 +156,9 @@
     .instr-label { color: #aeb9d0; font-size: 0.82rem; }
     .instr-row input[type="range"] { width: 100%; }
     .instr-row input[type="checkbox"].instr-check { justify-self: start; width: 16px; height: 16px; }
+    /* enum param dropdown (e.g. Tervik Algorithm): spans the control + value columns */
+    .instr-sel { grid-column: 2 / 4; width: 100%; background: #181c24; color: #cbd2e0;
+      border: 1px solid #313747; border-radius: 4px; padding: 0.18rem 0.3rem; font-size: 0.8rem; }
     .instr-val { color: #8a93a3; font-size: 0.78rem; text-align: right; font-variant-numeric: tabular-nums; }
     /* instrument selector */
     .instr-kind-sel { background: #11141c; color: #cbd2e0; border: 1px solid #2a3040; border-radius: 4px;
@@ -230,6 +235,15 @@
     }
     .lane-delay:hover { background: #272c38; color: #cbd2e0; }
     .lane-delay.on { background: #2a3a26; border-color: #4f7a47; color: #cdeecb; }
+    /* Effect buttons stacked in a narrow column: Delay on top, Chorus under. */
+    .lane-fx { display: flex; flex-direction: column; justify-content: center; gap: 4px; }
+    /* Chorus "C" button (under "D"); lit blue when on. */
+    .lane-chorus {
+      align-self: center; width: 20px; height: 20px; padding: 0; font-size: 0.74rem; font-weight: 700;
+      line-height: 1; border-radius: 4px; background: #20242e; color: #8a93a3; border: 1px solid #313747;
+    }
+    .lane-chorus:hover { background: #272c38; color: #cbd2e0; }
+    .lane-chorus.on { background: #1e3050; border-color: #3d5a80; color: #cfe0ff; }
     /* Modal (delay editor, future effect panels) */
     .modal-overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
       background: rgba(4, 6, 10, 0.62); }

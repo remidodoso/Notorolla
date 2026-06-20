@@ -193,12 +193,73 @@ const WENDELHORN_PARAMS = [
     title: 'Fade time once the note ends.' },
 ];
 
+// --- Tervik: a lightweight 3-operator FM synth (cheap polyphony, FM complexity).
+// Op 1 is always the final carrier and its ADSR is the reference/amp envelope; a
+// small Algorithm routes Ops 2 & 3 as modulators (into another op's frequency) or
+// as extra carriers. Each modulator's depth = index × its own frequency (constant
+// brightness across pitch, like Zindel). Ops 2 & 3 can FOLLOW Op 1's envelope
+// (then Level is just the "amount") instead of their own ADSR. Feedback morphs
+// Ops 2 & 3 from sine toward a band-limited saw — a cheap stand-in for operator
+// feedback. DSP in audio.js buildTervikVoice. -------------------------------
+
+const TERVIK_ALGO_OPTS = [
+  { id: 'stack',    label: 'Stack  3→2→1' },
+  { id: 'y',        label: 'Y  (2+3)→1' },
+  { id: 'pair',     label: 'Pair  3→2 · 1' },
+  { id: 'parallel', label: 'Parallel  1·2·3' },
+];
+
+// Default = a DX-style electric piano: Op 1 a 1:1 body, Op 2 a 1:1 carrier
+// modulated by Op 3 at 14:1 with a fast-decaying index (the metallic "tine"
+// attack that mellows into the body). Algorithm "pair" (Op3→Op2 · Op1).
+const TERVIK_DEFAULTS = {
+  algo: 'pair',
+  feedback: 0,
+  ratio1: 1,  level1: 0.5,                 a1: 0.002, d1: 1.4,  s1: 0, r1: 0.18,
+  ratio2: 1,  level2: 0.5, follow2: false, a2: 0.002, d2: 1.4,  s2: 0, r2: 0.18,
+  ratio3: 14, level3: 0.35, follow3: false, a3: 0.001, d3: 0.18, s3: 0, r3: 0.10,
+};
+
+const xratio = (v) => `${v.toFixed(2)}×`;
+const followFmt = (v) => (v ? 'follow Op 1' : 'own ADSR');
+
+// The per-operator params (Ratio, Level, [Follow Op 1], A D S R). Op 1 has no
+// Follow toggle — it IS the reference envelope.
+function tervikOpParams(n, group) {
+  const P = [
+    { key: `ratio${n}`, group, label: 'Ratio', min: 0.5, max: 16, fmt: xratio,
+      title: `Op ${n} frequency as a ratio of the played pitch. Integers = harmonic; non-integers = inharmonic/bell.` },
+    { key: `level${n}`, group, label: 'Level', min: 0, max: 1, fmt: pct,
+      title: n === 1 ? 'Output level of this carrier.' : 'Level — as a carrier its volume, as a modulator its FM depth (the "amount" when following Op 1).' },
+  ];
+  if (n !== 1) P.push({ key: `follow${n}`, group, label: 'Follow Op 1', bool: true, fmt: followFmt,
+    title: 'On: shape this op with Op 1’s envelope (Level is the amount). Off: use this op’s own ADSR below.' });
+  P.push(
+    { key: `a${n}`, group, label: 'A', min: 0.001, max: 1.5, log: true, fmt: secs, title: `Op ${n} attack.` },
+    { key: `d${n}`, group, label: 'D', min: 0.005, max: 5, log: true, fmt: secs, title: `Op ${n} decay.` },
+    { key: `s${n}`, group, label: 'S', min: 0, max: 1, fmt: pct, title: `Op ${n} sustain.` },
+    { key: `r${n}`, group, label: 'R', min: 0.005, max: 3, log: true, fmt: secs, title: `Op ${n} release.` },
+  );
+  return P;
+}
+
+const TERVIK_PARAMS = [
+  { key: 'algo', group: 'FM', label: 'Algorithm', sel: true, options: TERVIK_ALGO_OPTS,
+    title: 'Operator routing: how Ops 2 & 3 feed Op 1 (the carrier) or the output directly.' },
+  { key: 'feedback', group: 'FM', label: 'Feedback', min: 0, max: 1, fmt: pct,
+    title: 'Morphs Ops 2 & 3 from sine toward a bright saw — a cheap stand-in for operator feedback (grit/brightness). Op 1 stays a pure sine.' },
+  ...tervikOpParams(1, 'Op 1'),
+  ...tervikOpParams(2, 'Op 2'),
+  ...tervikOpParams(3, 'Op 3'),
+];
+
 // --- The registry. Each entry: id, display label, a one-line description (shown
 // in the pane), the parameter defaults, and the editor PARAMS metadata. -------
 export const INSTRUMENTS = {
   vesperia: { id: 'vesperia', label: 'Vesperia', desc: 'additive · resonant lowpass', defaults: VESPERIA_DEFAULTS, params: VESPERIA_PARAMS },
   zindel: { id: 'zindel', label: 'Zindel', desc: 'drawbar additive organ', defaults: ZINDEL_DEFAULTS, params: ZINDEL_PARAMS },
   wendelhorn: { id: 'wendelhorn', label: 'Wendelhorn', desc: 'brass supersaw ensemble', defaults: WENDELHORN_DEFAULTS, params: WENDELHORN_PARAMS },
+  tervik: { id: 'tervik', label: 'Tervik', desc: '3-op FM', defaults: TERVIK_DEFAULTS, params: TERVIK_PARAMS },
 };
 
 export const DEFAULT_KIND = 'vesperia';
@@ -236,6 +297,8 @@ export function normalizePatch(obj) {
       const v = obj[spec.key];
       if (spec.bool) {
         if (typeof v === 'boolean') p[spec.key] = v;
+      } else if (spec.sel) {
+        if (typeof v === 'string' && spec.options.some((o) => o.id === v)) p[spec.key] = v;
       } else if (typeof v === 'number' && isFinite(v)) {
         p[spec.key] = Math.min(spec.max, Math.max(spec.min, v));
       }

@@ -16,7 +16,7 @@
 // enforces that. The "compute the minimal equivalent set" generalization is later.
 
 import { stepInScale, scaleById } from './scales.js';
-import { tuningFreq } from './tuning.js';
+import { tuningFreq, edoOf } from './tuning.js';
 
 // --- transform constructors --------------------------------------------------
 
@@ -31,20 +31,22 @@ export function reverseTransform() { return { type: 'reverse' }; }
 
 // --- application (the pipeline) ----------------------------------------------
 
-// Walk one degree `t.steps` mask-steps for a transpose transform.
-function transposedDegree(degree, t) {
+// Walk one degree `t.steps` mask-steps for a transpose transform, in an `edo`-tone
+// octave.
+function transposedDegree(degree, t, edo) {
   if (!t.steps) return degree;
   const dir = t.steps > 0 ? 1 : -1;
   let d = degree;
-  for (let i = 0; i < Math.abs(t.steps); i++) d = stepInScale(t.scaleId, t.root, d, dir);
+  for (let i = 0; i < Math.abs(t.steps); i++) d = stepInScale(t.scaleId, t.root, d, dir, edo);
   return d;
 }
 
 // Transpose: map each note's pitch and re-resolve its frequency in the tile's own
 // tuning (a transform never changes tuning). Notes that don't move are reused.
 function applyTranspose(notes, t, ctx) {
+  const edo = edoOf(ctx.tuningId);
   return notes.map((n) => {
-    const d = transposedDegree(n.pitch, t);
+    const d = transposedDegree(n.pitch, t, edo);
     return d === n.pitch ? n : { ...n, pitch: d, freq: tuningFreq(d, ctx.tuningId, ctx.root) };
   });
 }
