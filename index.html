@@ -6,6 +6,11 @@
   <title>Notorolla — grid</title>
   <style>
     :root { color-scheme: dark; }
+    /* No scroll anchoring: canvases above the viewport resize on edits (grid
+       triad band, roll pitch span) and the browser's "helpful" scroll
+       adjustment read as the page scrolling itself back into view. The user
+       scrolls; the page stays put. */
+    html { overflow-anchor: none; }
     body {
       margin: 0;
       font-family: system-ui, sans-serif;
@@ -196,8 +201,8 @@
        scrolling track of ticks/numbers carrying the play-region markers. */
     .ruler-row { display: flex; align-items: stretch; width: max-content; position: sticky; top: 0; z-index: 4; }
     .ruler-spacer { flex: 0 0 var(--lane-head-w); width: var(--lane-head-w); position: sticky; left: 0; z-index: 5; background: #0c0e14; }
-    .ruler-track { position: relative; flex: 0 0 auto; height: 20px; background: #0a0c11; border: 1px solid #1c2029; border-radius: 4px 4px 0 0; cursor: pointer; touch-action: none; }
-    .ruler-canvas { display: block; }
+    .ruler-track { position: relative; flex: 0 0 auto; height: 20px; background: #0a0c11; border: 1px solid #1c2029; border-radius: 4px 4px 0 0; cursor: pointer; touch-action: none; background-repeat: repeat-x; }
+    .ruler-num { position: absolute; top: 1px; font-size: 9px; line-height: 1; color: #8a93a3; pointer-events: none; user-select: none; }
     .ruler-region { position: absolute; top: 0; bottom: 0; background: rgba(90,169,255,0.10); pointer-events: none; }
     .ruler-mark { position: absolute; top: 0; height: 20px; width: 0; pointer-events: none; z-index: 2; }
     .ruler-mark.start { border-left: 2px solid #4caf6a; }
@@ -347,6 +352,10 @@
       position: absolute; top: 2px; height: 52px; box-sizing: border-box; overflow: hidden;
       border: 1px solid #2a2f3d; border-radius: 6px; background: #11131a;
       cursor: pointer; line-height: 0; user-select: none; touch-action: none;
+      background-repeat: no-repeat; /* the thumbnail (a cached background-image) */
+      /* own stacking context: caps the transform swaths' inner z-index so tile
+         innards can never paint over the sticky lane head (z 3) */
+      z-index: 0;
     }
     .tile:hover { border-color: #3a4150; }
     /* prospective drop slot (ripple-mode drag preview — a filled landing band,
@@ -360,15 +369,16 @@
       border-radius: 50%; background: #6bd08a; color: #06210f; font-weight: 800; font-size: 12px;
       align-items: center; justify-content: center; display: none; box-shadow: 0 1px 3px rgba(0,0,0,0.5);
     }
-    /* playback position line, swept across each lane track during playback */
+    /* playback position line, swept across each lane track during playback.
+       z 2: above the tiles (0/2, appended later so it wins the tie) but BELOW
+       the sticky lane head (3) — it must slide under it when scrolled. */
     .tile-playhead {
       position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px;
-      background: #ff6b6b; pointer-events: none; z-index: 5; display: none;
+      background: #ff6b6b; pointer-events: none; z-index: 2; display: none;
     }
     .tile.selected { outline: 2px solid #5aa9ff; outline-offset: 1px; z-index: 2; }
     .tile.playing { box-shadow: 0 0 0 2px #6bd08a, 0 0 10px rgba(107,208,138,0.5); z-index: 2; }
     .tile-controls .active { outline: 2px solid #5aa9ff; outline-offset: 1px; }
-    .tile-thumb { display: block; border-radius: 6px; }
     .tile-name {
       position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
       font-size: 0.9rem; font-weight: 700; color: #fff;
@@ -385,12 +395,20 @@
     }
     .tile-xform.xf-transpose { background: rgba(150, 110, 220, 0.55); }
     .tile-xform.xf-reverse { background: rgba(70, 175, 160, 0.55); color: #eafff8; }
-    .tile-lanes.brush { cursor: cell; }
-    /* Live brush-gesture highlight: touched tiles outlined in the brush's colour. */
-    .tile.painted { outline: 2px solid #cbd2e0; outline-offset: 1px; z-index: 2; }
-    .tile.painted.pk-transpose { outline-color: #a07cde; }
-    .tile.painted.pk-reverse { outline-color: #5ec8b4; }
-    .tile.painted.pk-clone { outline-color: #e8a04e; }
+    /* Rubber-band multi-select (empty-space drag, clamped to one lane). */
+    .marquee-band {
+      position: absolute; top: 0; bottom: 0; pointer-events: none; z-index: 1;
+      background: rgba(90, 169, 255, 0.14); border: 1px solid rgba(90, 169, 255, 0.5);
+    }
+    /* Repeat fill handle at the selection block's right edge (Excel idiom):
+       drag right to stamp copies. Sits mid-height, straddling the block edge. */
+    .sel-handle {
+      position: absolute; top: 50%; width: 10px; height: 16px;
+      transform: translate(-50%, -50%);
+      background: #5aa9ff; border: 1px solid #dbe9ff; border-radius: 3px;
+      cursor: ew-resize; z-index: 2; touch-action: none;
+    }
+    .sel-handle:hover { background: #7fc0ff; }
     /* transform bar: the brush palette + armed-brush controls + selected-tile chips */
     /* Sits between the controls row and the lanes (tool palette + selected tile's chips). */
     .transform-bar { display: flex; align-items: center; gap: 0.6rem; padding-bottom: 0.6rem; flex-wrap: wrap; font-size: 0.82rem; color: #aeb9d0; }
@@ -402,6 +420,28 @@
     .xb-brush.xf-reverse, .xb-brush.xf-reverse:hover { background: #5ec8b4; }
     .xb-brush.xf-clone, .xb-brush.xf-clone:hover { background: #e8a04e; }
     .xb-brush.active { outline: 2px solid #5aa9ff; outline-offset: 1px; }
+    .xb-brush:disabled { opacity: 0.35; cursor: default; } /* transform actions need a selection */
+    /* Range tools (Insert / Clear / Delete time) — color-keyed to their bands */
+    .xb-range-label { color: #8a93a3; font-size: 0.85rem; align-self: center; }
+    .xb-brush.rk-insert, .xb-brush.rk-insert:hover { background: #6bd08a; }
+    .xb-brush.rk-clear, .xb-brush.rk-clear:hover { background: #e0c06e; }
+    .xb-brush.rk-delete, .xb-brush.rk-delete:hover { background: #d66a6a; }
+    /* armed range tool: the ruler is the gesture surface — make it beckon */
+    .ruler-track.range-armed { cursor: crosshair; box-shadow: inset 0 0 0 1px #5aa9ff, 0 0 8px rgba(90, 169, 255, 0.4); }
+    /* the drawn range: a color-keyed band on the ruler and through every track */
+    .range-band { position: absolute; top: 0; bottom: 0; pointer-events: none; z-index: 2; }
+    .range-band.insert { background: rgba(107, 208, 138, 0.16); border-left: 2px solid #6bd08a; border-right: 1px dashed rgba(107, 208, 138, 0.7); }
+    .range-band.clear { background: rgba(224, 192, 110, 0.15); border: 1px solid rgba(224, 192, 110, 0.55); }
+    .range-band.delete { background: rgba(214, 106, 106, 0.16); border: 1px solid rgba(214, 106, 106, 0.6); }
+    /* tiles a pending range op will SHIFT (doomed covers the removals) */
+    .tile.range-shift { outline: 2px solid rgba(90, 169, 255, 0.8); outline-offset: 1px; }
+    /* beat caret: the beat left of the pointer on the hovered lane — caret
+       semantics (a "land here" cursor). Steady for now; blink is a one-line
+       animation if it earns it. Above tiles (z 2), under the sticky heads. */
+    .beat-caret {
+      position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px;
+      background: #8ec9ff; opacity: 0.75; pointer-events: none; z-index: 2;
+    }
     .xb-armed { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.1rem 0.5rem; border: 1px solid #3a3350; border-radius: 4px; background: rgba(150,110,220,0.08); }
     .xb-amt-val { min-width: 2.4rem; text-align: center; font-variant-numeric: tabular-nums; color: #cbd2e0; font-weight: 700; }
     .xb-scale { background: #11141c; color: #cbd2e0; border: 1px solid #2a3040; border-radius: 4px; padding: 0.18rem 0.35rem; }
@@ -465,12 +505,14 @@
       <div class="pane-header"><span class="grip">⠿</span> Tile player</div>
       <div class="pane-body">
         <div class="tile-controls">
+          <button id="phHome" title="Playhead to the beginning (B)">⏮</button>
           <button id="tilePlay" title="Play the lane once">▶</button>
           <button id="tileStop" disabled>■</button>
           <button id="tileLoop" title="Loop — tap to add passes (max 8)">↻</button>
+          <button id="phEnd" title="Playhead to the end (E)">⏭</button>
           <button id="modLoop" title="Loop Mod — modulators follow ruler time (phase resets each loop pass). Off: modulators run on elapsed time from the session’s first Play.">Loop Mod</button>
           <span class="tsep"></span>
-          <span id="modClock" class="mod-clock" title="Modulator clock — elapsed time since the session’s first Play (or ruler time when Loop Mod is on)">00:00.00</span>
+          <span id="modClock" class="mod-clock" title="Stopped: the parked playhead’s position. Playing: the modulators’ clock — elapsed time since the session’s first Play, or ruler time when Loop Mod is on">00:00.00</span>
           <button id="arrUndo">Undo</button>
           <button id="arrRedo">Redo</button>
           <button id="tileDelete">Delete</button>

@@ -5,7 +5,7 @@ import { Scheduler } from './scheduler.js';
 import { PianoRoll } from './pianoroll.js';
 import { Note, Score } from './model.js';
 import { Pattern, BASE_PITCH } from './grid.js';
-import { PatternLibrary, Arrangement, laneColor } from './library.js';
+import { PatternLibrary, Arrangement, laneColor, insertPoint, deletePoint } from './library.js';
 import { enumerateTriadulations, familiesFor, familyLabel, chordsFor } from './triads.js';
 import { generateRandom, RANDOM_DEFAULTS } from './random.js';
 import { edoOf, tuningFreq, pitchClassName, degreeBounds } from './tuning.js';
@@ -14,7 +14,7 @@ import { notesToMidi } from './midi.js';
 import { encodeWav, encodeBwf } from './wav.js';
 import { zipStore } from './zip.js';
 import { GridView } from './gridview.js';
-import { TilePlayer, TILE_SCALES, DEFAULT_SCALE_IDX, segmentHits } from './tileplayer.js';
+import { TilePlayer, TILE_SCALES, DEFAULT_SCALE_IDX } from './tileplayer.js';
 import { buildToolbar } from './toolbar.js';
 import { buildInstrumentPane } from './instrumentpane.js';
 import { normalizePatch, defaultPatch, clonePatch, patchRelease, instrument } from './instrument.js';
@@ -58,6 +58,8 @@ const state = {
   masterGain: 0.9,    // master fader (0..1.4); applied live and to the export
   modLoop: false,     // global "Loop Mod": modulators on ruler time (reset each loop) vs elapsed
   ripple: false,      // tile insert/delete ripple (off = exact placement, overwrite on overlap)
+  playheadBeat: 0,    // where the tile transport is parked when stopped (beats, absolute)
+  tileScrollX: 0,     // tile player's horizontal scroll (px; restored on reload as-is)
 };
 Object.assign(state, readJSON(UI_KEY) || {});
 // Migrate older persisted UI state (top-level trad/sus booleans) to the per-id
@@ -181,10 +183,30 @@ function applyLaneChorusAll() {
 }
 
 const scheduler = new Scheduler(engine);
-scheduler.onEnded = () => {};
+// Natural finish (one-shot ended, loop passes exhausted): the playhead rewinds
+// to the beginning. A manual Stop parks it in place instead (see stop()).
+scheduler.onEnded = () => {
+  if (activeSource === 'tiles') {
+    state.playheadBeat = playStartBeat();
+    tilePlayer.setPlayhead(state.playheadBeat);
+    ensureTileVisible(state.playheadBeat); // follow the rewind back into view
+  }
+  resumeBeat = null;
+};
 scheduler.onCycle = (score) => { roll.setScore(score); };
 
 let activeSource = null; // 'grid' | 'tiles' | null — only one transport at a time
+
+// Resume (ArrowRight): the FIRST pass of the play that's being armed runs from
+// this beat instead of the region start; null = a normal from-the-top play.
+// Self-clearing — see windowedArrangementScore.
+let resumeBeat = null;
+let resumeStartTime = 0; // the scheduler startTime a pending resume was armed for
+// Display-side pass origin: the absolute beat the CURRENT pass began at. Equals
+// the resume point during a resumed first pass, the region start otherwise;
+// renderLoop flips it forward when the loop wraps.
+let passBase = 0;
+let lastCurBeat = 0;
 
 // The grid's score, with any prospective Triadulator notes merged in so they
 // play and audition like real notes (but stay un-set until Confirm).
@@ -283,8 +305,13 @@ function playEndBeat() {
 // both honor the markers, and the scheduler/resync logic is unchanged (it just
 // sees a shorter score). Default markers (0 … arrangement end) = the whole thing.
 function windowedArrangementScore() {
+  // A resume narrows the FIRST pass to [playhead, end). The scheduler re-reads
+  // this provider at every loop boundary with cycleStart advanced past the start
+  // we armed — those reads get the full region again, so a resumed play that
+  // loops wraps to the region start, not the resume point.
+  if (resumeBeat != null && scheduler.cycleStart !== resumeStartTime) resumeBeat = null;
   const score = arrangementScore();
-  const start = playStartBeat();
+  const start = resumeBeat != null ? resumeBeat : playStartBeat();
   const end = playEndBeat();
   if (start <= 0 && end >= score.lengthBeats) return score; // full range — no windowing
   const notes = score.notes.filter((n) => n.start >= start && n.start < end);
@@ -340,20 +367,65 @@ const grid = new GridView(document.getElementById('grid'), library.current(), {
 
 const tb = buildToolbar(document.getElementById('toolbar'), state, onToolbarChange);
 
+let marqueeBefore = null; // selection snapshot for Esc-cancelling a marquee
+
 const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, arrangement, {
   onTileDown: (id, ev) => onTileDown(id, ev),
   onOpen: (name, id) => openTile(name, id),
   onGridDragOver: (laneId, start) => gridDragOver(laneId, start),
   onDropAt: (laneId, start) => dropCurrentTile(laneId, start),
-  onLaneClick: (laneId) => {
-    setActive('tiles');
+  // Empty-space rubber-band selection (one lane). Live: each band change
+  // re-derives the intersecting set; no re-render, just class syncs.
+  onMarqueeStart: () => {
+    marqueeBefore = { ids: new Set(arrangement.selectedIds), anchor: arrangement.selectedId };
+  },
+  onMarquee: (laneId, b0, b1) => {
+    arrangement.selectMarquee(laneId, b0, b1, patternLen);
     arrangement.activeLaneId = laneId;
-    arrangement.selectedId = null;
-    tilePlayer.setSelected(null);
+    tilePlayer.syncSelection();
     tilePlayer.setActiveLane(laneId);
+    updateTileSelectionUI();
+  },
+  onMarqueeEnd: (laneId, dragged) => {
+    marqueeBefore = null;
+    setActive('tiles');
+    if (!dragged) { // a plain empty-space click: activate the lane, clear the selection
+      arrangement.activeLaneId = laneId;
+      arrangement.clearSelection();
+      tilePlayer.syncSelection();
+      tilePlayer.setActiveLane(laneId);
+      updateTileSelectionUI();
+    }
     updateRollContent(); scrollRollToSelected();
     persist();
   },
+  onMarqueeCancel: () => { // Esc mid-band: back to the pre-gesture selection
+    if (marqueeBefore) {
+      arrangement.selectedIds = new Set(marqueeBefore.ids);
+      arrangement.selectedId = marqueeBefore.anchor;
+      arrangement.pruneSelection();
+      marqueeBefore = null;
+    }
+    tilePlayer.syncSelection();
+    updateTileSelectionUI();
+  },
+  // Repeat fill handle: plan k block-repeats (per-tile ignore-collisions) —
+  // preview shows only what will land; commit stamps them (one undo entry)
+  // and the selection grows to original + stamps (user's choice).
+  onRepeatPreview: (laneId, k) => {
+    tilePlayer.showStamps(laneId, arrangement.planRepeat(k, patternLen).filter((p) => !p.blocked));
+  },
+  onRepeatCommit: (laneId, k) => {
+    tilePlayer.clearStamps();
+    if (k <= 0) return;
+    const before = arrSnap();
+    arrangement.repeatSelection(k, patternLen);
+    arrCommit(before); // no entry if every stamp was blocked
+    tilePlayer.syncSelection();
+    updateTileSelectionUI();
+    refresh();
+  },
+  onRepeatCancel: () => tilePlayer.clearStamps(),
   onMute: (laneId) => toggleLaneFlag('mute', laneId),
   onSolo: (laneId) => toggleLaneFlag('solo', laneId),
   onAddLane: () => addLane(),
@@ -364,6 +436,12 @@ const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, 
   onMixEnd: () => onMixEnd(),
   onMarkerStart: () => onMixStart(),                // reuse the arrangement-edit bracket
   onMarkers: (start, end) => setPlayMarkers(start, end),
+  onRangePreview: (kind, s, e) => {                 // light the tiles the drawn range would touch
+    const { doomed, shifted } = rangeAffected(kind, s, e);
+    tilePlayer.setRangePreview(doomed, shifted);
+  },
+  onRangeCommit: (kind, s, e, keepArmed) => commitRange(kind, s, e, keepArmed),
+  onRangeCancel: () => { tilePlayer.setRangePreview(null, null); disarmRangeTool(); },
   onDelay: (laneId) => openDelayModal(laneId),
   onChorus: (laneId) => openChorusModal(laneId),
   onMods: (laneId) => openModModal(laneId),
@@ -518,9 +596,6 @@ let tileDrag = null;   // { id, fromLaneId, preview } while a drag is active
 // listeners (so they survive the re-renders the preview triggers).
 function onTileDown(id, ev) {
   if (ev.button != null && ev.button !== 0) return;
-  if (brushMode === 'transpose') return onTransposePaint(id, ev); // armed brush → paint, not move/select
-  if (brushMode === 'reverse') return onReversePaint(id, ev);
-  if (brushMode === 'clone') return onClonePaint(id, ev);
   const startX = ev.clientX, startY = ev.clientY;
   let dragging = false;
 
@@ -528,7 +603,7 @@ function onTileDown(id, ev) {
     if (!dragging) {
       if (Math.hypot(e.clientX - startX, e.clientY - startY) < DRAG_THRESH) return;
       dragging = true;
-      startTileDrag(id);
+      startTileDrag(id, startX); // grip from the ORIGINAL press point
     }
     updateTileDrag(e);
   };
@@ -536,252 +611,256 @@ function onTileDown(id, ev) {
     window.removeEventListener('pointermove', onMove);
     window.removeEventListener('pointerup', onUp);
     if (dragging) endTileDrag(e);
-    else selectTile(id); // no movement → it was a click
+    else selectTile(id, e); // no movement → a click (modifiers pick the selection op)
   };
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
 }
 
-function startTileDrag(id) {
+function startTileDrag(id, grabX) {
   const lane = arrangement.laneOfTile(id);
-  tileDrag = { id, fromLaneId: lane ? lane.id : null, preview: null };
+  // Normalized grip (user's rule): square-ish tiles are held by the center; long
+  // skinny ones where grabbed, but never closer than half the tile height to an
+  // edge. Captured once (in beats) at pickup; the drop math subtracts it.
+  tileDrag = { id, fromLaneId: lane ? lane.id : null, preview: null, gripBeats: tilePlayer.gripFor(id, grabX) };
+  // Dragging a member of a MULTI-selection moves/copies the whole selection as
+  // a rigid block; dragging an unselected tile is a plain single-tile drag.
+  if (arrangement.selectedIds.size > 1 && arrangement.selectedIds.has(id)) {
+    const grabbed = arrangement.allTiles().find((t) => t.id === id);
+    const block = arrangement.selectionBlock(patternLen);
+    tileDrag.multi = { grabbedStart: grabbed.start, blockStart: block.start };
+  }
   tilePlayer.setPlaying(new Set()); // drop the green "playing" badge while dragging
-  tilePlayer.makeGhost(id);
+  tilePlayer.makeGhost(id, tileDrag.gripBeats * tilePlayer.ppb); // ghost hangs from the grip point
 }
 
 function updateTileDrag(e) {
   const copy = e.ctrlKey;
+  tilePlayer.edgeScroll(e.clientX, e.clientY); // near an edge → jump the view (dropTarget reads fresh rects after)
   const tgt = tilePlayer.dropTarget(e.clientX, e.clientY);
-  const preview = tgt
-    ? { id: tileDrag.id, fromLaneId: tileDrag.fromLaneId, copy, toLaneId: tgt.laneId, start: tgt.start }
-    : null;
+  // The tile lands at the beat NEAREST ITS CARRIED POSITION (pointer minus the
+  // grip, rounded) — the original grip-preserving feel. The caret switches to
+  // carry mode and marks the landing's left edge (see setCarryCaret).
+  let preview = null;
+  if (tgt && tileDrag.multi) {
+    // Multi-selection: the grabbed tile's destination sets a rigid shift for
+    // the whole block (clamped so no member lands before beat 0); the plan
+    // (with per-member collision blocking) is what the drop will commit.
+    const dest = Math.round(tgt.beat - tileDrag.gripBeats);
+    const shift = Math.max(dest - tileDrag.multi.grabbedStart, -tileDrag.multi.blockStart);
+    preview = {
+      multi: arrangement.planSelectionDrop(tgt.laneId, shift, patternLen, copy),
+      shift, copy, toLaneId: tgt.laneId, fromLaneId: tileDrag.fromLaneId,
+    };
+  } else if (tgt) {
+    preview = { id: tileDrag.id, fromLaneId: tileDrag.fromLaneId, copy, toLaneId: tgt.laneId, start: Math.max(0, Math.round(tgt.beat - tileDrag.gripBeats)) };
+  }
   if (!samePreview(preview, tileDrag.preview)) {
     tileDrag.preview = preview;
     tilePlayer.render(preview, true); // animate the live ripple
   }
+  if (preview) tilePlayer.setCarryCaret(preview.toLaneId, preview.multi ? tileDrag.multi.blockStart + preview.shift : preview.start);
+  else tilePlayer.setCarryCaret(null); // off the lanes — a drop would cancel
   tilePlayer.moveGhost(e.clientX, e.clientY, copy);
 }
 
 function endTileDrag(e) {
   const preview = tileDrag.preview;
   tilePlayer.clearGhost();
+  tilePlayer.setCarryCaret(null); // back to hover mode
   tileDrag = null;
 
   if (!preview) { refresh(); return; } // dropped off the lanes → cancel
   const copy = e.ctrlKey;              // authoritative copy state at the drop
 
-  // Moving/copying a tile into a FRESH lane (brand-new / just-reset) seeds that
-  // lane's instrument from the SOURCE lane (a tile carries no patch — its lane
-  // does), so the tile keeps sounding the way it did. A lane that's been used
-  // keeps its own instrument.
+  // Moving/copying into a FRESH lane (brand-new / just-reset) seeds that lane's
+  // instrument from the SOURCE lane (a tile carries no patch — its lane does),
+  // so the tiles keep sounding the way they did. A used lane keeps its own.
   const destLane = arrangement.lane(preview.toLaneId);
   const seedFromSource = destLane && destLane.fresh && preview.toLaneId !== preview.fromLaneId;
   const srcPatch = seedFromSource ? (arrangement.lane(preview.fromLaneId) || {}).patch : null;
 
   const before = arrSnap();
-  const newId = copy
-    ? arrangement.copyTile(preview.id, preview.toLaneId, preview.start, patternLen, state.ripple)
-    : (arrangement.moveTile(preview.id, preview.toLaneId, preview.start, patternLen, state.ripple), preview.id);
+  if (preview.multi) {
+    // Whole-selection block drop (ignore-collisions; ripple doesn't apply to
+    // multi drags). Move keeps the same ids selected; copy selects the copies.
+    if (copy) arrangement.copySelection(preview.toLaneId, preview.shift, patternLen);
+    else arrangement.moveSelection(preview.toLaneId, preview.shift, patternLen);
+  } else {
+    const newId = copy
+      ? arrangement.copyTile(preview.id, preview.toLaneId, preview.start, patternLen, state.ripple)
+      : (arrangement.moveTile(preview.id, preview.toLaneId, preview.start, patternLen, state.ripple), preview.id);
+    arrangement.select(newId);
+  }
   arrCommit(before);
   if (srcPatch) destLane.patch = clonePatch(srcPatch); // adopt the source instrument
   if (destLane) destLane.fresh = false;                // the lane now has a tile
   arrangement.activeLaneId = preview.toLaneId;
-  arrangement.selectedId = newId;
   refresh();
 }
 
+// Previews are small plain objects (single-tile or a multi plan) — structural
+// equality via JSON is cheap and covers both shapes.
 function samePreview(a, b) {
   if (a === b) return true;
   if (!a || !b) return false;
-  return a.id === b.id && a.copy === b.copy && a.toLaneId === b.toLaneId
-    && a.start === b.start && a.fromLaneId === b.fromLaneId;
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function selectTile(id) {
+// Click-select with modifiers: plain = fresh single selection; Ctrl = toggle
+// membership (one lane — a cross-lane Ctrl-click starts fresh there); Shift =
+// contiguous range from the anchor. `ev` optional (programmatic = plain).
+function selectTile(id, ev) {
   setActive('tiles');
+  if (ev && ev.shiftKey) arrangement.selectRange(id);
+  else if (ev && (ev.ctrlKey || ev.metaKey)) arrangement.toggleSelect(id);
+  else arrangement.select(id);
   const lane = arrangement.laneOfTile(id);
   if (lane) arrangement.activeLaneId = lane.id;
-  arrangement.selectedId = id;
-  tilePlayer.setSelected(id);
+  tilePlayer.syncSelection();
   tilePlayer.setActiveLane(arrangement.activeLaneId);
   updateRollContent(); scrollRollToSelected();
-  tileDeleteBtn.disabled = false;
-  refreshTransformBar();
+  updateTileSelectionUI();
   persist();
 }
 
-// --- transform brushes: paint per-tile transforms (Transpose, Reverse, Clone) --
-//
-// Armed via the transform bar (one brush at a time). While a brush is armed, a
-// click / click-drag over tiles PAINTS it onto each instead of the normal
-// select/move: Transpose SETs the tile's transpose to the brush amount (a second
-// transpose replaces it; amount 0 clears); Reverse toggles the tile, with the drag
-// anchor deciding the on/off state that's then painted across the sweep; Clone
-// diverges swept tiles onto fresh copies of their patterns (deduped per source —
-// see paintClone). Transforms are nondestructive (an ordered list applied in
-// arrangementScore) and undoable. Brushes are ONE-SHOT: a completed gesture (click
-// or full drag-sweep) disarms — unless SHIFT is held at release, which keeps it armed.
-let brushMode = null;                                  // null | 'transpose' | 'reverse' | 'clone'
-const transposeOpts = { amount: 1, scaleId: 'auto' };  // persists across arming
+// The selection as tiles, in timeline order (they all live on one lane).
+function selectedTiles() { return arrangement.selectedTiles(); }
 
-// Paint the transpose brush onto one tile. Scale 'auto' = the tile's own mask
-// (else the chosen mask); root is always the tile's.
-function paintTranspose(tid) {
-  const tile = arrangement.allTiles().find((t) => t.id === tid);
-  if (!tile) return;
-  const p = library.patterns.get(tile.name);
-  const root = p ? p.root : 0;
-  const scaleId = transposeOpts.scaleId === 'auto' ? (p ? p.scaleId : 'chromatic') : transposeOpts.scaleId;
-  setTileTranspose(tile, transposeOpts.amount, scaleId, root);
-}
-
-// A paint gesture (click or click-drag across tiles) = one undo step. `apply(tid)`
-// mutates one tile; it runs on the anchor and every tile the pointer PATH
-// crosses (segment hit-testing between pointer samples via segmentHits, so a
-// fast flick can't skip narrow tiles), once each, in path order. Touched tiles
-// are outlined live in the brush's colour. ESC mid-gesture CANCELS: the
-// pre-gesture snapshot is restored with no undo entry, `onCancel` cleans any
-// brush-specific state (Clone deletes the patterns it minted), and the brush
-// disarms. Optional `onDone(startId)` runs after a commit, before the one-shot
-// disarm decision.
-let paintGestureActive = false; // the global Esc handler defers to the gesture's own
-function paintGesture(startId, ev, apply, onDone, onCancel) {
-  const before = arrSnap();
-  const rects = tilePlayer.tileRects(); // stable for the whole sweep
-  const painted = new Set();
-  let last = { x: ev.clientX, y: ev.clientY };
-  paintGestureActive = true;
-  const touch = (tid) => {
-    if (tid == null || painted.has(tid)) return;
-    painted.add(tid);
-    apply(tid);
-    tilePlayer.render(); // show the swath(s) live as the sweep touches each tile
-    tilePlayer.setPainted(painted, brushMode); // re-apply the highlight after the rebuild
-  };
-  const cleanup = () => {
-    window.removeEventListener('pointermove', onMove);
-    window.removeEventListener('pointerup', onUp);
-    window.removeEventListener('keydown', onKey, true);
-    paintGestureActive = false;
-  };
-  const onMove = (e) => {
-    for (const tid of segmentHits(rects, last.x, last.y, e.clientX, e.clientY)) touch(tid);
-    last = { x: e.clientX, y: e.clientY };
-  };
-  const onUp = (e) => {
-    cleanup();
-    tilePlayer.setPainted(null);
-    arrCommit(before);
-    if (onDone) onDone(startId); // brush-specific finish (e.g. Clone opens the anchor's clone)
-    selectTile(startId); // reflect it in the transform bar + roll, persist
-    if (!e.shiftKey) disarmBrush(); // one-shot; Shift at release keeps painting
-  };
-  const onKey = (e) => {
-    if (e.key !== 'Escape') return;
-    e.preventDefault();
-    e.stopPropagation(); // don't let the app's global Esc also fire
-    cleanup();
-    tilePlayer.setPainted(null);
-    arrApply(before); // cancelled — restore the snapshot, NO undo entry
-    if (onCancel) onCancel();
-    disarmBrush();
-    refresh();
-  };
-  touch(startId);
-  window.addEventListener('pointermove', onMove);
-  window.addEventListener('pointerup', onUp);
-  window.addEventListener('keydown', onKey, true); // capture: beats the global handler
-}
-
-function onTransposePaint(startId, ev) {
-  if (ev.button != null && ev.button !== 0) return;
-  paintGesture(startId, ev, paintTranspose);
-}
-
-// Reverse: the anchor tile toggles to a new state, then that state is painted
-// across the whole sweep (so a drag sets them all the same, not flip-flopping).
-function onReversePaint(startId, ev) {
-  if (ev.button != null && ev.button !== 0) return;
-  const anchor = arrangement.allTiles().find((t) => t.id === startId);
-  const target = anchor ? !hasReverse(anchor.transforms) : true;
-  paintGesture(startId, ev, (tid) => {
-    const tile = arrangement.allTiles().find((t) => t.id === tid);
-    if (tile) setTileReverse(tile, target);
-  });
-}
-
-// Clone: repoint swept tiles onto fresh copies of their patterns, "as if cloned
-// in the grid" — position + per-tile transforms untouched, un-swept tiles of the
-// original unaffected. DEDUPED per source: every swept tile sharing pattern A1
-// gets the SAME new clone (5×A1 + 3×A3 → 5×A8 + 3×A9), so a swept section keeps
-// its internal sharing while diverging as a block. The source→clone map lives for
-// the brush's whole ARMED SESSION (user: dedup for the duration of Shift-held) —
-// a second Shift-kept sweep of more A1 tiles joins A8; re-arming starts fresh.
-// `minted` guards re-sweeps of already-repointed tiles (never clone a clone made
-// this session). After the gesture the ANCHOR tile's clone opens in the grid
-// editor (like double-click). Undo repoints the tiles back; the cloned patterns
-// linger in the registry (accepted — same as deleting a pattern's last tile
-// today; a future pattern browser / orphan-GC is the real fix).
-let cloneSession = null; // { map: srcName -> cloneName, minted: Set<cloneName> } while armed
-
-function paintClone(tid) {
-  const tile = arrangement.allTiles().find((t) => t.id === tid);
-  if (!tile || !cloneSession || cloneSession.minted.has(tile.name)) return;
-  let cloneName = cloneSession.map.get(tile.name);
-  if (!cloneName) {
-    const p = library.cloneOf(tile.name);
-    if (!p) return;
-    cloneSession.map.set(tile.name, p.name);
-    cloneSession.minted.add(p.name);
-    if (cloneSession.gestureMinted) cloneSession.gestureMinted.add(p.name); // for Esc-cancel
-    cloneName = p.name;
-  }
-  tile.name = cloneName;
-}
-
-function onClonePaint(startId, ev) {
-  if (ev.button != null && ev.button !== 0) return;
-  if (cloneSession) cloneSession.gestureMinted = new Set(); // clones THIS gesture mints
-  paintGesture(startId, ev, paintClone,
-    (sid) => {
-      const anchor = arrangement.allTiles().find((t) => t.id === sid);
-      const p = anchor && library.patterns.get(anchor.name);
-      if (p) { library.open(p.name); centerGridOn(p); } // the anchor's clone becomes the grid's current
-    },
-    () => {
-      // Esc-cancel: unlike the accepted stray-on-undo, a cancelled gesture can
-      // clean up completely — the clones it minted are referenced by nothing
-      // (the snapshot restore already repointed the tiles back).
-      if (!cloneSession || !cloneSession.gestureMinted) return;
-      for (const name of cloneSession.gestureMinted) {
-        library.patterns.delete(name);
-        cloneSession.minted.delete(name);
-        for (const [src, cl] of [...cloneSession.map]) if (cl === name) cloneSession.map.delete(src);
-      }
-    });
-}
-
-// Arm/disarm a brush (mutually exclusive; clicking the armed one or Esc disarms).
-// The clone dedup session lives exactly as long as the clone brush stays armed.
-function setBrush(mode) {
-  brushMode = brushMode === mode ? null : mode;
-  cloneSession = brushMode === 'clone' ? { map: new Map(), minted: new Set() } : null;
-  tileLaneEl.classList.toggle('brush', !!brushMode);
+// Selection-dependent chrome: the Delete button and the transform bar (action
+// buttons enable with a selection; the chip inspector reflects it).
+function updateTileSelectionUI() {
+  tileDeleteBtn.disabled = arrangement.selectedIds.size === 0;
   refreshTransformBar();
 }
-function disarmBrush() { if (brushMode) setBrush(brushMode); }
-function bumpBrush(d) {
+
+// --- transform ACTIONS: select tiles, then click the button ---------------
+//
+// (The former brushes — arm a tool, then paint tiles — were removed once
+// multi-select landed: select-THEN-button is one mental model shared with the
+// grid's Permute tools, and it deleted the whole paint-gesture/armed-session
+// machinery. Buttons act on the current selection, single or multiple; one
+// undo entry per action; the selection survives so actions chain.)
+let rangeMode = null;                                  // null | 'insert' | 'clear' | 'delete' — armed Range tool (draws on the ruler)
+const transposeOpts = { amount: 1, scaleId: 'auto' };  // the Transpose action's parameters (always visible in the bar)
+
+// Transpose: SET each selected tile's transpose to the bar's amount (a second
+// application replaces, never accumulates; amount 0 clears). Scale 'auto' =
+// each tile's own mask; the root is always the tile's.
+function applyTransposeAction() {
+  const tiles = selectedTiles();
+  if (!tiles.length) return;
+  const before = arrSnap();
+  for (const tile of tiles) {
+    const p = library.patterns.get(tile.name);
+    const root = p ? p.root : 0;
+    const scaleId = transposeOpts.scaleId === 'auto' ? (p ? p.scaleId : 'chromatic') : transposeOpts.scaleId;
+    setTileTranspose(tile, transposeOpts.amount, scaleId, root);
+  }
+  arrCommit(before);
+  refresh();
+}
+
+// Reverse: unify, don't flip-flop — if EVERY selected tile is reversed,
+// un-reverse them all; otherwise reverse them all.
+function applyReverseAction() {
+  const tiles = selectedTiles();
+  if (!tiles.length) return;
+  const target = !tiles.every((t) => hasReverse(t.transforms));
+  const before = arrSnap();
+  for (const tile of tiles) setTileReverse(tile, target);
+  arrCommit(before);
+  refresh();
+}
+
+// Clone: repoint each selected tile onto a fresh copy of its pattern, "as if
+// cloned in the grid" — position + per-tile transforms untouched. DEDUPED per
+// source within the action (5×A1 + 2×A3 selected → 5×A8 + 2×A9), so a selection
+// keeps its internal sharing while diverging as a block. The ANCHOR tile's
+// clone then opens in the grid editor. Undo repoints the tiles back; the cloned
+// patterns linger in the registry (accepted — a future pattern browser /
+// orphan-GC is the real fix).
+function applyCloneAction() {
+  const tiles = selectedTiles();
+  if (!tiles.length) return;
+  const before = arrSnap();
+  const map = new Map(); // srcName -> cloneName, this action only
+  for (const tile of tiles) {
+    let cloneName = map.get(tile.name);
+    if (!cloneName) {
+      const p = library.cloneOf(tile.name);
+      if (!p) continue;
+      map.set(tile.name, p.name);
+      cloneName = p.name;
+    }
+    tile.name = cloneName;
+  }
+  arrCommit(before);
+  const anchor = arrangement.allTiles().find((t) => t.id === arrangement.selectedId) || tiles[0];
+  const p = anchor && library.patterns.get(anchor.name);
+  if (p) { library.open(p.name); centerGridOn(p); } // the anchor's clone becomes the grid's current
+  refresh();
+}
+
+// Arm/disarm a Range tool (Insert / Clear / Delete time): the ruler becomes the
+// gesture surface (it glows; markers go inert) until a range is drawn.
+// Exclusive, one-shot, Shift keeps armed, Esc disarms.
+function setRangeTool(kind) {
+  rangeMode = rangeMode === kind ? null : kind;
+  tilePlayer.setRangeMode(rangeMode);
+  refreshTransformBar();
+}
+function disarmRangeTool() { if (rangeMode) setRangeTool(rangeMode); }
+
+// The tiles a pending range op touches: `doomed` will be removed (starts in the
+// range — Clear/Delete), `shifted` will move (Insert: everything from the range
+// start; Delete: everything from the range end). Same predicates as the ops.
+function rangeAffected(kind, s, e) {
+  const doomed = new Set(), shifted = new Set();
+  for (const t of arrangement.allTiles()) {
+    if (kind !== 'insert' && t.start >= s && t.start < e) doomed.add(t.id);
+    if (kind === 'insert' && t.start >= s) shifted.add(t.id);
+    if (kind === 'delete' && t.start >= e) shifted.add(t.id);
+  }
+  return { doomed, shifted };
+}
+
+// Commit a drawn range: apply the op (one undo entry), carry the parked
+// playhead through it (markers ride inside the Arrangement ops), and disarm
+// unless Shift was held. An empty range (a plain click) just cancels.
+function commitRange(kind, s, e, keepArmed) {
+  tilePlayer.setRangePreview(null, null);
+  if (e <= s) { disarmRangeTool(); return; }
+  const before = arrSnap();
+  if (kind === 'insert') {
+    arrangement.insertTime(s, e - s);
+    state.playheadBeat = insertPoint(state.playheadBeat, s, e - s);
+  } else if (kind === 'clear') {
+    arrangement.clearRange(s, e);
+  } else {
+    arrangement.deleteTime(s, e);
+    state.playheadBeat = deletePoint(state.playheadBeat, s, e);
+  }
+  state.playheadBeat = clampPlayhead(state.playheadBeat);
+  tilePlayer.setPlayhead(state.playheadBeat);
+  arrCommit(before); // no-op when the range touched nothing
+  if (!keepArmed) disarmRangeTool();
+  refresh();
+}
+function bumpTranspose(d) {
   transposeOpts.amount = Math.max(-24, Math.min(24, transposeOpts.amount + d));
   refreshTransformBar();
 }
 
-// Remove one transform from a tile (a chip's ✕), undoable.
-function removeTileTransform(id, kind) {
-  const tile = arrangement.allTiles().find((t) => t.id === id);
-  if (!tile) return;
+// Remove one transform KIND from every selected tile (a chip's ✕), one undo.
+function removeSelectedTransform(kind) {
+  const tiles = selectedTiles();
+  if (!tiles.length) return;
   const before = arrSnap();
-  if (kind === 'transpose') setTileTranspose(tile, 0);
-  else if (kind === 'reverse') setTileReverse(tile, false);
+  for (const tile of tiles) {
+    if (kind === 'transpose') setTileTranspose(tile, 0);
+    else if (kind === 'reverse') setTileReverse(tile, false);
+  }
   arrCommit(before);
   refresh();
 }
@@ -822,6 +901,7 @@ function resetPlayer() {
 // readout). Built once; refreshTransformBar syncs state.
 const transformBarEl = document.getElementById('transformBar');
 let xbRippleBtn, xbTransBtn, xbRevBtn, xbCloneBtn, xbArmedEl, xbAmountEl, xbScaleSel, xbSelEl;
+let xbInsBtn, xbClrBtn, xbDelBtn; // Range tools (draw a range on the ruler)
 
 function buildTransformBar() {
   transformBarEl.innerHTML = '';
@@ -843,13 +923,15 @@ function buildTransformBar() {
   const rippleSep = document.createElement('span');
   rippleSep.className = 'tsep';
 
+  // Transform ACTIONS: apply to the current selection (single or multiple).
   xbTransBtn = document.createElement('button');
   xbTransBtn.className = 'xb-brush xf-transpose';
   xbTransBtn.textContent = 'Transpose';
-  xbTransBtn.title = 'Transpose brush — arm, then click or drag over tiles to transpose them. One use disarms; hold Shift to keep painting. Esc cancels a sweep in progress (or disarms).';
-  xbTransBtn.onclick = () => setBrush('transpose');
+  xbTransBtn.title = 'Transpose the selected tile(s) by the amount/scale shown (SETS the transpose — a second application replaces it; 0 clears). One undo step; the selection stays.';
+  xbTransBtn.onclick = applyTransposeAction;
 
-  // Transpose's controls (amount + scale), shown only when it's armed.
+  // Transpose's parameters (amount + scale) — always visible; they're what the
+  // button will apply.
   xbArmedEl = document.createElement('span');
   xbArmedEl.className = 'xb-armed';
   xbAmountEl = document.createElement('span');
@@ -861,66 +943,109 @@ function buildTransformBar() {
     const o = document.createElement('option'); o.value = val; o.textContent = label; xbScaleSel.append(o);
   }
   xbScaleSel.onchange = () => { transposeOpts.scaleId = xbScaleSel.value; };
-  xbArmedEl.append(mkBtn('−', 'Down one step', () => bumpBrush(-1)), xbAmountEl, mkBtn('+', 'Up one step', () => bumpBrush(1)), xbScaleSel);
+  xbArmedEl.append(mkBtn('−', 'Down one step', () => bumpTranspose(-1)), xbAmountEl, mkBtn('+', 'Up one step', () => bumpTranspose(1)), xbScaleSel);
 
   xbRevBtn = document.createElement('button');
   xbRevBtn.className = 'xb-brush xf-reverse';
   xbRevBtn.textContent = '◄ Reverse';
-  xbRevBtn.title = 'Reverse brush — arm, then click or drag over tiles to reverse them. One use disarms; hold Shift to keep painting. Esc cancels a sweep in progress (or disarms).';
-  xbRevBtn.onclick = () => setBrush('reverse');
+  xbRevBtn.title = 'Reverse the selected tile(s) — if all are already reversed, un-reverses them all. One undo step; the selection stays.';
+  xbRevBtn.onclick = applyReverseAction;
 
   xbCloneBtn = document.createElement('button');
   xbCloneBtn.className = 'xb-brush xf-clone';
   xbCloneBtn.textContent = 'Clone';
-  xbCloneBtn.title = 'Clone tool — arm, then click or drag over tiles: they diverge onto fresh copies of their patterns (tiles sharing a pattern share one new clone; the first tile’s clone opens in the grid). One use disarms; hold Shift to keep cloning — the sharing map persists while armed. Esc cancels a sweep in progress (or disarms).';
-  xbCloneBtn.onclick = () => setBrush('clone');
+  xbCloneBtn.title = 'Clone the selected tile(s): they diverge onto fresh copies of their patterns (tiles sharing a pattern share one new clone; the anchor tile’s clone opens in the grid). One undo step.';
+  xbCloneBtn.onclick = applyCloneAction;
 
   xbSelEl = document.createElement('span');
   xbSelEl.className = 'xb-sel';
 
-  transformBarEl.append(xbRippleBtn, rippleSep, xbTransBtn, xbArmedEl, xbRevBtn, xbCloneBtn, xbSelEl);
+  // Range tools: arm one, then draw a range on the (glowing) ruler. All lanes;
+  // beat-snapped; tiles are atomic (a tile starting before the range but
+  // reaching into it is untouched).
+  const rangeSep = document.createElement('span');
+  rangeSep.className = 'tsep';
+  const rangeLabel = document.createElement('span');
+  rangeLabel.className = 'xb-range-label';
+  rangeLabel.textContent = 'Range:';
+  xbInsBtn = document.createElement('button');
+  xbInsBtn.className = 'xb-brush rk-insert';
+  xbInsBtn.textContent = 'Insert';
+  xbInsBtn.title = 'Insert time — arm, then draw a range on the ruler: everything from the range start shifts right by its length (playhead and region markers ride along). Shift at release keeps it armed; Esc cancels.';
+  xbInsBtn.onclick = () => setRangeTool('insert');
+  xbClrBtn = document.createElement('button');
+  xbClrBtn.className = 'xb-brush rk-clear';
+  xbClrBtn.textContent = 'Clear';
+  xbClrBtn.title = 'Clear range — arm, then draw a range on the ruler: tiles STARTING in the range are removed; nothing moves. Shift at release keeps it armed; Esc cancels.';
+  xbClrBtn.onclick = () => setRangeTool('clear');
+  xbDelBtn = document.createElement('button');
+  xbDelBtn.className = 'xb-brush rk-delete';
+  xbDelBtn.textContent = 'Delete';
+  xbDelBtn.title = 'Delete time — arm, then draw a range on the ruler: tiles starting in the range are removed and everything after shifts left to close it (overlaps with an earlier tile’s tail are allowed). Playhead/markers ride along. Shift at release keeps it armed; Esc cancels.';
+  xbDelBtn.onclick = () => setRangeTool('delete');
+
+  transformBarEl.append(xbRippleBtn, rippleSep, xbTransBtn, xbArmedEl, xbRevBtn, xbCloneBtn,
+    rangeSep, rangeLabel, xbInsBtn, xbClrBtn, xbDelBtn, xbSelEl);
   refreshTransformBar();
 }
 
 function refreshTransformBar() {
   if (!xbTransBtn) return;
   xbRippleBtn.classList.toggle('active', !!state.ripple);
-  xbTransBtn.classList.toggle('active', brushMode === 'transpose');
-  xbRevBtn.classList.toggle('active', brushMode === 'reverse');
-  xbCloneBtn.classList.toggle('active', brushMode === 'clone');
-  xbArmedEl.style.display = brushMode === 'transpose' ? '' : 'none';
+  const tiles = selectedTiles();
+  xbTransBtn.disabled = xbRevBtn.disabled = xbCloneBtn.disabled = tiles.length === 0;
+  xbInsBtn.classList.toggle('active', rangeMode === 'insert');
+  xbClrBtn.classList.toggle('active', rangeMode === 'clear');
+  xbDelBtn.classList.toggle('active', rangeMode === 'delete');
   xbAmountEl.textContent = (transposeOpts.amount > 0 ? '+' : '') + transposeOpts.amount;
   xbScaleSel.value = transposeOpts.scaleId;
 
-  // The selected tile's transforms, as ordered removable chips.
+  // The selection's transforms as chips ("the transform inspector").
+  // One tile: its ordered chips, each removable. Several: the INTERSECTION
+  // view — a chip per transform kind common to ALL selected ("(mixed)" when
+  // the kind is shared but the details differ); ✕ removes the kind from every
+  // selected tile in one undo.
   xbSelEl.innerHTML = '';
-  const id = arrangement.selectedId;
-  const tile = id != null ? arrangement.allTiles().find((t) => t.id === id) : null;
-  const transforms = tile && tile.transforms ? tile.transforms : [];
-  if (transforms.length) {
-    for (const t of transforms) {
-      const { kind } = transformKindLabel(t);
-      const chip = document.createElement('span');
-      chip.className = 'xb-chip xf-' + kind;
-      chip.append(document.createTextNode(describeTransform(t) + ' '));
-      const x = document.createElement('button');
-      x.textContent = '✕'; x.title = 'Remove this transform';
-      x.onclick = () => removeTileTransform(id, kind);
-      chip.append(x);
-      xbSelEl.append(chip);
-    }
-  } else if (tile) {
+  const mkChip = (kind, text, onRemove) => {
+    const chip = document.createElement('span');
+    chip.className = 'xb-chip xf-' + kind;
+    chip.append(document.createTextNode(text + ' '));
+    const x = document.createElement('button');
+    x.textContent = '✕'; x.title = 'Remove this transform from the selection';
+    x.onclick = onRemove;
+    chip.append(x);
+    xbSelEl.append(chip);
+  };
+  const mkMuted = (text) => {
     const m = document.createElement('span');
     m.className = 'xb-muted';
-    m.textContent = 'no transforms';
+    m.textContent = text;
     xbSelEl.append(m);
+  };
+  if (tiles.length === 1) {
+    const transforms = tiles[0].transforms || [];
+    for (const t of transforms) {
+      const { kind } = transformKindLabel(t);
+      mkChip(kind, describeTransform(t), () => removeSelectedTransform(kind));
+    }
+    if (!transforms.length) mkMuted('no transforms');
+  } else if (tiles.length > 1) {
+    mkMuted(`${tiles.length} tiles`);
+    for (const kind of ['transpose', 'reverse']) {
+      const per = tiles.map((t) => (t.transforms || []).find((tf) => transformKindLabel(tf).kind === kind));
+      if (per.some((tf) => !tf)) continue; // not common to every selected tile
+      const descs = new Set(per.map((tf) => describeTransform(tf)));
+      const text = descs.size === 1
+        ? [...descs][0]
+        : (kind === 'transpose' ? 'Transpose (mixed)' : 'Reverse (mixed)');
+      mkChip(kind, text, () => removeSelectedTransform(kind));
+    }
   }
 }
 
 // Double-click: load the tile's pattern into the editor (by reference) but keep
 // the tile player active and the tile selected.
 function openTile(name, id) {
-  if (brushMode) return; // ignore opens while a brush is armed
   setActive('tiles');
   clearProposal();
   grid.clearSelection();
@@ -928,7 +1053,7 @@ function openTile(name, id) {
   if (lane) arrangement.activeLaneId = lane.id;
   library.open(name);
   centerGridOn(library.current()); // bring the opened pattern into view
-  arrangement.selectedId = id;
+  arrangement.select(id);
   refresh();
   scrollRollToSelected();
 }
@@ -1053,11 +1178,17 @@ tilesPaneEl.addEventListener('pointerdown', () => setActive('tiles'));
 
 function setActive(pane) {
   if (activePane === pane) return;
-  disarmBrush(); // a tile brush belongs to the tiles pane; leaving it puts the brush away
+  disarmRangeTool(); // the range tools belong to the tiles pane; leaving puts them away
   activePane = pane;
   state.activePane = pane;
-  if (pane === 'grid') { arrangement.selectedId = null; tilePlayer.setSelected(null); editGrid(); }
-  else grid.clearSelection(); // leaving the grid drops its note selection
+  if (pane === 'grid') {
+    arrangement.clearSelection();
+    tilePlayer.syncSelection();
+    updateTileSelectionUI();
+    editGrid();
+  } else {
+    grid.clearSelection(); // leaving the grid drops its note selection
+  }
   applyActiveHighlight();
   updateRollContent(); scrollRollToSelected();
   persist();
@@ -1072,24 +1203,34 @@ function applyActiveHighlight() {
 
 const rollScroll = document.getElementById('rollScroll');
 
+// Playback auto-follow is PAGE-JUMP scrolling (DAW-style), not continuous: the
+// view holds still while the playhead sweeps across it, and JUMPS a page (the
+// playhead re-enters at the left margin) only when it runs off the right edge.
+// Scrolling the whole track layer a little every frame was the remaining
+// playback scroll cost — an occasional jump is cheap (and easier to watch).
 function ensureRollVisible(x) {
   const el = rollScroll;
   const margin = 80;
-  if (x > el.scrollLeft + el.clientWidth - margin) el.scrollLeft = x - el.clientWidth + margin;
-  else if (x < el.scrollLeft + margin) el.scrollLeft = Math.max(0, x - margin);
+  if (x > el.scrollLeft + el.clientWidth - margin || x < el.scrollLeft) {
+    el.scrollLeft = Math.max(0, x - margin);
+  }
 }
 
-// Keep the tile-player playhead on screen. The playhead's x within the scroll
-// content is the (sticky) lane-header width plus its track position, so we don't
-// scroll it behind the header.
+// Same page-jump follow for the tile player. The playhead's x within the scroll
+// content is the (sticky) lane-header width plus its track position, so a jump
+// lands it just right of the header, never behind it.
+let laneHeadW = 0; // sticky head width — runtime-constant, read from the DOM once
 function ensureTileVisible(beat) {
   const el = document.getElementById('tileLane');
-  const head = el.querySelector('.lane-head');
-  const headW = head ? head.offsetWidth : 0;
-  const x = headW + beat * tilePlayer.ppb;
+  if (!laneHeadW) {
+    const head = el.querySelector('.lane-head');
+    laneHeadW = head ? head.offsetWidth : 0;
+  }
+  const x = laneHeadW + beat * tilePlayer.ppb;
   const margin = 80;
-  if (x > el.scrollLeft + el.clientWidth - margin) el.scrollLeft = x - el.clientWidth + margin;
-  else if (x < el.scrollLeft + headW + margin) el.scrollLeft = Math.max(0, x - headW - margin);
+  if (x > el.scrollLeft + el.clientWidth - margin || x < el.scrollLeft + laneHeadW) {
+    el.scrollLeft = Math.max(0, x - laneHeadW - margin);
+  }
 }
 function scrollRollToSelected() {
   if (scheduler.isPlaying) return; // playback drives the scroll itself
@@ -1181,7 +1322,7 @@ function arrApply(json, full = false) {
   if (o.activeLaneId != null) arrangement.activeLaneId = o.activeLaneId;
   arrangement.playStart = o.playStart == null ? 0 : o.playStart; // region markers are undoable
   arrangement.playEnd = o.playEnd == null ? null : o.playEnd;
-  if (!arrangement.allTiles().some((t) => t.id === arrangement.selectedId)) arrangement.selectedId = null;
+  arrangement.pruneSelection(); // drop selected ids the undo/redo removed
   applyLaneMix(0.012);  // restored pan/gain → push to the (existing) lane buses
   applyLaneDelayAll();  // restored delay → rebuild/update the inserts
   applyLaneChorusAll(); // restored chorus → rebuild the inserts
@@ -1197,22 +1338,32 @@ function arrRedo() { if (!arrFuture.length) return; const e = arrFuture.pop(); a
 // handle's dragend (fires drop or no drop). Re-rendered only when the snapped
 // target changes (dragover fires very fast).
 let gridDragPreview = null;
-function gridDragOver(laneId, start) {
+// A new tile from the grid is ALWAYS held by its center (no prior grip to
+// preserve): it lands at the beat nearest its carried position — the cursor
+// beat minus half its length, rounded. The carry caret marks the landing start.
+function gridDropStart(name, rawBeat) {
+  return Math.max(0, Math.round(rawBeat - patternLen(name) / 2));
+}
+function gridDragOver(laneId, rawBeat) {
+  const name = library.current().name;
+  const start = gridDropStart(name, rawBeat);
+  tilePlayer.setCarryCaret(laneId, start); // cheap no-op when unchanged
   if (gridDragPreview && gridDragPreview.toLaneId === laneId && gridDragPreview.start === start) return;
-  gridDragPreview = { external: true, name: library.current().name, toLaneId: laneId, start };
+  gridDragPreview = { external: true, name, toLaneId: laneId, start };
   tilePlayer.render(gridDragPreview);
 }
 function clearGridDragPreview() {
+  tilePlayer.setCarryCaret(null);
   if (!gridDragPreview) return;
   gridDragPreview = null;
   tilePlayer.render();
 }
 
-// Drop the grid's current pattern at the dropped beat (was: append at the lane's
-// end, ignoring position — "the tile should go exactly where the user drops it").
-// Ripple mode ripple-opens; non-ripple overwrites whatever it overlaps.
-function dropCurrentTile(laneId, start) {
+// Drop the grid's current pattern centered on the dropped beat (the same math
+// the dragover preview showed). Ripple ripple-opens; non-ripple overwrites.
+function dropCurrentTile(laneId, rawBeat) {
   gridDragPreview = null;
+  const start = gridDropStart(library.current().name, rawBeat);
   arrRecord();
   // Dropping into a FRESH lane (brand-new / just-reset) seeds it with the grid's
   // instrument (the patch you were just auditioning), so the tile sounds the way
@@ -1226,11 +1377,17 @@ function dropCurrentTile(laneId, start) {
   refresh();
 }
 
+// Delete every selected tile (one undo entry). Ripple mode closes each gap in
+// turn (left to right — ids stay valid across the shifts); off leaves silence.
 function deleteSelectedTile() {
-  if (arrangement.selectedId == null) return;
+  const tiles = selectedTiles();
+  if (!tiles.length) return;
   arrRecord();
-  if (state.ripple) arrangement.removeRipple(arrangement.selectedId, patternLen); // ripple-close the gap
-  else arrangement.remove(arrangement.selectedId);                                // leave the gap (silence)
+  for (const t of tiles) {
+    if (state.ripple) arrangement.removeRipple(t.id, patternLen);
+    else arrangement.remove(t.id);
+  }
+  arrangement.clearSelection();
   refresh();
 }
 
@@ -1255,7 +1412,7 @@ function newOrRestore() {
   grid.clearSelection();
   if (library.parkedName) library.restore();
   else library.newPattern();
-  arrangement.selectedId = null;
+  arrangement.clearSelection();
   centerGridOn(library.current()); // no-op for the blank New pattern
   refresh();
 }
@@ -1263,7 +1420,7 @@ function clonePattern() {
   clearProposal();
   grid.clearSelection();
   library.clone();
-  arrangement.selectedId = null;
+  arrangement.clearSelection();
   refresh();
 }
 function clearPattern() {
@@ -1277,7 +1434,7 @@ function clearPattern() {
   grid.clearSelection();
   library.clearCurrent();
   pushHistory(before);
-  arrangement.selectedId = null;
+  arrangement.clearSelection();
   refresh();
 }
 
@@ -1527,7 +1684,7 @@ function confirmTriadulation() {
   for (const p of proposal) cols[p.col] = { durIndex: p.durIndex, isRest: false, degree: p.degree, accent: false };
   pushHistory(before);
   clearProposal();
-  arrangement.selectedId = null;
+  arrangement.clearSelection();
   refresh();
 }
 
@@ -1672,7 +1829,7 @@ function updateEditButtons() {
   tb.redoBtn.disabled = h.future.length === 0;
   arrUndoBtn.disabled = arrPast.length === 0;
   arrRedoBtn.disabled = arrFuture.length === 0;
-  tileDeleteBtn.disabled = arrangement.selectedId == null;
+  tileDeleteBtn.disabled = arrangement.selectedIds.size === 0;
 }
 
 // localStorage is the working-session autosave. If a write ever fails (private
@@ -1697,7 +1854,7 @@ function persist() {
     cursor: state.cursor, highlightRows: state.highlightRows, showTriads: state.showTriads, proper: state.proper, families: state.families,
     topDegree: state.topDegree, visibleRows: state.visibleRows, activePane: state.activePane,
     tileScaleIdx: state.tileScaleIdx, masterGain: state.masterGain, modLoop: state.modLoop,
-    ripple: state.ripple,
+    ripple: state.ripple, playheadBeat: state.playheadBeat, tileScrollX: state.tileScrollX,
   }));
   recomputeDirty();
 }
@@ -1770,7 +1927,7 @@ function loadContent(env) {
   arrangement.lanes = freshArr.lanes;
   arrangement.seq = freshArr.seq;
   arrangement.activeLaneId = freshArr.activeLaneId;
-  arrangement.selectedId = null;
+  arrangement.clearSelection();
 
   if (env.tempo) {
     state.bpm = env.tempo;
@@ -1787,6 +1944,8 @@ function loadContent(env) {
   centerGridOn(library.current()); // bring the loaded pattern into view
   activePane = 'grid';
   state.activePane = 'grid';
+  state.playheadBeat = 0; // fresh document — park the playhead at the top
+  tilePlayer.setPlayhead(0);
   applyActiveHighlight();
   editGrid(); // the loaded lanes have fresh patch objects; re-point the editor
   engine.resetLanes(); // drop stale strips (old delay tails / orphaned lanes) — rebuild fresh
@@ -2080,6 +2239,8 @@ const stopBtn = document.getElementById('stop');
 const tilePlayBtn = document.getElementById('tilePlay');
 const tileStopBtn = document.getElementById('tileStop');
 const tileLoopBtn = document.getElementById('tileLoop');
+const phHomeBtn = document.getElementById('phHome');
+const phEndBtn = document.getElementById('phEnd');
 const tempo = document.getElementById('tempo');
 const tempoLabel = document.getElementById('tempoLabel');
 const arrUndoBtn = document.getElementById('arrUndo');
@@ -2102,17 +2263,17 @@ modLoopBtn.addEventListener('click', () => {
   persist();
 });
 
-// The modulator clock (mm:ss.hh): shows the clock the mods actually read —
-// elapsed since the session's first Play (ticking even while stopped), or the
+// The transport clock (mm:ss.hh). Stopped (or grid playing): the parked
+// playhead's position — regardless of Loop Mod. While the tiles play: the clock
+// the mods actually read — elapsed since the session's first Play, or the
 // playhead's ruler time when Loop Mod is on. Cheap fixed interval; only writes
 // the DOM when the text changes.
 function modClockText() {
   let sec;
-  if (state.modLoop) {
-    const beat = scheduler.isPlaying && activeSource === 'tiles'
-      ? playStartBeat() + scheduler.currentBeat
-      : playStartBeat();
-    sec = beat * (60 / state.bpm);
+  if (!(scheduler.isPlaying && activeSource === 'tiles')) {
+    sec = clampPlayhead(state.playheadBeat) * (60 / state.bpm);
+  } else if (state.modLoop) {
+    sec = (passBase + scheduler.currentBeat) * (60 / state.bpm);
   } else {
     sec = engine.modEpoch != null ? Math.max(0, engine.currentTime - engine.modEpoch) : 0;
   }
@@ -2139,16 +2300,21 @@ function renderLoop() {
   if (scheduler.isPlaying) {
     ensureRollVisible(roll.xForBeat(scheduler.currentBeat));
     if (activeSource === 'tiles') {
-      // The scheduler runs in region-relative beats (the windowed score); the tile
-      // timeline is absolute, so add the region start back for the playhead/highlight.
-      const absBeat = playStartBeat() + scheduler.currentBeat;
+      // The scheduler runs in pass-relative beats (the windowed score); the tile
+      // timeline is absolute, so add the pass origin back. When the position
+      // jumps backward the loop wrapped — passes after the first always start at
+      // the region start (a resume offsets only its own pass).
+      const cur = scheduler.currentBeat;
+      if (cur < lastCurBeat) passBase = playStartBeat();
+      lastCurBeat = cur;
+      const absBeat = passBase + cur;
       // The playhead marks real playback position — shown even mid-drag.
       tilePlayer.setPlayhead(absBeat);
       ensureTileVisible(absBeat);
       // The green "playing" badge is suppressed during a drag (prospective slots).
       if (!tileDrag) tilePlayer.setPlaying(playingTileIds(absBeat));
     } else {
-      tilePlayer.setPlayhead(null); // grid playback: no tile playhead
+      tilePlayer.setPlayhead(state.playheadBeat); // grid playback: the parked playhead stays put
     }
   }
   updateTransportButtons();
@@ -2158,14 +2324,14 @@ function renderLoop() {
     rafId = null;
     activeSource = null;
     tilePlayer.setPlaying(new Set());
-    tilePlayer.setPlayhead(null);
+    tilePlayer.setPlayhead(state.playheadBeat); // parked — the playhead never hides
     refresh();
   }
 }
 
 function startRender() { if (rafId === null) renderLoop(); }
 
-async function startTransport(source, loop) {
+async function startTransport(source, loop, fromBeat = null) {
   if (source === 'tiles' && arrangement.allTiles().length === 0) return;
   setActive(source);
   const now = await engine.ensureRunning();
@@ -2174,6 +2340,16 @@ async function startTransport(source, loop) {
   if (engine.modEpoch == null) engine.modEpoch = now;
   scheduler.stop();
   activeSource = source;
+  // Arm a resume only when it lands strictly inside the region — at/before the
+  // start it's just a normal play, at/after the end there'd be nothing to hear.
+  resumeBeat = source === 'tiles' && fromBeat != null
+    && fromBeat > playStartBeat() && fromBeat < playEndBeat() ? fromBeat : null;
+  resumeStartTime = now + 0.1;
+  passBase = resumeBeat != null ? resumeBeat : playStartBeat();
+  // -Infinity, NOT 0: playback starts 100 ms in the future, so the first frames'
+  // currentBeat is slightly NEGATIVE — seeding 0 would read that as a loop wrap
+  // and instantly reset passBase, drawing a resumed pass's playhead at the start.
+  lastCurBeat = -Infinity;
   if (source === 'tiles') applyLaneGains(0); // set mute/solo before the first note
   const provider = source === 'tiles' ? windowedArrangementScore : buildScore;
   scheduler.start(provider, now + 0.1, loop ? LOOP_STEP : 1, loop);
@@ -2196,21 +2372,62 @@ function loopClick(source) {
 }
 
 function stop() {
+  // A manual Stop parks the playhead where playback was (a natural finish
+  // rewinds it to the beginning instead — see scheduler.onEnded).
+  const wasTiles = scheduler.isPlaying && activeSource === 'tiles';
+  if (wasTiles) {
+    state.playheadBeat = clampPlayhead(passBase + scheduler.currentBeat);
+  }
   scheduler.stop();
   activeSource = null;
+  resumeBeat = null;
   tilePlayer.setPlaying(new Set());
+  tilePlayer.setPlayhead(state.playheadBeat);
   refresh();
+  if (wasTiles) ensureTileVisible(state.playheadBeat); // stop with the playhead in view
 }
 
+// --- the parked playhead ------------------------------------------------
+// Where the tile transport sits when stopped (beats, absolute; always visible).
+// Space plays from the region start; ArrowRight resumes from the parked spot.
+
+function clampPlayhead(beat) {
+  return Math.max(0, Math.min(beat || 0, arrangementEndBeat()));
+}
+
+// Park the playhead (⏮/⏭ buttons, B/E keys) and scroll it into view. Stopped
+// transport only — live locate is a bigger feature, deliberately not this one.
+function movePlayhead(beat) {
+  if (scheduler.isPlaying) return;
+  state.playheadBeat = clampPlayhead(beat);
+  tilePlayer.setPlayhead(state.playheadBeat);
+  ensureTileVisible(state.playheadBeat);
+  persist();
+}
+
+// ArrowRight: play the arrangement from the parked playhead — one pass of
+// [playhead, region end); a Shift+Space loop promotion wraps to the region start.
+function resumePlay() {
+  if (scheduler.isPlaying || arrangement.allTiles().length === 0) return;
+  if (state.playheadBeat >= playEndBeat()) return; // parked at/after the end — nothing to play
+  startTransport('tiles', false, state.playheadBeat);
+}
+
+let transportSig = null; // last-applied state — this runs per animation frame
 function updateTransportButtons() {
   const playing = scheduler.isPlaying;
   const haveTiles = arrangement.allTiles().length > 0;
+  // Everything below derives from these inputs; skip the DOM when none changed.
+  const sig = `${playing}|${haveTiles}|${activeSource}|${scheduler.isLooping}|${scheduler.remaining}|${exporting}|${exportingStems}`;
+  if (sig === transportSig) return;
+  transportSig = sig;
 
   playBtn.disabled = playing;
   stopBtn.disabled = !playing;
   tilePlayBtn.disabled = playing || !haveTiles;
   tileStopBtn.disabled = !playing;
   tileLoopBtn.disabled = !haveTiles;
+  phHomeBtn.disabled = phEndBtn.disabled = playing; // playhead parks only while stopped
   midiExportBtn.disabled = !haveTiles;
   audioExportBtn.disabled = exporting || !haveTiles;
   stemExportBtn.disabled = exportingStems || !haveTiles;
@@ -2237,6 +2454,8 @@ stopBtn.addEventListener('click', stop);
 tileLoopBtn.addEventListener('click', () => loopClick('tiles'));
 tilePlayBtn.addEventListener('click', () => startTransport('tiles', false));
 tileStopBtn.addEventListener('click', stop);
+phHomeBtn.addEventListener('click', () => movePlayhead(playStartBeat()));
+phEndBtn.addEventListener('click', () => movePlayhead(playEndBeat()));
 arrUndoBtn.addEventListener('click', arrUndo);
 arrRedoBtn.addEventListener('click', arrRedo);
 tileDeleteBtn.addEventListener('click', deleteSelectedTile);
@@ -2248,6 +2467,17 @@ const tileZoomOutBtn = document.getElementById('tileZoomOut');
 const tileZoomInBtn = document.getElementById('tileZoomIn');
 const tileLaneEl = document.getElementById('tileLane');
 tileScaleEl.max = String(TILE_SCALES.length - 1);
+
+// Persist the tile player's horizontal scroll across reloads (user request —
+// even with the playhead off screen, come back to the same view). Every scroll
+// (manual, follow-jump, edge-jump) lands on state; the localStorage write is
+// debounced so wheel-scrolling doesn't hammer persist().
+let tileScrollTimer = null;
+tileLaneEl.addEventListener('scroll', () => {
+  state.tileScrollX = tileLaneEl.scrollLeft;
+  clearTimeout(tileScrollTimer);
+  tileScrollTimer = setTimeout(persist, 400);
+});
 
 function clampScaleIdx(i) { return Math.max(0, Math.min(TILE_SCALES.length - 1, i | 0)); }
 
@@ -2378,10 +2608,10 @@ function selectNone() {
   else grid.clearSelection();
 }
 function deselectTile() {
-  if (arrangement.selectedId == null) return;
-  arrangement.selectedId = null;
-  tilePlayer.setSelected(null);
-  tileDeleteBtn.disabled = true;
+  if (!arrangement.selectedIds.size) return;
+  arrangement.clearSelection();
+  tilePlayer.syncSelection();
+  updateTileSelectionUI();
   updateRollContent();
   scrollRollToSelected();
   persist();
@@ -2431,8 +2661,8 @@ window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
 
   if (e.key === 'Escape') {
-    if (paintGestureActive) return; // a sweep in progress owns Esc (cancel, in paintGesture)
-    if (brushMode) { disarmBrush(); return; }
+    // (a range drag or marquee in progress owns Esc via its capture listener)
+    if (rangeMode) { disarmRangeTool(); return; }
     selectNone(); return;
   }
 
@@ -2446,12 +2676,19 @@ window.addEventListener('keydown', (e) => {
   if (mod && k === 'd') { e.preventDefault(); selectNone(); return; }                 // no Select-None button
   if (e.key === 'Delete' || e.key === 'Backspace') {
     if (tiles) {
-      if (arrangement.selectedId != null) { e.preventDefault(); deleteSelectedTile(); flash(tileDeleteBtn); }
+      if (arrangement.selectedIds.size) { e.preventDefault(); deleteSelectedTile(); flash(tileDeleteBtn); }
     } else {
       e.preventDefault();
       grid.deleteSelection(); // selected notes -> rests (no toolbar button)
     }
     return;
+  }
+  // Tile-player playhead (stopped transport only): B/E park it at the
+  // beginning/end; ArrowRight resumes playback from wherever it's parked.
+  if (tiles && !mod && !scheduler.isPlaying) {
+    if (k === 'b') { movePlayhead(playStartBeat()); flash(phHomeBtn); return; }
+    if (k === 'e') { movePlayhead(playEndBeat()); flash(phEndBtn); return; }
+    if (e.key === 'ArrowRight') { e.preventDefault(); resumePlay(); flash(tilePlayBtn); return; }
   }
   if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !tiles) {
     e.preventDefault(); // scale-step within the active mask; Shift = a literal octave (equave)
@@ -2469,8 +2706,14 @@ grid.updateCursor();
 applyActiveHighlight();
 updateScaleStrip();
 buildTransformBar();
-if (arrangement.selectedId != null) tilePlayer.setSelected(arrangement.selectedId);
-refresh();
+refresh(); // selection starts empty (runtime-only, not persisted)
+// The parked playhead is always visible — restore it (clamped: the arrangement
+// may have shrunk since it was persisted).
+state.playheadBeat = clampPlayhead(state.playheadBeat);
+tilePlayer.setPlayhead(state.playheadBeat);
+// Restore the tile player's scroll (after the render above built the content;
+// the browser clamps if the arrangement shrank).
+tileLaneEl.scrollLeft = state.tileScrollX || 0;
 
 function readJSON(key) {
   try { return JSON.parse(localStorage.getItem(key) || 'null'); }

@@ -31,7 +31,10 @@ export class TilePlayer {
   // cb: onTileDown(id, pointerEvent), onOpen(name, id),
   //     onGridDragOver(laneId, startBeat) / onDropAt(laneId, startBeat) — the
   //       grid-pattern drag: live landing preview + position-honoring drop,
-  //     onLaneClick(laneId), onMute(laneId), onSolo(laneId), onAddLane(),
+  //     onMarqueeStart() / onMarquee(laneId, b0, b1) / onMarqueeEnd(laneId,
+  //       dragged) / onMarqueeCancel() — empty-space rubber-band selection
+  //       (dragged=false on End = a plain empty-space click),
+  //     onMute(laneId), onSolo(laneId), onAddLane(),
   //     onResetLane(laneId) — clear the lane (tiles + instrument), red "R",
   //     onEdit(laneId) — open the instrument editor on that lane's patch,
   //     onMixStart(laneId) / onMixChange(laneId, key, value) / onMixEnd(laneId)
@@ -49,6 +52,67 @@ export class TilePlayer {
     this.ppb = TILE_SCALES[DEFAULT_SCALE_IDX]; // current time scale; main sets it from saved UI
     this.editLaneId = null; // lane whose patch the instrument editor is showing (lights its Edit)
     this.rippleMode = false; // Ripple toggle (main syncs from state): insert/delete ripple vs exact-overwrite
+    this.rangeMode = null;  // armed range tool: null | 'insert' | 'clear' | 'delete' — the ruler draws a range instead of dragging markers
+    // Per-frame element caches (rebuilt by every render; see there).
+    this._tileEls = new Map();
+    this._playheadEls = [];
+    this._playingIds = new Set();
+    this._phX = null;
+
+    // Beat caret — MODAL:
+    //  · hover (no tile in hand): the beat LEFT of the pointer (floor), on the
+    //    hovered lane — a "land/paste here" cursor.
+    //  · carry (a tile is being dragged): the caret stops tracking the pointer
+    //    and marks the LEFT EDGE of the prospective landing instead (main feeds
+    //    it via setCarryCaret whenever the drop preview changes).
+    // Always live: delegated pointermove covers hover + brush sweeps; ruler
+    // drags capture the pointer away from the lanes, which correctly hides it.
+    // (HTML5 grid drags don't fire pointermove — dragover updates it instead.)
+    this._caret = null;
+    this._caretPos = null;
+    this._carry = null; // {laneId, beat} while a tile is in hand
+    this.container.addEventListener('pointermove', (e) => {
+      if (this._carry) return; // carry mode owns the caret
+      const track = e.target && e.target.closest ? e.target.closest('.lane-track') : null;
+      if (track) this._updateCaret(track, e.clientX); else this.hideCaret();
+    });
+    this.container.addEventListener('pointerleave', () => { if (!this._carry) this.hideCaret(); });
+  }
+
+  // Hover mode: caret at the beat left of the pointer (floor — "nearest left").
+  _updateCaret(track, clientX) {
+    if (this._carry) return;
+    const beat = Math.max(0, Math.floor((clientX - track.getBoundingClientRect().left) / this.ppb));
+    this._placeCaret(track, beat);
+  }
+
+  // Carry mode: park the caret at the landing's left edge on the target lane
+  // (laneId null = drop would cancel / drag ended → clear back to hover).
+  // Idempotent and cheap — main calls it on every drag move; it also re-seats
+  // the caret after the preview renders rebuilt the track it sat on.
+  setCarryCaret(laneId, beat) {
+    this._carry = laneId == null ? null : { laneId, beat };
+    if (!this._carry) { this.hideCaret(); return; }
+    const track = this.container.querySelector(`.lane-track[data-lane="${laneId}"]`);
+    if (track) this._placeCaret(track, beat); else this.hideCaret();
+  }
+
+  // Shared placement: one caret element migrates between lanes; no-op while the
+  // (lane, beat) pair is unchanged AND it's still attached (renders detach it).
+  _placeCaret(track, beat) {
+    const key = track.dataset.lane + ':' + beat;
+    if (this._caretPos === key && this._caret && this._caret.parentNode === track) return;
+    if (!this._caret) {
+      this._caret = document.createElement('div');
+      this._caret.className = 'beat-caret';
+    }
+    this._caret.style.left = `${beat * this.ppb}px`;
+    track.append(this._caret);
+    this._caretPos = key;
+  }
+
+  hideCaret() {
+    if (this._caret) { this._caret.remove(); this._caretPos = null; }
   }
 
   // Render the lanes. Tiles are positioned by their explicit `start` beat (gaps
@@ -61,14 +125,31 @@ export class TilePlayer {
     const c = this.container;
     const ppb = this.ppb;
     const before = animate ? this._captureRects() : null;
+    // Wiping innerHTML momentarily collapses the content, and the browser clamps
+    // scrollLeft to 0 — every rebuild was silently rewinding the view to the
+    // beginning. Save and restore the scroll across the rebuild.
+    const keepX = c.scrollLeft, keepY = c.scrollTop;
     c.innerHTML = '';
+    // Element caches for the per-frame playback updates (setPlaying/setPlayhead
+    // run at 60 fps — they must not querySelectorAll a big DOM every frame).
+    // Rebuilt here because the rebuild above just invalidated every element.
+    this._tileEls = new Map();   // tile id -> .tile element
+    this._playheadEls = [];      // one .tile-playhead per track
+    this._playingIds = new Set(); // fresh DOM has no 'playing' classes
+    this._phX = null;            // last applied playhead x (skip no-op writes)
 
     // Prospective per-lane tile lists (committed, or transformed by the preview
     // via the exact same ops the commit will use) + landing band / doomed tiles.
-    const { laneTiles, landing, doomed } = this._layout(preview);
+    const { laneTiles, landings, doomed } = this._layout(preview);
     let maxBeats = Math.max(0, ...laneTiles.map((tiles) => tiles.reduce((m, t) => Math.max(m, t.start + this._len(t.name)), 0)));
-    if (landing) maxBeats = Math.max(maxBeats, landing.start + landing.len); // band can extend past the last tile
-    const trackWidth = Math.max(Math.round(maxBeats * ppb), MIN_TRACK);
+    for (const landing of landings) maxBeats = Math.max(maxBeats, landing.start + landing.len); // bands can extend past the last tile
+    // Drop headroom: keep ~half a viewport of empty, droppable track past the
+    // content — otherwise, once the lanes overflow the window, the last tile sits
+    // flush against the right edge with nowhere to drop (or scroll to). The ruler
+    // ticks span it (they draw over the full trackWidth); the region markers
+    // don't (they clamp to the content end).
+    const headroom = Math.max(8 * ppb, (this.container.clientWidth || 0) / 2);
+    const trackWidth = Math.max(Math.round(maxBeats * ppb + headroom), MIN_TRACK);
 
     // Beat ruler on top (numbers + ticks) carrying the play-region markers.
     c.append(this._buildRuler(ppb, trackWidth, maxBeats));
@@ -175,20 +256,30 @@ export class TilePlayer {
       track.style.width = `${trackWidth}px`;
       track.style.backgroundImage = gridBackground(ppb); // 1/4-note + bar guidelines
       // Grid-drag (HTML5 dnd from the toolbar grab handle): position-honoring.
-      // dragover reports the prospective {lane, beat} so main can preview the
-      // landing (same visuals as tile drags); drop places at that exact beat.
+      // dragover reports the prospective {lane, beat} (UNROUNDED — main centers
+      // the incoming tile on it, then rounds) so main can preview the landing
+      // (same visuals as tile drags); drop places the same way.
       // No dragleave handling — main clears the preview on the handle's dragend.
-      const dropBeat = (e) => Math.max(0, Math.round((e.clientX - track.getBoundingClientRect().left) / this.ppb));
+      const dropBeat = (e) => (e.clientX - track.getBoundingClientRect().left) / this.ppb;
       track.addEventListener('dragover', (e) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'copy';
+        this.edgeScroll(e.clientX, e.clientY); // dragover auto-repeats, so edge jumps work even held still
+        this._updateCaret(track, e.clientX);   // pointermove doesn't fire during HTML5 drags
         this.cb.onGridDragOver(lane.id, dropBeat(e));
       });
       track.addEventListener('drop', (e) => {
         e.preventDefault();
         this.cb.onDropAt(lane.id, dropBeat(e));
       });
-      track.addEventListener('click', (e) => { if (e.target === track) this.cb.onLaneClick(lane.id); });
+      // Empty-space pointerdown: a plain click activates the lane (and clears
+      // the selection); dragging past the threshold rubber-band selects (the
+      // marquee — clamped to THIS lane, the one-lane selection rule).
+      track.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0 || e.target !== track) return; // tiles own their pointerdown
+        if (this.rangeMode) return; // an armed range tool owns gestures
+        this._marquee(e, track, lane.id);
+      });
 
       const tiles = laneTiles[li];
       if (tiles.length === 0) {
@@ -211,24 +302,23 @@ export class TilePlayer {
           const pattern = this.library.patterns.get(t.name);
 
           const el = document.createElement('div');
-          el.className = 'tile' + (this.arrangement.selectedId === t.id ? ' selected' : '')
+          el.className = 'tile' + (this.arrangement.selectedIds.has(t.id) ? ' selected' : '')
             + (doomed.has(t.id) ? ' doomed' : ''); // would be overwritten by the pending drop
           el.dataset.id = t.id;
           el.style.borderColor = color;
           el.style.left = `${left}px`;
           el.style.width = `${w}px`;
 
-          const cv = document.createElement('canvas');
-          cv.width = w;
-          cv.height = TILE_H;
-          cv.className = 'tile-thumb';
-          if (pattern) drawThumb(cv, pattern, ppb);
+          // Thumbnail via the content-keyed cache: every tile referencing the
+          // same pattern (at this zoom) shares ONE rendered image instead of
+          // each redrawing its own canvas on every rebuild.
+          if (pattern) el.style.backgroundImage = thumbImage(pattern, ppb);
 
           const name = document.createElement('span');
           name.className = 'tile-name';
           name.textContent = t.name;
 
-          el.append(cv, name);
+          el.append(name);
 
           // Per-tile transforms: translucent swaths across the bottom mark a
           // transformed tile (the thumbnail itself stays the pattern's identity).
@@ -251,12 +341,15 @@ export class TilePlayer {
           el.addEventListener('pointerdown', (ev) => this.cb.onTileDown(t.id, ev));
           el.addEventListener('dblclick', () => this.cb.onOpen(t.name, t.id));
           track.append(el);
+          this._tileEls.set(t.id, el);
         }
       }
 
-      // Non-ripple landing band: a filled highlight of the exact span the drop
+      // Non-ripple landing bands: filled highlights of the exact spans the drop
       // would occupy (ripple mode shows the in-flow `tile-gap` slot instead).
-      if (landing && landing.laneIdx === li) {
+      // Several with a multi-selection drag — one per placed member.
+      for (const landing of landings) {
+        if (landing.laneIdx !== li) continue;
         const band = document.createElement('div');
         band.className = 'drop-band';
         band.style.left = `${Math.round(landing.start * ppb)}px`;
@@ -264,9 +357,11 @@ export class TilePlayer {
         track.append(band);
       }
 
+
       const ph = document.createElement('div');
       ph.className = 'tile-playhead'; // hidden until setPlayhead positions it
       track.append(ph);
+      this._playheadEls.push(ph);
 
       // Faint loop-region guide lines (start green / end red) through every track.
       const rs = document.createElement('div');
@@ -292,16 +387,31 @@ export class TilePlayer {
     addRow.append(addBtn);
     c.append(addRow);
 
+    c.scrollLeft = keepX; c.scrollTop = keepY; // restore BEFORE the FLIP measures client rects
+
+    if (this._playheadBeat != null) this.setPlayhead(this._playheadBeat); // re-place after the rebuild
+    this.syncSelHandle(!!preview); // repeat handle (hidden while a drag preview is showing)
+
     if (before) this._flip(before);
   }
 
   // Position the per-track playhead lines at `beat` (track-relative, so they
-  // scroll with the tiles and align across lanes). null hides them.
+  // scroll with the tiles and align across lanes). null hides them. The beat is
+  // remembered so render() re-applies it — the parked playhead survives rebuilds.
+  // Runs per animation frame: uses the render-time element cache and skips
+  // writes when the pixel position hasn't changed.
   setPlayhead(beat) {
-    const phs = this.container.querySelectorAll('.tile-playhead');
-    if (beat == null) { phs.forEach((el) => { el.style.display = 'none'; }); return; }
+    this._playheadBeat = beat;
+    const phs = this._playheadEls || [];
+    if (beat == null) {
+      if (this._phX !== null) { for (const el of phs) el.style.display = 'none'; this._phX = null; }
+      return;
+    }
     const x = `${beat * this.ppb}px`;
-    phs.forEach((el) => { el.style.left = x; el.style.display = 'block'; });
+    if (x === this._phX) return;
+    const show = this._phX === null; // display only needs setting on the first placement
+    for (const el of phs) { el.style.left = x; if (show) el.style.display = 'block'; }
+    this._phX = x;
   }
 
   _len(name) {
@@ -322,8 +432,27 @@ export class TilePlayer {
   _layout(preview) {
     const lenOf = (name) => this._len(name);
     const clone = this.arrangement.lanes.map((l) => l.tiles.map((t) => ({ ...t })));
-    let landing = null;
+    const landings = [];
     const doomed = new Set();
+    if (preview && preview.multi) {
+      // Multi-selection drag: a rigid block translation, already PLANNED by main
+      // (planSelectionDrop — the same plan the drop commits, so preview==commit).
+      // Placed members become landing bands; a blocked MOVE member stays put in
+      // the clone (that's what "ignore collisions" will really do); a blocked
+      // copy simply doesn't appear.
+      const ti = this.arrangement.lanes.findIndex((l) => l.id === preview.toLaneId);
+      if (ti >= 0) {
+        for (const m of preview.multi) {
+          if (m.blocked) continue;
+          if (!preview.copy) {
+            const from = clone.find((tiles) => tiles.some((x) => x.id === m.id));
+            if (from) from.splice(from.findIndex((x) => x.id === m.id), 1);
+          }
+          landings.push({ laneIdx: ti, start: m.start, len: lenOf(m.name) });
+        }
+      }
+      return { laneTiles: clone, landings, doomed };
+    }
     if (preview) {
       const laneIdx = (id) => this.arrangement.lanes.findIndex((l) => l.id === id);
       const dragged = preview.external ? null : this.arrangement.allTiles().find((t) => t.id === preview.id);
@@ -356,47 +485,16 @@ export class TilePlayer {
           for (const t of clone[ti]) {
             if (t.start < preview.start + len && preview.start < t.start + lenOf(t.name)) doomed.add(t.id);
           }
-          landing = { laneIdx: ti, start: preview.start, len };
+          landings.push({ laneIdx: ti, start: preview.start, len });
         }
       }
     }
-    return { laneTiles: clone, landing, doomed };
+    return { laneTiles: clone, landings, doomed };
   }
 
-  // Every tile's client-space rect, for the brushes' segment hit-testing.
-  // Snapshotted at gesture start — painting never moves tiles, so the geometry
-  // is stable for the whole sweep.
-  tileRects() {
-    const out = [];
-    this.container.querySelectorAll('.tile').forEach((el) => {
-      const r = el.getBoundingClientRect();
-      out.push({ id: Number(el.dataset.id), left: r.left, top: r.top, right: r.right, bottom: r.bottom });
-    });
-    return out;
-  }
-
-  // Live brush-gesture highlight: outline the touched tiles in the brush's
-  // colour (`kind` = transpose | reverse | clone). null clears. The gesture
-  // re-applies this after each render (render rebuilds the tile DOM).
-  setPainted(idSet, kind) {
-    this.container.querySelectorAll('.tile').forEach((el) => {
-      const on = !!idSet && idSet.has(Number(el.dataset.id));
-      el.classList.toggle('painted', on);
-      for (const k of ['transpose', 'reverse', 'clone']) el.classList.toggle('pk-' + k, on && kind === k);
-    });
-  }
-
-  // Hit-test a viewport point to the tile id under it (for brush painting), or
-  // null. Children (thumbnail/name/swath) resolve up to their .tile.
-  tileAt(clientX, clientY) {
-    const el = document.elementFromPoint(clientX, clientY);
-    const tileEl = el && el.closest ? el.closest('.tile') : null;
-    return tileEl ? Number(tileEl.dataset.id) : null;
-  }
-
-  // Hit-test a viewport point to a drop target {laneId, start}, where start is
-  // the cursor beat snapped to the 1/4-note (integer-beat) grid. Left-clamping
-  // and ripple are handled by the model on commit. null when not over a lane.
+  // Hit-test a viewport point to a drop target {laneId, beat} (beat UNROUNDED —
+  // the caller subtracts its grip, then rounds). Left-clamping and ripple are
+  // handled by the model on commit. null when not over a lane.
   dropTarget(clientX, clientY) {
     for (const laneEl of this.container.querySelectorAll('.lane')) {
       const r = laneEl.getBoundingClientRect();
@@ -404,21 +502,31 @@ export class TilePlayer {
       const laneId = Number(laneEl.dataset.lane);
       const track = laneEl.querySelector('.lane-track');
       const localX = clientX - track.getBoundingClientRect().left;
-      return { laneId, start: Math.max(0, Math.round(localX / this.ppb)) };
+      // UNROUNDED cursor beat — the caller subtracts its grip, then rounds.
+      return { laneId, beat: localX / this.ppb };
     }
     return null;
   }
 
-  // A floating clone of a tile that follows the cursor during a drag.
-  makeGhost(id) {
+  // The normalized grip for dragging tile `id` picked up at clientX: beats from
+  // the tile's left edge to the hold point (see clampGrip for the rule).
+  gripFor(id, clientX) {
+    const tile = this.arrangement.allTiles().find((t) => t.id === id);
+    const w = tile ? this._len(tile.name) * this.ppb : 0;
+    const el = this.container.querySelector(`.tile[data-id="${id}"]`);
+    const raw = el ? clientX - el.getBoundingClientRect().left : w / 2;
+    return clampGrip(raw, w) / this.ppb;
+  }
+
+  // A floating clone of a tile that follows the cursor during a drag. `gripPx`
+  // = where within the tile the cursor holds it (the normalized grip), so the
+  // ghost hangs from the actual hold point — not from its top-left corner,
+  // which read as "always holding the left edge" whatever the drop math did.
+  makeGhost(id, gripPx = 14) {
     const src = this.container.querySelector(`.tile[data-id="${id}"]`);
+    // cloneNode carries the thumbnail for free — it's a background-image style
+    // now (the old per-tile canvas needed an explicit pixel repaint here).
     const g = src ? src.cloneNode(true) : document.createElement('div');
-    if (src) {
-      // cloneNode doesn't copy canvas pixels — repaint the thumbnail onto the clone.
-      const oc = src.querySelector('canvas');
-      const gc = g.querySelector('canvas');
-      if (oc && gc) gc.getContext('2d').drawImage(oc, 0, 0);
-    }
     g.classList.remove('selected', 'playing');
     Object.assign(g.style, { position: 'fixed', zIndex: '1000', pointerEvents: 'none', opacity: '0.85', margin: '0', transition: 'none' });
     const badge = document.createElement('span');
@@ -428,11 +536,12 @@ export class TilePlayer {
     document.body.append(g);
     this._ghost = g;
     this._ghostBadge = badge;
+    this._ghostGripX = gripPx;
   }
   moveGhost(x, y, copy) {
     if (!this._ghost) return;
-    this._ghost.style.left = `${x - 14}px`;
-    this._ghost.style.top = `${y - 14}px`;
+    this._ghost.style.left = `${x - this._ghostGripX}px`;
+    this._ghost.style.top = `${y - TILE_H / 2}px`; // vertically centered in hand
     this._ghostBadge.style.display = copy ? 'flex' : 'none';
   }
   clearGhost() {
@@ -463,22 +572,114 @@ export class TilePlayer {
     });
   }
 
-  // In-place class updates (no rebuild) so double-click survives selection.
-  setSelected(id) {
-    this.container.querySelectorAll('.tile').forEach((el) => {
-      el.classList.toggle('selected', Number(el.dataset.id) === id);
+  // In-place selection sync (no rebuild): reads arrangement.selectedIds and
+  // toggles the .selected class via the render-time element cache. Also keeps
+  // the repeat fill handle glued to the selection block.
+  syncSelection() {
+    const sel = this.arrangement.selectedIds;
+    for (const [id, el] of this._tileEls) el.classList.toggle('selected', sel.has(id));
+    this.syncSelHandle();
+  }
+
+  // (Re)place the repeat FILL HANDLE at the right edge of the selection block
+  // (Excel's fill-handle idiom — drag right to stamp repeats). Lives on the
+  // selection's lane only; `hide` while a drag preview is showing. Called on
+  // every selection sync and at the end of every render.
+  syncSelHandle(hide = false) {
+    if (this._selHandle) { this._selHandle.remove(); this._selHandle = null; }
+    if (hide || !this.arrangement.selectedIds.size) return;
+    const block = this.arrangement.selectionBlock((n) => this._len(n));
+    if (!block) return;
+    const track = this.container.querySelector(`.lane-track[data-lane="${block.lane.id}"]`);
+    if (!track) return;
+    const handle = document.createElement('div');
+    handle.className = 'sel-handle';
+    handle.title = 'Repeat — drag right to stamp copies of the selection';
+    handle.style.left = `${Math.round(block.end * this.ppb)}px`;
+    handle.addEventListener('pointerdown', (e) => {
+      e.stopPropagation(); // not an empty-space press — no marquee
+      if (e.button === 0) this._repeatDrag(e, track, block.lane.id, block.start, block.end);
     });
+    track.append(handle);
+    this._selHandle = handle;
+  }
+
+  // Fill-handle drag: stamp whole-block repeats to the right. The count tracks
+  // the pointer (pull back to shed copies, release to commit — k=0 is a no-op);
+  // preview goes through cb.onRepeatPreview (main plans the collisions and we
+  // draw stamp bands directly — NO re-render mid-gesture, so the handle under
+  // the pointer survives its own drag); Esc cancels.
+  _repeatDrag(e, track, laneId, blockStart, blockEnd) {
+    const period = blockEnd - blockStart;
+    if (period <= 0) return;
+    const handle = e.currentTarget;
+    let k = 0;
+    handle.setPointerCapture(e.pointerId);
+    const beatAt = (x) => (x - track.getBoundingClientRect().left) / this.ppb;
+    const move = (ev) => {
+      this.edgeScroll(ev.clientX, ev.clientY);
+      // Copy r spans [end+(r−1)·period, end+r·period): count = the copy the
+      // pointer is inside (a whisker of slack so the exact seam doesn't jitter).
+      const nk = Math.max(0, Math.ceil((beatAt(ev.clientX) - blockEnd) / period - 0.02));
+      if (nk !== k) { k = nk; this.cb.onRepeatPreview(laneId, k); }
+    };
+    const cleanup = () => {
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', up);
+      window.removeEventListener('keydown', onKey, true);
+    };
+    const up = () => {
+      try { handle.releasePointerCapture(e.pointerId); } catch { /* gone */ }
+      cleanup();
+      this.cb.onRepeatCommit(laneId, k);
+    };
+    const onKey = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault(); ev.stopPropagation();
+      try { handle.releasePointerCapture(e.pointerId); } catch { /* gone */ }
+      cleanup();
+      this.cb.onRepeatCancel();
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up);
+    window.addEventListener('keydown', onKey, true); // capture: beats the global Esc
+  }
+
+  // Live repeat-preview bands, drawn straight into the lane track (no render).
+  showStamps(laneId, stamps) {
+    this.clearStamps();
+    const track = this.container.querySelector(`.lane-track[data-lane="${laneId}"]`);
+    if (!track) return;
+    this._stampEls = stamps.map((s) => {
+      const band = document.createElement('div');
+      band.className = 'drop-band';
+      band.style.left = `${Math.round(s.start * this.ppb)}px`;
+      band.style.width = `${Math.max(2, Math.round(this._len(s.name) * this.ppb))}px`;
+      track.append(band);
+      return band;
+    });
+  }
+  clearStamps() {
+    if (this._stampEls) { for (const el of this._stampEls) el.remove(); this._stampEls = null; }
   }
   setActiveLane(laneId) {
     this.container.querySelectorAll('.lane').forEach((el) => {
       el.classList.toggle('active-lane', Number(el.dataset.lane) === laneId);
     });
   }
-  // idSet: the tiles currently sounding (one per non-silent lane).
+  // idSet: the tiles currently sounding (one per non-silent lane). Runs per
+  // animation frame — diffs against the previous set and touches only the tiles
+  // whose state changed (usually none), via the render-time element cache.
   setPlaying(idSet) {
-    this.container.querySelectorAll('.tile').forEach((el) => {
-      el.classList.toggle('playing', idSet.has(Number(el.dataset.id)));
-    });
+    const prev = this._playingIds || new Set();
+    const els = this._tileEls || new Map();
+    for (const id of prev) {
+      if (!idSet.has(id)) { const el = els.get(id); if (el) el.classList.remove('playing'); }
+    }
+    for (const id of idSet) {
+      if (!prev.has(id)) { const el = els.get(id); if (el) el.classList.add('playing'); }
+    }
+    this._playingIds = new Set(idSet);
   }
 
   // Resolved play-region bounds in absolute beats (start always present; end
@@ -501,10 +702,19 @@ export class TilePlayer {
     track.className = 'ruler-track';
     track.style.width = `${trackWidth}px`;
 
-    const cv = document.createElement('canvas');
-    cv.width = trackWidth; cv.height = RULER_H; cv.className = 'ruler-canvas';
-    drawRuler(cv, ppb);
-    track.append(cv);
+    // Ticks are a small repeating background tile (one major period wide) —
+    // NOT a canvas spanning the whole track, which on long projects × high zoom
+    // was a huge layer that made scrolling crawl. Numbers are sparse spans.
+    track.style.backgroundImage = rulerBackground(ppb);
+    if (this.rangeMode) track.classList.add('range-armed'); // "draw your range HERE" glow
+    const major = rulerMajor(ppb);
+    for (let b = 0; b * ppb <= trackWidth; b += major) {
+      const n = document.createElement('span');
+      n.className = 'ruler-num';
+      n.style.left = `${Math.round(b * ppb) + 2}px`;
+      n.textContent = String(b);
+      track.append(n);
+    }
 
     const region = document.createElement('div'); region.className = 'ruler-region';
     const startH = document.createElement('div'); startH.className = 'ruler-mark start';
@@ -542,6 +752,9 @@ export class TilePlayer {
     track.addEventListener('contextmenu', (e) => e.preventDefault());
     track.addEventListener('pointerdown', (e) => {
       e.preventDefault();
+      // An armed range tool takes over the ruler: left-drag draws the range
+      // (markers are inert until it's disarmed).
+      if (this.rangeMode && e.button === 0) { this._rangeDrag(e, track, ppb, contentEnd); return; }
       const rect = track.getBoundingClientRect();
       let startBeat = this._playStart();
       let endVal = this.arrangement.playEnd; // null = auto
@@ -559,7 +772,9 @@ export class TilePlayer {
       const which = Math.abs(localX - endX) <= GRAB && Math.abs(localX - endX) <= Math.abs(localX - startBeat * ppb)
         ? 'end' : 'start';
       this.cb.onMarkerStart();
-      const beatAt = (x) => Math.max(0, Math.min(Math.round((x - rect.left) / ppb), contentEnd));
+      // Fresh rect per call: edge-scroll jumps move the track (it scrolls with
+      // the content), so a rect cached at pointerdown would misplace the beat.
+      const beatAt = (x) => Math.max(0, Math.min(Math.round((x - track.getBoundingClientRect().left) / ppb), contentEnd));
       const apply = (x) => {
         const b = beatAt(x);
         if (which === 'start') {
@@ -574,7 +789,7 @@ export class TilePlayer {
       };
       apply(e.clientX);
       track.setPointerCapture(e.pointerId);
-      const move = (ev) => apply(ev.clientX);
+      const move = (ev) => { this.edgeScroll(ev.clientX, ev.clientY); apply(ev.clientX); };
       const up = () => {
         track.releasePointerCapture(e.pointerId);
         track.removeEventListener('pointermove', move);
@@ -584,6 +799,163 @@ export class TilePlayer {
       track.addEventListener('pointermove', move);
       track.addEventListener('pointerup', up);
     });
+  }
+
+  // Draw a range on the ruler for the armed range tool: beat-snapped, live
+  // color-keyed bands on the ruler AND down through every lane track, with
+  // main fed each change (onRangePreview) so it can light the affected tiles.
+  // Release commits (onRangeCommit — an empty range is main's cue to cancel);
+  // Esc mid-drag cancels (onRangeCancel). shiftKey at release = stay armed,
+  // matching the brushes.
+  _rangeDrag(e, track, ppb, contentEnd) {
+    const kind = this.rangeMode;
+    // Fresh rect per call — edge-scroll jumps move the track under the pointer.
+    const beatAt = (x) => Math.max(0, Math.min(Math.round((x - track.getBoundingClientRect().left) / ppb), contentEnd));
+    const anchor = beatAt(e.clientX);
+    let s = anchor, e2 = anchor;
+
+    const mkBand = (parent) => {
+      const d = document.createElement('div');
+      d.className = 'range-band ' + kind;
+      parent.append(d);
+      return d;
+    };
+    const bands = [mkBand(track), ...[...this.container.querySelectorAll('.lane-track')].map(mkBand)];
+
+    const apply = (x) => {
+      const b = beatAt(x);
+      s = Math.min(anchor, b); e2 = Math.max(anchor, b);
+      for (const band of bands) {
+        band.style.left = `${s * ppb}px`;
+        band.style.width = `${Math.max(2, (e2 - s) * ppb)}px`;
+      }
+      this.cb.onRangePreview(kind, s, e2);
+    };
+    apply(e.clientX);
+
+    track.setPointerCapture(e.pointerId);
+    const cleanup = () => {
+      for (const band of bands) band.remove();
+      track.removeEventListener('pointermove', move);
+      track.removeEventListener('pointerup', up);
+      window.removeEventListener('keydown', onKey, true);
+    };
+    const move = (ev) => { this.edgeScroll(ev.clientX, ev.clientY); apply(ev.clientX); };
+    const up = (ev) => {
+      track.releasePointerCapture(e.pointerId);
+      cleanup();
+      this.cb.onRangeCommit(kind, s, e2, ev.shiftKey);
+    };
+    const onKey = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault(); ev.stopPropagation();
+      try { track.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+      cleanup();
+      this.cb.onRangeCancel();
+    };
+    track.addEventListener('pointermove', move);
+    track.addEventListener('pointerup', up);
+    window.addEventListener('keydown', onKey, true); // capture: beats the global Esc
+  }
+
+  // Rubber-band selection on one lane (pointerdown on empty track space).
+  // Selects LIVE as the band grows — any intersecting tile, Cubase-like — via
+  // cb.onMarquee(laneId, b0, b1) in fractional beats; content-anchored, so
+  // edge-scroll jumps don't skew it. A no-drag release is an empty-space click
+  // (cb.onMarqueeEnd with dragged=false → activate lane + clear selection);
+  // Esc cancels (cb.onMarqueeCancel → main restores the prior selection).
+  _marquee(e, track, laneId) {
+    const thresh = 4; // px before a press becomes a drag
+    const startClientX = e.clientX;
+    const anchorPx = e.clientX - track.getBoundingClientRect().left; // content px — scroll-stable
+    let dragged = false;
+    let band = null;
+    this.cb.onMarqueeStart();
+    track.setPointerCapture(e.pointerId);
+
+    const apply = (ev) => {
+      const cur = ev.clientX - track.getBoundingClientRect().left;
+      const lo = Math.max(0, Math.min(anchorPx, cur));
+      const hi = Math.max(anchorPx, cur);
+      if (!band) {
+        band = document.createElement('div');
+        band.className = 'marquee-band';
+        track.append(band);
+      }
+      band.style.left = `${lo}px`;
+      band.style.width = `${Math.max(1, hi - lo)}px`;
+      this.cb.onMarquee(laneId, lo / this.ppb, hi / this.ppb);
+    };
+    const cleanup = () => {
+      if (band) band.remove();
+      track.removeEventListener('pointermove', move);
+      track.removeEventListener('pointerup', up);
+      window.removeEventListener('keydown', onKey, true);
+    };
+    const move = (ev) => {
+      if (!dragged && Math.abs(ev.clientX - startClientX) < thresh) return;
+      dragged = true;
+      this.edgeScroll(ev.clientX, ev.clientY);
+      apply(ev);
+    };
+    const up = () => {
+      track.releasePointerCapture(e.pointerId);
+      cleanup();
+      this.cb.onMarqueeEnd(laneId, dragged);
+    };
+    const onKey = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault(); ev.stopPropagation();
+      try { track.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+      cleanup();
+      this.cb.onMarqueeCancel();
+    };
+    track.addEventListener('pointermove', move);
+    track.addEventListener('pointerup', up);
+    window.addEventListener('keydown', onKey, true); // capture: beats the global Esc
+  }
+
+  // Edge auto-scroll for drags and brush sweeps: when the pointer sits within
+  // `zone` px of either side of the visible tracks (and vertically over the
+  // player), jump the view half a page that way — page jumps on a time gate,
+  // not a per-frame creep (same rationale as the playback follow). Driven by
+  // the caller's move events, so holding perfectly still stalls between jumps;
+  // in practice hand jitter (and HTML5 dragover's auto-repeat) keeps it going.
+  // Returns true when it jumped, so gesture code can avoid "painting through"
+  // the content that streamed past.
+  edgeScroll(clientX, clientY) {
+    const el = this.container;
+    const r = el.getBoundingClientRect();
+    if (clientY < r.top || clientY > r.bottom) return false;
+    const now = performance.now();
+    if (this._edgeScrollAt && now - this._edgeScrollAt < 350) return false;
+    const head = el.querySelector('.lane-head');
+    const headW = head ? head.offsetWidth : 0;
+    const zone = 48;
+    const page = Math.max(120, (el.clientWidth - headW) / 2);
+    if (clientX > r.right - zone) el.scrollLeft += page;
+    else if (clientX < r.left + headW + zone) el.scrollLeft = Math.max(0, el.scrollLeft - page);
+    else return false;
+    this._edgeScrollAt = now;
+    return true;
+  }
+
+  // Arm/disarm the ruler's range mode (called by main): flag + live affordance
+  // on the current DOM (renders while armed re-apply it in _buildRuler).
+  setRangeMode(kind) {
+    this.rangeMode = kind;
+    const track = this.container.querySelector('.ruler-track');
+    if (track) track.classList.toggle('range-armed', !!kind);
+  }
+
+  // Light the tiles a pending range op would touch (via the render-time element
+  // cache): `doomed` = will be removed (dim + red), `shifted` = will move
+  // (blue outline). Pass nulls to clear.
+  setRangePreview(doomed, shifted) {
+    for (const [id, el] of this._tileEls) {
+      el.classList.toggle('doomed', !!doomed && doomed.has(id));
+      el.classList.toggle('range-shift', !!shifted && shifted.has(id));
+    }
   }
 }
 
@@ -601,52 +973,49 @@ function gridBackground(ppb) {
   return `${bar}, ${beat}`;
 }
 
-// Draw the beat ruler: a minor tick every beat, a major tick + a 0-based beat
-// number every `major` beats (widened from 4 at low zoom so labels don't collide).
-function drawRuler(cv, ppb) {
-  const ctx = cv.getContext('2d');
-  const W = cv.width, H = cv.height;
-  ctx.clearRect(0, 0, W, H);
+// Major-tick period for the ruler: every 4 beats, widened at low zoom so the
+// numbers don't collide.
+function rulerMajor(ppb) {
   let major = 4;
   while (major * ppb < 28) major *= 2; // keep ≥28px between numbers
-  const beats = Math.ceil(W / ppb);
-  ctx.font = '9px system-ui, sans-serif';
-  ctx.textBaseline = 'top';
-  for (let b = 0; b <= beats; b++) {
-    const x = Math.round(b * ppb) + 0.5;
-    const isMajor = b % major === 0;
-    ctx.strokeStyle = isMajor ? '#5a647c' : '#2b3140';
-    ctx.beginPath();
-    ctx.moveTo(x, H);
-    ctx.lineTo(x, H - (isMajor ? H * 0.55 : H * 0.3));
-    ctx.stroke();
-    if (isMajor) { ctx.fillStyle = '#8a93a3'; ctx.fillText(String(b), x + 2, 1); }
-  }
+  return major;
 }
 
-// Which tile rects the pointer segment (x0,y0)→(x1,y1) crosses, in path order.
-// The brushes test the PATH between pointer samples — pointermove arrives at
-// ~60–125 Hz, so a fast flick can jump 30–80 px between samples and a point test
-// (elementFromPoint) skips any tile narrower than the jump. Liang–Barsky
-// segment/rect clipping; a zero-length segment degenerates to point-in-rect.
-// Pure (exported for headless tests).
-export function segmentHits(rects, x0, y0, x1, y1) {
-  const dx = x1 - x0, dy = y1 - y0;
-  const hits = [];
-  for (const r of rects) {
-    let t0 = 0, t1 = 1, ok = true;
-    const clip = (p, q) => {
-      if (p === 0) return q >= 0;              // parallel: inside iff q ≥ 0
-      const t = q / p;
-      if (p < 0) { if (t > t1) return false; if (t > t0) t0 = t; }
-      else { if (t < t0) return false; if (t < t1) t1 = t; }
-      return true;
-    };
-    ok = clip(-dx, x0 - r.left) && clip(dx, r.right - x0) && clip(-dy, y0 - r.top) && clip(dy, r.bottom - y0);
-    if (ok) hits.push({ id: r.id, t: t0 });
+// One major period of ruler ticks (major at 0, minors every beat) rendered to a
+// tiny canvas and served as a repeat-x CSS background — cached per zoom, since
+// every render at a given ppb wants the identical tile. All TILE_SCALES are
+// integers, so major*ppb is a whole pixel count and the repeat never drifts.
+const rulerTiles = new Map(); // ppb -> css url()
+function rulerBackground(ppb) {
+  let url = rulerTiles.get(ppb);
+  if (!url) {
+    const major = rulerMajor(ppb);
+    const cv = document.createElement('canvas');
+    cv.width = major * ppb;
+    cv.height = RULER_H;
+    const ctx = cv.getContext('2d');
+    for (let b = 0; b < major; b++) {
+      const x = Math.round(b * ppb) + 0.5;
+      const isMajor = b === 0;
+      ctx.strokeStyle = isMajor ? '#5a647c' : '#2b3140';
+      ctx.beginPath();
+      ctx.moveTo(x, RULER_H);
+      ctx.lineTo(x, RULER_H - (isMajor ? RULER_H * 0.55 : RULER_H * 0.3));
+      ctx.stroke();
+    }
+    url = `url(${cv.toDataURL()})`;
+    rulerTiles.set(ppb, url);
   }
-  hits.sort((a, b) => a.t - b.t);              // in order along the path
-  return hits.map((h) => h.id);
+  return url;
+}
+
+// The normalized-grip rule (user's spec): a dragged tile is held where grabbed,
+// clamped to at least half the tile HEIGHT from either edge — so a square /
+// vertical-aspect tile (width ≤ height) is always held by its CENTER (the two
+// bounds collapse to w/2), while a long skinny tile may be held toward an edge
+// but never by its very corner. Pure (px in → px out); exported for tests.
+export function clampGrip(rawPx, wPx, halfH = TILE_H / 2) {
+  return Math.min(Math.max(rawPx, Math.min(halfH, wPx / 2)), Math.max(wPx - halfH, wPx / 2));
 }
 
 // A small lane-header toggle (Mute / Solo). `kind` drives the active styling.
@@ -657,6 +1026,28 @@ function laneToggle(text, kind, on, title, onClick) {
   b.title = title;
   b.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
   return b;
+}
+
+// Thumbnail cache: one rendered image per (pattern content, zoom), served as a
+// CSS background url. Keyed by the fields the drawing actually uses (rest /
+// degree / duration per column), so editing a pattern naturally mints a new key
+// and every stale entry just stops being referenced. Bounded by a dumb full
+// reset — regeneration is cheap and rare.
+const thumbCache = new Map(); // key -> css url()
+const THUMB_CACHE_MAX = 300;
+function thumbImage(pattern, ppb) {
+  const key = ppb + '|' + pattern.columns.map((c) => (c.isRest ? 'r' : c.degree) + ':' + c.durIndex).join(',');
+  let url = thumbCache.get(key);
+  if (!url) {
+    const cv = document.createElement('canvas');
+    cv.width = Math.max(2, Math.round(patternBeats(pattern) * ppb));
+    cv.height = TILE_H;
+    drawThumb(cv, pattern, ppb);
+    if (thumbCache.size >= THUMB_CACHE_MAX) thumbCache.clear();
+    url = `url(${cv.toDataURL()})`;
+    thumbCache.set(key, url);
+  }
+  return url;
 }
 
 // Notes as little bars at their real beat-time, length = duration, colored by

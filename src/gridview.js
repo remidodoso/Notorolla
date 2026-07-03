@@ -402,10 +402,14 @@ export class GridView {
   _resizeCanvas() {
     const totalBeats = this.pattern.columns.reduce(
       (s, c) => s + DURATIONS[c.durIndex].beats, 0);
-    this.canvas.width = this.mode === 'stretch'
+    const w = this.mode === 'stretch'
       ? PAD_LEFT + totalBeats * ROLL_BEAT_WIDTH + PAD_RIGHT
       : PAD_LEFT + this.pattern.columns.length * UNIFORM_COL_W + PAD_RIGHT;
-    this.canvas.height = this._topPad() + this._rows * ROW_H + PAD_BOTTOM;
+    const h = this._topPad() + this._rows * ROW_H + PAD_BOTTOM;
+    // Assign only on a real change: a same-value write still invalidates layout,
+    // and layout churn above the viewport invites scroll-anchoring page jumps.
+    if (this.canvas.width !== w) this.canvas.width = w;
+    if (this.canvas.height !== h) this.canvas.height = h;
   }
 
   draw() {

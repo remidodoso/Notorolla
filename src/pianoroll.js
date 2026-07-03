@@ -61,8 +61,12 @@ export class PianoRoll {
     this.maxCents = 100 * this.maxPitch;       // top edge, for yForCents
     this.pitchCount = this.maxPitch - this.minPitch + 1;
 
-    this.canvas.width = PAD_LEFT + score.lengthBeats * BEAT_WIDTH + PAD_RIGHT;
-    this.canvas.height = PAD_TOP + this.pitchCount * NOTE_HEIGHT + PAD_BOTTOM;
+    // Assign only on a real change: a same-value write still invalidates
+    // layout, and layout churn invites scroll-anchoring page jumps.
+    const w = PAD_LEFT + score.lengthBeats * BEAT_WIDTH + PAD_RIGHT;
+    const h = PAD_TOP + this.pitchCount * NOTE_HEIGHT + PAD_BOTTOM;
+    if (this.canvas.width !== w) this.canvas.width = w;
+    if (this.canvas.height !== h) this.canvas.height = h;
   }
 
   xForBeat(beat) {

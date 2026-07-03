@@ -180,7 +180,7 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   voices. v1 = **808 only** (user: the one 909 thing wanted is HH variety — a future Model select for
   ride/china/crash/909-hats is noted). All level/centre/ratio constants are **by-ear tunable**.
   - **Levels set by headless metering** (user: "way too soft"). A **sample-accurate Web Audio simulator**
-    (`C:\tmp\notch\wasim.mjs`: scheduled AudioParams incl. setTarget/exp-ramp semantics, sine/tri/square
+    ([notch/wasim.mjs](notch/wasim.mjs): scheduled AudioParams incl. setTarget/exp-ramp semantics, sine/tri/square
     oscillators, RBJ biquads, looping noise buffers, pull-based DAG render) renders each default drum and
     meters peak/RMS against a **default Vesperia note** (`meter-bosh.mjs`). This exposed a real **bug**:
     hat/cymbal/cowbell applied `peak` **twice** (sources scaled ×peak AND the bus envelope ramped to peak
@@ -432,54 +432,81 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   Reset undo restores the **instrument** too: arrangement-undo entries are tagged — a reset is a
   `full` entry that restores each lane's patch from the snapshot, while normal entries keep
   live-carrying the current patch (so a tile-move undo never reverts a separate sound edit).
-- **Per-tile transforms (nondestructive) — Transpose + Reverse brushes** ([src/transforms.js](src/transforms.js),
-  applied in `arrangementScore`). Transforms live on the **tile instance** as an **ordered list**,
-  never the pattern, so two tiles can share one pattern yet sound different and editing the pattern
-  still updates both (each re-applying its own transforms). Application is a **note-list pipeline**
-  (`applyTransforms`): **transpose** maps pitch (and re-resolves freq in the tile's tuning),
-  **reverse** retrogrades time — walked in list order (so ordering is honored once a time-op like
-  Rotate joins; transpose+reverse commute, so it doesn't matter yet). A **transform bar ABOVE the
-  lanes** (moved from below — it sits between the controls row and the lanes, doubling as the
-  selected tile's chip readout) holds the **Transpose**, **Reverse** and **Clone** tools (mutually
-  exclusive, **Esc** disarms). **Brushes are ONE-SHOT** (user): a completed gesture — one click OR
-  one full drag-sweep — **disarms the brush at pointer-up**, unless **Shift is held at release**,
-  which keeps it armed for repeated use. **Sweeps are path-exact** (user: "not cool to miss them"):
-  the gesture hit-tests the **segment between pointer samples** (`segmentHits` in tileplayer.js,
-  Liang–Barsky vs a rect snapshot taken at gesture start — painting never moves tiles), so a fast
-  flick can't skip narrow tiles; hits land in path order. Touched tiles get a **live outline in the
-  brush's colour** (purple/teal/amber) for the gesture's duration — visibility for tiny tiles,
-  especially Clone's relabeling. **Esc mid-sweep CANCELS the gesture**: the pre-gesture snapshot is
-  restored with **no undo entry** (Clone also deletes the patterns that gesture minted — a
-  cancelled gesture cleans up completely, unlike the accepted stray-on-undo), and the brush
-  disarms; the global Esc handler defers while a sweep is active. Arm one, then **click or
-  click-drag over tiles** to paint it (drag paints, doesn't move). **Transpose**
-  = SET to the brush **Amount** (a second replaces it; 0 clears), with **Scale** = **Auto (from
-  tile)** or an explicit **Major/Minor-pent / Chromatic** override (root always the tile's, **tuning
-  never changed**; walks `stepInScale`). **Reverse** = toggle (the drag *anchor* decides on/off,
-  then that state paints across the sweep) and is **exactly clone-and-reverse** (retrograde within
-  the tile's full length, trailing rests included). Phase-1 policy: at most **one transpose + one
-  reverse** (multiples ignored — `normalizeTransforms` enforces last-transpose-wins + reverse
-  parity; full "minimal-set" reduction deferred). The tile's **thumbnail stays the pattern's
-  identity**; transforms show as **stacked translucent swaths** at the bottom (color-keyed:
-  transpose purple `+n`, reverse teal `◄`; each ~⅓ tall, packed ≤¾ total for 3+) and as ordered
-  removable **chips** in the bar when the tile is selected; the **roll shows the real transformed
-  notes**. Saved per-tile (`tile.transforms`, optional/backward-safe), **undoable** (carried through
-  `arrApply`), **copies carry cloned transforms**. Future Phase 2: append semantics + reorderable
-  chips + **Rotate** (the non-commuting case that forces real ordering UI); hover "tip" deferred.
-- **Clone tool** (in the transform bar; click or **drag-sweep**): swept tiles **repoint to fresh
-  deep copies of their patterns** (`library.cloneOf(name)` — clones an arbitrary pattern *without*
-  touching current/parked, invariant-safe since the copies are instantly referenced) — "as if
-  cloned in the grid". **Deduped per source pattern**: every swept tile sharing A1 gets the SAME
-  new clone (5×A1 + 3×A3 → 5×A8 + 3×A9), so a swept **section keeps its internal sharing while
-  diverging as a block** from the un-swept originals — the "clone this chorus to vary it" move.
-  The **dedup map lives for the brush's whole armed session** (user: for the duration of
-  Shift-held) — a second Shift-kept sweep of more A1 tiles JOINS A8; re-arming starts a fresh map;
-  `minted` guards re-sweeps of already-repointed tiles (never clones a clone made this session).
-  Positions + per-tile transforms untouched. After each gesture the **ANCHOR tile's clone opens in
-  the grid editor** (like double-click). One-shot like the brushes; one undo entry per gesture.
-  **Known/accepted:** undoing a clone repoints tiles back but the cloned pattern(s) **linger in the
-  registry** (invisible, ride saves) — same class as deleting a pattern's last tile today; a future
-  **pattern browser / orphan-GC** is the real fix (deferred).
+- **MULTI-SELECT + transform ACTIONS (2026-07-04 — replaced the brushes).** Selection is now a
+  **SET of tiles on ONE lane** (`arrangement.selectedIds` + `selectedId` = the **anchor**, the
+  last-clicked tile; runtime-only, not serialized; every mutator keeps the one-lane invariant —
+  `select`/`toggleSelect`/`selectRange`/`selectMarquee`/`pruneSelection` in
+  [library.js](src/library.js), headless-tested). Gestures:
+  - **Marquee**: click empty track space and **drag** — a translucent blue band (clamped to the
+    anchor lane, the one-lane rule) live-selects every tile it **intersects** (Cubase-like; edge
+    auto-scroll works; content-anchored so jumps don't skew it). A **no-drag click** on empty
+    space activates the lane and **clears** the selection; **Esc mid-band cancels** back to the
+    prior selection. No modifier key (user: "why don't we start with click-over-empty-space").
+  - **Ctrl-click** toggles a tile in/out (cross-lane starts fresh there; Ctrl still means *copy*
+    during a drag — only the no-movement click reads it). **Shift-click** selects the contiguous
+    run between the anchor and the clicked tile. Plain click = fresh single selection.
+  - **Delete** (button/key) removes **every** selected tile, one undo entry (ripple mode closes
+    each gap; off leaves silence).
+  **Transforms are now ACTION BUTTONS, not brushes** (user: "we implemented brush because we
+  didn't have multi-select… remove the brush feature entirely") — select tiles, then click;
+  applies to the whole selection in **one undo entry**; the **selection survives so actions
+  chain** (the grid Permute convention). Buttons **disable with no selection** (deliberately NOT
+  the grid's "or all" fallback — silently reversing a whole arrangement is too surprising).
+  - **Transpose**: SETs each tile's transpose to the bar's **Amount/Scale** (always-visible
+    controls now — they're the action's parameters); a second application replaces; 0 clears;
+    Scale Auto = each tile's own mask; the tuning is never changed (walks `stepInScale`).
+  - **Reverse**: **unify** — if every selected tile is reversed, un-reverse all; else reverse all
+    (exactly clone-and-reverse: retrograde within the tile's full length, trailing rests incl.).
+  - **Clone**: each selected tile repoints to a fresh deep copy (`library.cloneOf`), **deduped
+    per source within the action** (5×A1 + 2×A3 → 5×A8 + 2×A9 — a selection keeps its internal
+    sharing while diverging as a block); the **anchor's clone opens in the grid**. Accepted:
+    undo repoints back but the clones linger in the registry (pattern browser / orphan-GC is the
+    real fix, deferred).
+  **The transform inspector** (chips right of the bar): one tile selected = its ordered removable
+  chips as before; **several = the INTERSECTION view** — a count label ("3 tiles") + a chip per
+  transform kind common to ALL selected (uniform details shown, "**Transpose (mixed)**" when the
+  kind is shared but amounts differ); a chip's ✕ removes that kind **from every selected tile**,
+  one undo. Nothing in common = just the count.
+  **Selection BLOCK ops (2026-07-04, same push):** the selection moves/copies/repeats as a
+  **rigid block** (relative offsets + internal gaps preserved), all with the per-tile
+  **"ignore" collision policy** (a member whose destination overlaps a non-moving tile is
+  `blocked`: a move leaves it where it was, a copy/repeat skips it — overwrite may become a
+  toggle later; a blocked move-member left behind can overlap a placed one's spot, accepted).
+  Pure planners on the Arrangement (`planSelectionDrop`/`planRepeat`) are shared by preview AND
+  commit, so preview == commit ([notch/blockops.mjs](notch/blockops.mjs), 23 tests):
+  - **Multi-MOVE / multi-COPY**: dragging any member of a ≥2 selection carries the whole block
+    (the grabbed tile keeps its grip; the shift clamps so nothing lands before beat 0);
+    Ctrl = copy as usual; cross-lane works (fresh-lane instrument seeding applies once); the
+    landing preview shows a **band per placed member** (blocked move-members visibly stay put);
+    the carry caret marks the **block's** left edge. Ripple mode doesn't apply to multi drags.
+    Move keeps the same ids selected; copy selects the placed copies (parallel to single-copy).
+  - **REPEAT — the fill handle** (Excel idiom; chosen over shift-drag and a one-shot button —
+    discoverable, no modifier, no arming; "Cubase kinda sorta does the handle thing" — user):
+    a small blue grip rides the **right edge of the selection block** (kept glued by
+    `syncSelHandle` on every selection change; hidden during drag previews). Drag it right to
+    stamp **whole-block copies at `blockStart + k·period`** (period = block span → seamless;
+    a trailing gap can't be part of the loop, accepted); count tracks the pointer (pull back to
+    shed, release to commit, k=0 no-op, Esc cancels); preview bands are drawn **without
+    re-rendering** (the handle under the pointer must survive its own gesture). One undo entry;
+    afterwards the **selection = originals + all stamps** (user's choice — ready for a
+    whole-run transform). Transforms clone onto stamps/copies.
+  **Removed with the brushes** (select-then-act replaced them; git remembers): arming/one-shot/
+  Shift-to-stay, the paint-gesture Esc-cancel path, path-exact sweep hit-testing (`segmentHits`,
+  Liang–Barsky — deleted, tests trimmed to `clampGrip`), the painted-tile highlight, and the
+  clone brush's armed-session dedup map. Losses accepted: **cross-lane sweeps** (one-lane
+  selection — per-lane rounds for now) and scattered-tile painting (covered by Ctrl-click).
+- **Per-tile transforms (nondestructive)** ([src/transforms.js](src/transforms.js), applied in
+  `arrangementScore`): transforms live on the **tile instance** as an **ordered list**, never the
+  pattern, so two tiles can share one pattern yet sound different and editing the pattern still
+  updates both. A **note-list pipeline** (`applyTransforms`): **transpose** maps pitch (re-resolves
+  freq in the tile's tuning), **reverse** retrogrades time — walked in list order. Phase-1 policy:
+  at most **one transpose + one reverse** (`normalizeTransforms` enforces last-transpose-wins +
+  reverse parity). The tile's **thumbnail stays the pattern's identity**; transforms show as
+  **stacked translucent swaths** at the bottom (transpose purple `+n`, reverse teal `◄`) and as
+  chips in the bar (see the inspector above); the **roll shows the real transformed notes**. Saved
+  per-tile (`tile.transforms`, optional/backward-safe), **undoable** (carried through `arrApply`),
+  **copies carry cloned transforms**. Future Phase 2: append semantics + reorderable chips +
+  **Rotate** (the non-commuting case that forces real ordering UI).
 - Both lanes share **one horizontal time axis** (a single scale `tilePlayer.ppb`, one shared
   scroll, common origin), so tiles **align in time** across lanes. Tiles are **freely positioned**:
   each carries an explicit **`start` beat** (snapped to the 1/4-note grid = integer beats), so gaps
@@ -540,10 +567,21 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
     lane lifts without a source close (drop-back = no-op).
   Either mode: only dropping *off* the lanes cancels; **Ctrl = a shallow copy** ("+" badge on the
   ghost; moved off Shift, which the upcoming multi-select needs for range selection); no modifier =
-  move (keeps the id). Each real change is one undo step; afterward the tile is selected and its
-  lane active. (`moveTile(…, ripple)` / `copyTile(…, ripple)` / `insertAt` / `removeRipple` in
-  [library.js](src/library.js), via the shared `rippleInsertInto` / `overwriteInsertInto` /
-  `rippleRemoveFrom` primitives.)
+  move (keeps the id). **Drop position (settled 2026-07-03 after two experiments):** the tile
+  lands at the **beat nearest its CARRIED position** — `round(cursor − grip)` for tile drags
+  (the **normalized grip**: `clampGrip`/`gripFor`, held where grabbed, clamped ≥ half the tile
+  height from either edge, center for square tiles; the ghost hangs from the same grip point,
+  `makeGhost(id, gripPx)`), and `round(cursor − len/2)` for grid drops (**always centered**, no
+  prior grip to preserve). During any drag the **beat caret goes into CARRY MODE**: it stops
+  tracking the pointer and marks the **left edge of the prospective landing** (`setCarryCaret`,
+  fed by both drag pipelines on every move; hidden off-lanes where a drop would cancel) — so
+  the caret and the landing band always agree WITHOUT warping the drop math to the pointer.
+  (Two failed experiments recorded so we don't repeat them: drop-at-floor(pointer), then
+  caret+drop both at round(pointer) — each made the drop ignore the carried tile's position;
+  "the ghost/drop was working correctly before… what needs to change is the caret" — user.)
+  Each real change is one undo step; afterward the tile is selected and its lane active. (`moveTile(…, ripple)` /
+  `copyTile(…, ripple)` / `insertAt` / `removeRipple` in [library.js](src/library.js), via the
+  shared `rippleInsertInto` / `overwriteInsertInto` / `rippleRemoveFrom` primitives.)
 - **Prospective preview while dragging** (DAW-style), mode-aware, computed by running the **same
   placement ops on a throwaway copy** (so preview == commit) while a floating **ghost** follows the
   cursor. **Landing is a filled band** (translucent blue over the exact span the drop occupies —
@@ -564,11 +602,111 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   grid's instrument on drop. Old gapless projects migrate by deriving each tile's `start` from the
   cumulative order (`ensureTileStarts`), so they open identically.
 - **Active lane** (highlighted) set on drop / select / empty-lane click.
-- **Playhead**: during tile playback a vertical line sweeps each lane track at the current beat
-  (one `.tile-playhead` per track, positioned track-relative so it scrolls with the tiles and aligns
-  across lanes; `tilePlayer.setPlayhead(beat)` from the render loop). It marks **real playback
-  position** — shown even mid-drag (when the green "playing" badge is suppressed). The lanes
-  auto-scroll to follow it (`ensureTileVisible`, not scrolling it behind the sticky lane header).
+- **Beat caret (2026-07-03) — MODAL**: with nothing in hand, hovering a lane shows a light-blue
+  vertical line at the beat **left of the pointer** (floor — "nearest left", a "land/paste here"
+  cursor), hovered lane only, steady (blink deferred). **While a tile is carried** (tile drag or
+  grid drag) the caret switches to **carry mode**: it marks the **left edge of the prospective
+  landing** on the target lane instead of tracking the pointer (`setCarryCaret`). Always live, gestures included: delegated pointermove
+  covers tile drags and brush sweeps; the HTML5 grid-drag's dragover updates it (pointermove
+  doesn't fire during dnd); ruler drags capture the pointer away from the lanes, which correctly
+  hides it. One element re-parented between tracks, no-op unless the (lane, beat) pair changes;
+  `pointer-events: none`; z 2 (over tiles, under the sticky heads). Groundwork for copy/paste.
+  The caret-vs-drop question was settled the same day with the **modal caret** (carry mode marks
+  the landing's left edge; drops keep the grip/centered math — see the drag bullet above).
+- **Range edits — Insert time / Clear / Delete time (2026-07-03).** Transform bar gained
+  `│ Range: [Insert] [Clear] [Delete]` (color-keyed green/amber/red, same arming rules as the
+  brushes: exclusive with them, one-shot, **Shift at release keeps armed**, Esc disarms — or
+  cancels a drag in progress via its capture listener). Arm one and **the ruler glows**
+  (crosshair + blue glow, marker drags inert) — draw a beat-snapped range there; a color-keyed
+  band tracks the drag on the ruler AND down through every lane track, with affected tiles lit
+  live: **doomed** (dim+red) = will be removed, **`.range-shift`** (blue outline) = will move.
+  Semantics (all lanes, global timeline surgery; `Arrangement.insertTime/clearRange/deleteTime`
+  in [library.js](src/library.js)):
+  - **Insert**: everything *starting* at/after the range start shifts right by the range length.
+  - **Clear**: tiles *starting* in [start, end) removed; nothing moves.
+  - **Delete**: Clear + everything starting at/after the range end shifts left to close the gap —
+    shifted material may overlap an earlier tile's tail (accepted; already possible via
+    pattern-length changes).
+  Tiles are **atomic**: one starting before the range but reaching into it is untouched (the
+  no-trimming doctrine). The **playhead and region markers ride along** as timeline points
+  (`insertPoint`/`deletePoint`, exported pure): a point inside a deleted range collapses to the
+  range start; if both markers were inside (region degenerate), they **reopen 4 beats apart at
+  the range start** (user's rule); an auto (null) end marker stays auto. One undo entry per op
+  (no entry if the range touched nothing); an empty range (plain click) cancels; the Ripple
+  toggle has no bearing. rangeops.mjs 23/23; suite 446.
+- **Page no longer scrolls itself on edits** (user: "let the user scroll it back"): edits resize
+  the grid canvas (triad band appearing/leaving, stretch-mode length) and the roll canvas (pitch
+  span), and the browser's **scroll anchoring** was adjusting the page scroll in response — read
+  as "the pane scrolls itself back into view." Fixed: `html { overflow-anchor: none; }` + both
+  canvases now skip same-value width/height writes (a no-op assignment still invalidates layout).
+- **Horizontal scroll persists across reloads** (`state.tileScrollX` in notorolla.ui — even with
+  the playhead off screen you come back to the same view; scroll events land on state, the
+  localStorage write is debounced 400 ms; restored after the initial render, browser-clamped).
+- **Drop headroom**: the lane tracks + ruler extend **~half a viewport (min 8 beats) past the
+  content end**, so an overflowing arrangement never pins its last tile against the window's right
+  edge — there's always empty, droppable, scrollable track at the end (markers still clamp to the
+  real content end). First piece of the "enable longer projects" push (2026-07-03).
+- **Perf pass for long projects (2026-07-03)** — three independent fixes (the invasive fourth,
+  keyed reconciliation of `render()` instead of the innerHTML wipe, is held in reserve if drag
+  previews still stutter on big arrangements):
+  - **Ruler tiled**: the giant per-render canvas (as wide as the whole track — a huge layer that
+    made scrolling crawl and would eventually hit canvas size caps) is now a **one-major-period
+    tick tile** repeated as a CSS background (`rulerBackground(ppb)`, cached per zoom — integer
+    TILE_SCALES so the repeat never drifts) + **sparse number spans** (`.ruler-num`, one per major).
+  - **Thumbnail cache**: tiles no longer each own a redrawn-every-render canvas; the thumbnail is a
+    **CSS background-image from a content-keyed cache** (`thumbImage`: key = zoom + per-column
+    rest/degree/duration, so edits mint a new key; dumb full reset at 300 entries). 100 tiles of A1
+    = one rendered image; the drag ghost inherits it via cloneNode for free (its canvas-repaint
+    workaround removed).
+  - **Delta playback updates**: `setPlaying`/`setPlayhead` run per frame — they now use render-time
+    element caches (`_tileEls`/`_playheadEls`) and diff (previous playing-set / last playhead x)
+    instead of `querySelectorAll` sweeps; `updateTransportButtons` early-outs on an unchanged
+    input signature.
+  - **Page-jump auto-follow** (user: continuous follow still scrolled badly): both playback
+    followers (`ensureTileVisible`/`ensureRollVisible`) hold the view still while the playhead
+    sweeps across it and **jump a page** (playhead re-enters at the left margin, right of the
+    sticky heads) only when it runs off the right edge — no more per-frame `scrollLeft` writes
+    dragging the whole track layer.
+  - **Scroll no longer resets on rebuild** (user: "scrolls back to the beginning a lot,
+    especially on stop"): `render()`'s innerHTML wipe momentarily collapsed the content, so the
+    browser clamped `scrollLeft` to 0 on **every** rebuild (stop, drop, undo, …). The scroll
+    position is now saved/restored across the rebuild (before the FLIP measures rects), and both
+    stop paths keep the playhead in view (`ensureTileVisible` after a manual stop parks it /
+    after a natural finish rewinds it).
+  - **Edge auto-scroll while dragging** (`tilePlayer.edgeScroll`): dragging a tile (or the grid
+    grab-handle, or sweeping a brush) within 48 px of either side of the visible tracks **jumps
+    the view half a page** that way (time-gated at 350 ms — jumps, not creep, per the user).
+    Pointer-driven, so a perfectly still pointer stalls between jumps (hand jitter suffices;
+    HTML5 dragover auto-repeats so grid drags don't stall at all). Brush sweeps hit-test against
+    a scroll-compensated coordinate (pointer x mapped back into the gesture's snapshot space),
+    and a jump resets the segment anchor so the sweep doesn't paint everything that streamed
+    past a stationary pointer. **Ruler drags too**: region-marker drags and range-tool drags
+    edge-scroll the same way — their `beatAt` reads the track rect fresh per event (the ruler
+    scrolls with the content, so a rect cached at pointerdown goes stale the moment the view
+    jumps). Stacking fix same pass: `.tile` got `z-index: 0` (own stacking context) so
+    transform swaths can't paint over the sticky lane heads; `.tile-playhead` z 5→2 (same reason).
+- **Playhead — always visible, parks when stopped**: during tile playback a vertical line sweeps
+  each lane track at the current beat (one `.tile-playhead` per track, positioned track-relative so
+  it scrolls with the tiles and aligns across lanes; `tilePlayer.setPlayhead(beat)` from the render
+  loop, re-applied after every `render()` rebuild). It marks **real playback position** — shown even
+  mid-drag (when the green "playing" badge is suppressed). The lanes auto-scroll to follow it
+  (`ensureTileVisible`, not scrolling it behind the sticky lane header). When stopped the playhead
+  **stays on screen, parked** (`state.playheadBeat`, a workspace pref in `notorolla.ui`, clamped to
+  the arrangement on restore; project Open/New parks it at 0):
+  - **Manual Stop parks it where playback was; a natural finish** (one-shot end / loop passes
+    exhausted, `scheduler.onEnded`) **rewinds it to the region start.**
+  - **Space** = play from the region start / stop (as before, active pane); **Shift+Space** = loop.
+  - **ArrowRight resumes from the parked playhead** (`resumePlay`, tiles pane, stopped only): the
+    **first pass** is windowed to `[playhead, region end)` — a one-shot `resumeBeat` the provider
+    self-clears at the first loop boundary (`scheduler.cycleStart` moved past the armed start), so
+    **a resumed play that loops wraps to the region start**, not the resume point (user decision).
+    The render loop tracks the pass origin (`passBase`, flipped forward when the position wraps) so
+    the on-screen playhead stays absolute during a resumed pass. At/after the region end = no-op.
+  - **⏮ / ⏭ transport buttons + B / E keys** park the playhead at the **play-region start / end**
+    (`movePlayhead`, scrolls it into view; disabled/no-op while playing — live locate is a
+    deliberately deferred bigger feature). No click-to-scrub on the ruler yet (it owns marker drags).
+  - The **clock shows the parked playhead's position whenever the tiles aren't playing**
+    (regardless of Loop Mod — see the modulator-clock note below).
 - **Beat ruler + play-region markers** (sticky strip on top of the lanes; `_buildRuler`/`drawRuler`).
   Marked in **0-based beat numbers** (so a ruler number = a tile's `start` beat) with minor ticks
   every beat and major ticks/numbers every 4 beats (widened at low zoom so labels don't collide).
@@ -655,10 +793,12 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
     where playback started. Deterministic both ways. **Loop Mod is ONE GLOBAL toggle** (user: "one
     checkbox for the entire tile player, for now") — a `tbtn` next to the ↻ loop button, persisted as
     `state.modLoop` (workspace pref, `notorolla.ui`); the resolver overrides every mod's `loop` flag
-    with it (the per-mod field stays in the data model for a possible per-mod return). A **modulator
-    clock** (`mm:ss.hh`, left of Undo) shows the clock the mods actually read: elapsed since first Play
-    (ticks even while stopped) or the playhead's ruler time when Loop Mod is on (50 ms interval,
-    writes only on change). *Deferred (user):* "Scale Mod Rate to Tempo" checkbox.
+    with it (the per-mod field stays in the data model for a possible per-mod return). A **transport
+    clock** (`mm:ss.hh`, left of Undo; 50 ms interval, writes only on change): while the **tiles play**
+    it shows the clock the mods actually read — elapsed since first Play, or the pass's ruler time when
+    Loop Mod is on; **stopped (or grid playing) it shows the parked playhead's position** regardless of
+    Loop Mod (user decision — it no longer ticks elapsed time while stopped, though the elapsed anchor
+    itself keeps running underneath). *Deferred (user):* "Scale Mod Rate to Tempo" checkbox.
   - **Walk** = interpolated **value-noise** (seeded hash points, smoothstep between): bounded by
     construction, centered, deterministic, O(1) — the "tempered random walk"; seed = lane × slot, so
     walks decorrelate across lanes/slots.
@@ -896,6 +1036,18 @@ fine at the moment"). Decisions reached + open questions, so we can pick it back
 
 ## Known limitations / deferred
 
+- **BUG (diagnosed 2026-07-03, fix deferred — user: "another time, low priority"): arrangement
+  Undo overwrites live modulator settings.** The mods themselves serialize/restore fine (round-trip
+  verified headlessly); the loss is the undo path: the mod modal brackets an *undoable* arrangement
+  entry, and `arrApply` restores `modsByKind` **from the snapshot** on every undo/redo — so the
+  first Undo after mod tweaking (or any undo past the point mods were set up) silently reverts
+  them ("my mod settings just go away"). Lane *patches* were exempted from exactly this
+  ("undoing a tile move never reverts a later sound edit" — live-carried in `arrApply`); the
+  intended fix is the same treatment for mods: live-carry on normal entries (snapshot-restore only
+  on `full` resets) + the mod modal persists without minting an undo entry (like `persistPatch`).
+- **BUG (found same hunt, deferred): `loadContent` doesn't restore `playStart`/`playEnd`** — opening
+  a project file keeps the *previous* session's region markers (`Arrangement.fromJSON` parses them
+  but the in-place copy skips them). One-line fix when touched next.
 - ~~BUG — articulation not applied in playback~~ **FIXED**: the scheduler now shortens each
   note to `note.duration * articulation * spb` (captured per cycle in `_beginCycle`), so the
   "slightly non-legato" default is actually audible — and MIDI export (which also applies
@@ -935,6 +1087,11 @@ fine at the moment"). Decisions reached + open questions, so we can pick it back
   then build on "make it so."
 - Comment anything non-obvious; a 1–2 line description for each non-trivial function.
 - Keep the no-build / no-dependency setup unless asked otherwise.
+- **Headless tests live in [notch/](notch/)** (moved in-repo from C:\tmp\notch 2026-07-04, user
+  request): `node notch/run.mjs` runs every suite; tests import the live `../src` directly (the
+  root `package.json` `{"type":"module"}` exists solely to make `src/*.js` ESM-resolvable to
+  node — inert for the browser, no dependencies). `wasim.mjs` is the Web Audio simulator,
+  `meter-bosh.mjs` a metering rig (both skipped by the runner).
 
 ---
 

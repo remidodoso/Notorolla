@@ -173,7 +173,12 @@ export function laneColor(i) {
 export class Arrangement {
   constructor(lanes) {
     this.lanes = lanes || [newLane(0), newLane(1)];
+    // Selection: a SET of tile ids, all on ONE lane (the invariant every
+    // mutator below preserves). `selectedId` is the ANCHOR — the last-clicked
+    // tile (range extends from it; single-tile behaviors like open-in-grid key
+    // off it). Runtime-only: not serialized.
     this.selectedId = null;
+    this.selectedIds = new Set();
     this.activeLaneId = this.lanes[0].id;
     this.seq = 0; // global tile-id counter
     // Play/loop region (beats). The start marker is always present (defaults to
@@ -186,6 +191,66 @@ export class Arrangement {
   lane(id) { return this.lanes.find((l) => l.id === id); }
   laneOfTile(id) { return this.lanes.find((l) => l.tiles.some((t) => t.id === id)); }
   allTiles() { return this.lanes.flatMap((l) => l.tiles); }
+
+  // --- selection (a one-lane set; selectedId = the anchor) -----------------
+
+  // Plain click: a fresh selection of exactly this tile (null clears).
+  select(id) {
+    this.selectedId = id == null ? null : id;
+    this.selectedIds = new Set(id == null ? [] : [id]);
+  }
+
+  clearSelection() { this.select(null); }
+
+  // Ctrl-click: toggle membership. A tile on ANOTHER lane starts a fresh
+  // selection there (the one-lane rule). Removing the anchor promotes any
+  // remaining member.
+  toggleSelect(id) {
+    const lane = this.laneOfTile(id);
+    if (!lane) return;
+    const curLane = this.selectedId != null ? this.laneOfTile(this.selectedId) : null;
+    if (!this.selectedIds.size || curLane !== lane) { this.select(id); return; }
+    if (this.selectedIds.has(id)) {
+      this.selectedIds.delete(id);
+      if (this.selectedId === id) this.selectedId = this.selectedIds.size ? [...this.selectedIds][0] : null;
+    } else {
+      this.selectedIds.add(id);
+      this.selectedId = id; // the newest member anchors future ranges
+    }
+  }
+
+  // Shift-click: the contiguous run of tiles between the anchor and this tile
+  // (by start position, inclusive) on the anchor's lane. Cross-lane (or no
+  // anchor) degrades to a plain select.
+  selectRange(id) {
+    const lane = this.laneOfTile(id);
+    const anchorLane = this.selectedId != null ? this.laneOfTile(this.selectedId) : null;
+    if (!lane || anchorLane !== lane) { this.select(id); return; }
+    const a = lane.tiles.find((t) => t.id === this.selectedId);
+    const b = lane.tiles.find((t) => t.id === id);
+    const lo = Math.min(a.start, b.start), hi = Math.max(a.start, b.start);
+    this.selectedIds = new Set(lane.tiles.filter((t) => t.start >= lo && t.start <= hi).map((t) => t.id));
+    // the anchor stays put — a second shift-click re-extends from it
+  }
+
+  // Marquee: every tile on `laneId` INTERSECTING [b0, b1] (beats, Cubase-like —
+  // any overlap counts). Anchor = the leftmost hit. `lenOf(name)` -> beats.
+  selectMarquee(laneId, b0, b1, lenOf) {
+    const lane = this.lane(laneId);
+    if (!lane) return;
+    const hit = lane.tiles.filter((t) => t.start < b1 && b0 < t.start + lenOf(t.name));
+    this.selectedIds = new Set(hit.map((t) => t.id));
+    this.selectedId = hit.length ? hit.reduce((m, t) => (t.start < m.start ? t : m)).id : null;
+  }
+
+  // Drop ids that no longer exist (after undo / range ops / deletes); promote a
+  // surviving member to anchor if the anchor died.
+  pruneSelection() {
+    const alive = new Set(this.allTiles().map((t) => t.id));
+    for (const id of [...this.selectedIds]) if (!alive.has(id)) this.selectedIds.delete(id);
+    if (!this.selectedIds.size) { this.selectedId = null; return; }
+    if (this.selectedId == null || !this.selectedIds.has(this.selectedId)) this.selectedId = [...this.selectedIds][0];
+  }
 
   // Append a new empty lane (id = one past the current max). 2 lanes is the
   // factory default; more are added on request. Returns the new lane.
@@ -210,7 +275,7 @@ export class Arrangement {
     lane.patch = defaultPatch();
     lane.modsByKind = {};
     lane.fresh = true;
-    if (this.selectedId != null && !this.allTiles().some((t) => t.id === this.selectedId)) this.selectedId = null;
+    this.pruneSelection();
   }
 
   // Reset the whole tile player to the factory state: two blank, fresh lanes and
@@ -219,7 +284,7 @@ export class Arrangement {
   resetPlayer() {
     this.lanes = [newLane(0), newLane(1)];
     this.activeLaneId = 0;
-    this.selectedId = null;
+    this.clearSelection();
     this.playStart = 0;
     this.playEnd = null;
   }
@@ -322,6 +387,161 @@ export class Arrangement {
 
   referencedNames() { return new Set(this.allTiles().map((t) => t.name)); }
 
+  // --- selection block ops (move / copy / repeat) --------------------------
+  // The selection moves as a RIGID BLOCK (relative offsets preserved), with the
+  // "ignore" collision policy: a member whose destination overlaps a non-moving
+  // tile is `blocked` — a move leaves it where it was, a copy/repeat skips it.
+  // (Overwrite may become a toggle later.) Members can't collide with each
+  // other (rigid translation); a blocked member left behind CAN overlap a
+  // placed one's destination — accepted, overlaps are already tolerated.
+
+  // The selected tiles, in timeline order.
+  selectedTiles() {
+    return this.allTiles().filter((t) => this.selectedIds.has(t.id)).sort((a, b) => a.start - b.start);
+  }
+
+  // The selection's bounding block: [start, end) + the lane it lives on.
+  selectionBlock(lenOf) {
+    const tiles = this.selectedTiles();
+    if (!tiles.length) return null;
+    const start = tiles[0].start;
+    const end = Math.max(...tiles.map((t) => t.start + lenOf(t.name)));
+    return { start, end, lane: this.laneOfTile(tiles[0].id) };
+  }
+
+  // Plan translating the selection by `shift` beats onto `toLaneId` (pure — the
+  // drag preview and the commit share it, so preview == commit). Returns
+  // [{id, name, start, blocked}] in timeline order.
+  planSelectionDrop(toLaneId, shift, lenOf, copy) {
+    const target = this.lane(toLaneId);
+    if (!target) return [];
+    // A move vacates its own space; a copy's originals stay and DO obstruct.
+    const obstacles = target.tiles.filter((t) => copy || !this.selectedIds.has(t.id));
+    return this.selectedTiles().map((t) => {
+      const start = t.start + shift;
+      const len = lenOf(t.name);
+      const blocked = start < 0
+        || obstacles.some((o) => o.start < start + len && start < o.start + lenOf(o.name));
+      return { id: t.id, name: t.name, start, blocked };
+    });
+  }
+
+  // Move the selection per the plan (blocked members stay put, still selected).
+  moveSelection(toLaneId, shift, lenOf) {
+    const plan = this.planSelectionDrop(toLaneId, shift, lenOf, false);
+    const target = this.lane(toLaneId);
+    for (const p of plan) {
+      if (p.blocked) continue;
+      const src = this.laneOfTile(p.id);
+      const tile = src.tiles.find((t) => t.id === p.id);
+      if (src !== target) {
+        src.tiles.splice(src.tiles.indexOf(tile), 1);
+        target.tiles.push(tile);
+      }
+      tile.start = p.start;
+    }
+    for (const lane of this.lanes) sortLane(lane);
+    return plan;
+  }
+
+  // Copy the selection per the plan; the selection becomes the placed copies
+  // (parallel to a single-tile copy selecting its copy). Transforms are cloned.
+  copySelection(toLaneId, shift, lenOf) {
+    const plan = this.planSelectionDrop(toLaneId, shift, lenOf, true);
+    const target = this.lane(toLaneId);
+    const placed = [];
+    for (const p of plan) {
+      if (p.blocked) continue;
+      const src = this.allTiles().find((t) => t.id === p.id);
+      const tile = { id: ++this.seq, name: p.name, start: p.start };
+      if (src && src.transforms) tile.transforms = src.transforms.map((x) => ({ ...x }));
+      target.tiles.push(tile);
+      placed.push(tile);
+    }
+    sortLane(target);
+    if (placed.length) {
+      this.selectedIds = new Set(placed.map((t) => t.id));
+      this.selectedId = placed[0].id;
+    }
+    return plan;
+  }
+
+  // Plan stamping `k` repeats of the selection block to its right (pure; the
+  // fill-handle preview and repeatSelection share it). Copy r of a member lands
+  // at start + r×period, period = the block span — rhythmically seamless.
+  // Stamps from different repeats are disjoint by construction, so collisions
+  // are only against PRE-EXISTING tiles.
+  planRepeat(k, lenOf) {
+    const block = this.selectionBlock(lenOf);
+    if (!block || k <= 0) return [];
+    const period = block.end - block.start;
+    if (period <= 0) return [];
+    const existing = block.lane.tiles.slice();
+    const out = [];
+    for (let rep = 1; rep <= k; rep++) {
+      for (const t of this.selectedTiles()) {
+        const start = t.start + rep * period;
+        const len = lenOf(t.name);
+        const blocked = existing.some((o) => o.start < start + len && start < o.start + lenOf(o.name));
+        out.push({ srcId: t.id, name: t.name, start, blocked });
+      }
+    }
+    return out;
+  }
+
+  // Stamp the repeats (skipping blocked); selection becomes the ORIGINAL tiles
+  // PLUS all placed stamps (user's choice — ready for a whole-run transform).
+  repeatSelection(k, lenOf) {
+    const block = this.selectionBlock(lenOf);
+    if (!block) return [];
+    const plan = this.planRepeat(k, lenOf);
+    const placed = [];
+    for (const p of plan) {
+      if (p.blocked) continue;
+      const src = this.allTiles().find((t) => t.id === p.srcId);
+      const tile = { id: ++this.seq, name: p.name, start: p.start };
+      if (src && src.transforms) tile.transforms = src.transforms.map((x) => ({ ...x }));
+      block.lane.tiles.push(tile);
+      placed.push(tile);
+    }
+    sortLane(block.lane);
+    for (const t of placed) this.selectedIds.add(t.id);
+    return placed;
+  }
+
+  // --- range edits (global timeline surgery, all lanes) -------------------
+  // Tiles are atomic: a tile STARTING in the range is affected; one starting
+  // before it and extending into it is untouched (no trimming), so deleteTime
+  // can leave the shifted material overlapping such a tail — accepted.
+  // The play-region markers ride along (they're timeline points too).
+
+  // Open a gap: everything starting at/after `s` shifts right by `len` beats.
+  insertTime(s, len) {
+    for (const lane of this.lanes) for (const t of lane.tiles) { if (t.start >= s) t.start += len; }
+    this.playStart = insertPoint(this.playStart || 0, s, len);
+    if (this.playEnd != null) this.playEnd = insertPoint(this.playEnd, s, len);
+  }
+
+  // Remove the tiles starting in [s, e); nothing moves, markers untouched.
+  clearRange(s, e) {
+    for (const lane of this.lanes) lane.tiles = lane.tiles.filter((t) => t.start < s || t.start >= e);
+    this.pruneSelection();
+  }
+
+  // Excise [s, e): clearRange + everything at/after `e` shifts left to close it.
+  deleteTime(s, e) {
+    this.clearRange(s, e);
+    const len = e - s;
+    for (const lane of this.lanes) for (const t of lane.tiles) { if (t.start >= e) t.start -= len; }
+    this.playStart = deletePoint(this.playStart || 0, s, e);
+    if (this.playEnd != null) {
+      this.playEnd = deletePoint(this.playEnd, s, e);
+      // Both markers were inside the range (collapsed together at s) — reopen a
+      // small region there rather than leaving a degenerate one (user's rule).
+      if (this.playEnd <= this.playStart) { this.playStart = s; this.playEnd = s + 4; }
+    }
+  }
+
   toJSON() {
     return {
       lanes: this.lanes.map((l) => ({
@@ -366,6 +586,12 @@ export class Arrangement {
     return a;
   }
 }
+
+// Map a timeline point (playhead, marker) through inserting `len` beats at `s`,
+// or through deleting [s, e) — a point inside a deleted range collapses to its
+// start. Pure; exported for main's playhead and for tests.
+export function insertPoint(p, s, len) { return p >= s ? p + len : p; }
+export function deletePoint(p, s, e) { return p >= e ? p - (e - s) : Math.min(p, s); }
 
 // `fresh` marks a brand-new or just-reset lane (never used). A fresh lane adopts
 // the instrument of the first tile dropped into it (from the grid, or the source
