@@ -13,7 +13,8 @@
 // host to switch instruments (onKindChange). Params flagged `bar` (Zindel's
 // drawbars) render as a row of parallel vertical faders; the rest as sliders.
 
-import { paramsFor, toPos, fromPos, instrumentKinds, instrument } from './instrument.js';
+import { paramsFor, toPos, fromPos, instrumentKinds, instrument, nearestStep } from './instrument.js';
+import { makeKnob } from './knob.js';
 
 // cb: onChange() after any edit, onKindChange(kind) to switch instrument,
 // onTest() to audition, onReset() to restore, onCopy()/onPaste() to ferry.
@@ -92,7 +93,8 @@ export function buildInstrumentPane(containerEl, cb) {
         cols.set(spec.group, col);
       }
       if (spec.bar) barRows.get(spec.group).append(barCell(spec));
-      else cols.get(spec.group).append(spec.bool ? boolRow(spec) : spec.sel ? selRow(spec) : sliderRow(spec));
+      else cols.get(spec.group).append(
+        spec.knob ? knobRow(spec) : spec.steps ? stepRow(spec) : spec.bool ? boolRow(spec) : spec.sel ? selRow(spec) : sliderRow(spec));
     }
     builtKind = kind;
   }
@@ -110,6 +112,54 @@ export function buildInstrumentPane(containerEl, cb) {
     valEl.className = 'instr-val';
     bind(spec, input, valEl);
     row.append(name, input, valEl);
+    return row;
+  }
+
+  // A stepped-list slider (a quantized param, e.g. Tervik's Coarse ratio): the
+  // slider indexes spec.steps and snaps stop-to-stop. label · slider · value.
+  function stepRow(spec) {
+    const row = document.createElement('label');
+    row.className = 'instr-row';
+    row.title = spec.title || '';
+    const name = document.createElement('span');
+    name.className = 'instr-label';
+    name.textContent = spec.label;
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = 0; input.max = spec.steps.length - 1; input.step = 1;
+    const valEl = document.createElement('span');
+    valEl.className = 'instr-val';
+    bind(spec, input, valEl);
+    row.append(name, input, valEl);
+    return row;
+  }
+
+  // A knob row (a param turned with a rotary, e.g. Tervik's Fine ratio): reuses the
+  // mixer knob (detent + double-click reset). label · knob · value.
+  function knobRow(spec) {
+    const row = document.createElement('label');
+    row.className = 'instr-row';
+    row.title = spec.title || '';
+    const name = document.createElement('span');
+    name.className = 'instr-label';
+    name.textContent = spec.label;
+    const holder = document.createElement('span');
+    holder.className = 'instr-knob-holder';
+    const valEl = document.createElement('span');
+    valEl.className = 'instr-val';
+    const map = {
+      toPos: (v) => (v - spec.min) / (spec.max - spec.min),
+      fromPos: (p) => spec.min + p * (spec.max - spec.min),
+      format: spec.fmt,
+    };
+    const initial = patch ? patch[spec.key] : (spec.reset != null ? spec.reset : spec.min);
+    const knob = makeKnob(holder, {
+      label: spec.label, value: initial, map, detents: spec.detents || [], reset: spec.reset,
+      cb: { onInput: (v) => { if (!patch) return; patch[spec.key] = v; valEl.textContent = spec.fmt(v); cb.onChange(); } },
+    });
+    valEl.textContent = spec.fmt(initial);
+    rows.push({ spec, knob, valEl });
+    row.append(name, holder, valEl);
     return row;
   }
 
@@ -193,6 +243,14 @@ export function buildInstrumentPane(containerEl, cb) {
         patch[spec.key] = input.value;
         cb.onChange();
       });
+    } else if (spec.steps) {
+      input.addEventListener('input', () => {
+        if (!patch) return;
+        const v = spec.steps[+input.value];
+        patch[spec.key] = v;
+        valEl.textContent = spec.fmt(v);
+        cb.onChange();
+      });
     } else {
       input.addEventListener('input', () => {
         if (!patch) return;
@@ -209,15 +267,24 @@ export function buildInstrumentPane(containerEl, cb) {
   // Factory Reset, or a retarget). No-op until a target is set.
   function refresh() {
     if (!patch) return;
-    for (const { spec, input, valEl } of rows) {
-      if (spec.bool) {
-        input.checked = !!patch[spec.key];
-        valEl.textContent = spec.fmt(!!patch[spec.key]);
+    for (const row of rows) {
+      const { spec, input, valEl, knob } = row;
+      const v = patch[spec.key];
+      if (spec.knob) {
+        knob.setValue(v);
+        valEl.textContent = spec.fmt(v);
+      } else if (spec.bool) {
+        input.checked = !!v;
+        valEl.textContent = spec.fmt(!!v);
       } else if (spec.sel) {
-        input.value = patch[spec.key];
+        input.value = v;
+      } else if (spec.steps) {
+        const i = spec.steps.indexOf(nearestStep(spec.steps, v));
+        input.value = i;
+        valEl.textContent = spec.fmt(spec.steps[i]);
       } else {
-        input.value = Math.round(toPos(spec, patch[spec.key]) * 1000);
-        valEl.textContent = spec.fmt(patch[spec.key]);
+        input.value = Math.round(toPos(spec, v) * 1000);
+        valEl.textContent = spec.fmt(v);
       }
     }
   }

@@ -60,7 +60,8 @@ function buildFamily(edo, family) {
 }
 
 // The chord pool for an edo across the given families, in families order.
-function chordsFor(edo, families) {
+// Exported for the New Random generator's triad bias (its candidate pc-sets).
+export function chordsFor(edo, families) {
   return families.flatMap((f) => buildFamily(edo, f));
 }
 

@@ -16,7 +16,7 @@
 
 import { DURATIONS, PALETTE, DEFAULT_DUR, MIN_COLS, MAX_COLS, BASE_PITCH, nextDurIndex } from './grid.js';
 import { isBlackKey } from './model.js';
-import { degreeToName, pitchClassName, edoOf } from './tuning.js';
+import { degreeToName, pitchClassName, edoOf, degreeBounds } from './tuning.js';
 import { inScale, nearestInScale, stepInScale } from './scales.js';
 import { classifyTriad } from './triads.js';
 import { PAD_LEFT as ROLL_PAD_LEFT, BEAT_WIDTH as ROLL_BEAT_WIDTH } from './pianoroll.js';
@@ -34,8 +34,9 @@ const QUALITY = { maj: 'Maj', min: 'min', dim: 'dim', aug: 'aug', sus: 'sus', se
 
 export const MIN_ROWS = 12;      // never fewer than twelve tones (for now)
 export const MAX_ROWS = 48;
-const MIN_DEGREE = 24;           // C1 .. navigable pitch range .. C8
-const MAX_DEGREE = 108;
+// The navigable pitch range is the A0..C8 piano band, resolved PER-PATTERN to the
+// degrees nearest those frequencies in the pattern's tuning (degreeBounds). So
+// 12-ET is A0..C8 and 16-ET is its own A0 ("80") up — see this._loDeg/_hiDeg.
 
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 
@@ -137,6 +138,12 @@ export class GridView {
     this._commit(before);
   }
 
+  // The navigable degree range for THIS pattern's tuning — the A0..C8 piano band
+  // mapped to the nearest degrees in its EDO (memoized in degreeBounds). Per-
+  // pattern, so 16-ET reaches its own A0 ("80") and 12-ET is A0..C8.
+  get _loDeg() { return degreeBounds(this.pattern.tuningId, this.pattern.root || 0).min; }
+  get _hiDeg() { return degreeBounds(this.pattern.tuningId, this.pattern.root || 0).max; }
+
   // Transpose the target notes by `delta` degrees (Mutate / arrow keys). No-op if
   // it would push any note out of the navigable range. One undo entry.
   transpose(delta) {
@@ -144,7 +151,7 @@ export class GridView {
     const cols = this._permuteTargets();
     if (!cols.length) return;
     const degs = cols.map((i) => this.pattern.columns[i].degree);
-    if (Math.max(...degs) + delta > MAX_DEGREE || Math.min(...degs) + delta < MIN_DEGREE) return;
+    if (Math.max(...degs) + delta > this._hiDeg || Math.min(...degs) + delta < this._loDeg) return;
     const before = this._snap();
     for (const i of cols) this.pattern.columns[i].degree += delta;
     this._commit(before);
@@ -163,7 +170,7 @@ export class GridView {
     const { scaleId, root } = this.pattern;
     const edo = edoOf(this.pattern.tuningId);
     const targets = cols.map((i) => stepInScale(scaleId, root, this.pattern.columns[i].degree, dir, edo));
-    if (targets.some((d) => d > MAX_DEGREE || d < MIN_DEGREE)) return;
+    if (targets.some((d) => d > this._hiDeg || d < this._loDeg)) return;
     const before = this._snap();
     cols.forEach((i, k) => { this.pattern.columns[i].degree = targets[k]; });
     this._commit(before);
@@ -381,7 +388,7 @@ export class GridView {
     if (target > cur) {
       let deg = cur ? this.pattern.columns[cur - 1].degree + 1 : BASE_PITCH;
       for (let i = cur; i < target; i++) {
-        this.pattern.columns.push({ durIndex: DEFAULT_DUR, isRest: true, degree: clamp(deg, MIN_DEGREE, MAX_DEGREE), accent: false });
+        this.pattern.columns.push({ durIndex: DEFAULT_DUR, isRest: true, degree: clamp(deg, this._loDeg, this._hiDeg), accent: false });
         deg++;
       }
     } else {
@@ -826,7 +833,7 @@ export class GridView {
     e.preventDefault();
     const dir = e.deltaY < 0 ? 1 : -1; // wheel up -> higher pitches
     const vp = this._vp;
-    const top = clamp(vp.top + dir, MIN_DEGREE + vp.rows - 1, MAX_DEGREE);
+    const top = clamp(vp.top + dir, this._loDeg + vp.rows - 1, this._hiDeg);
     if (top !== vp.top) this.opts.onViewport(top, vp.rows);
   }
 
@@ -842,7 +849,7 @@ export class GridView {
       if (!this.resize) return;
       const delta = Math.round((e.clientY - this.resize.startY) / ROW_H);
       // Grow downward with the top pinned, but never past the navigable floor.
-      const maxByFloor = this._topDegree - MIN_DEGREE + 1;
+      const maxByFloor = this._topDegree - this._loDeg + 1;
       this.resize.target = clamp(this.resize.startRows + delta, MIN_ROWS, Math.min(MAX_ROWS, maxByFloor));
       this._showGuide(this.resize.target);
     });

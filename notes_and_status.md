@@ -57,8 +57,8 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 | [src/grid.js](src/grid.js) | `Pattern` (named; **per-pattern column count** = `columns.length`, `DEFAULT_COLS`/`MIN_COLS`/`MAX_COLS`, `Pattern.initial(name, cols)`), `DURATIONS`, `PALETTE`, `BASE_PITCH` |
 | [src/library.js](src/library.js) | `PatternLibrary` (registry, naming, parking), `Arrangement` (lanes/tiles + per-lane mute/solo + `lane.gain`/`lane.pan`/`lane.patch`, play-region `playStart`/`playEnd`, `audibleLaneIds`), `LANE_COLORS` |
 | [src/audio.js](src/audio.js) | `AudioEngine` — additive synth voice (`buildVoice`, context-parametric), per-lane patch resolution (`patchFor`), per-lane **stereo mixer strips** (volume→panner→**[chorus insert]→[delay insert]**→mute-gate; ordered insert chain via `_relink`; `setLaneVolume`/`setLaneGain`/`setLanePan`, `laneMix`, `applyLaneChorus`/`buildChorusInsert`, `applyLaneDelay`/`buildDelayInsert`), master limiter (`setupLimiter`) + fader (`setMasterGain`) + **stereo meter tap** (`getPeak`→`{l,r}`); `renderToBuffer` (offline **stereo** bounce, per-lane patch+mix+chorus+delay) |
-| [src/instrument.js](src/instrument.js) | the **instrument registry** (`INSTRUMENTS`): per-kind defaults + `PARAMS` (editor metadata) for **Vesperia**, **Zindel**, **Wendelhorn** & **Tervik**; kind-aware `defaultPatch(kind)`, `normalizePatch` (numeric + boolean + **enum/select** params), `clonePatch`, `paramsFor`, slider mapping |
-| [src/instrumentpane.js](src/instrumentpane.js) | `buildInstrumentPane` — the retargetable, **kind-aware** "Edit instrument" pane (instrument selector, body rebuilt per kind; slider / drawbar-fader / checkbox / **dropdown** widgets; target chip, Test, Copy/Paste, Factory Reset) |
+| [src/instrument.js](src/instrument.js) | the **instrument registry** (`INSTRUMENTS`): per-kind defaults + `PARAMS` (editor metadata) for **Vesperia**, **Zindel**, **Wendelhorn**, **Tervik**, **Nayumi** & **Boshwick**; kind-aware `defaultPatch(kind)`, `normalizePatch` (numeric + boolean + enum/select + **stepped-list** params; Tervik legacy-ratio migration), `nearestStep`, `clonePatch`, `paramsFor`, slider mapping |
+| [src/instrumentpane.js](src/instrumentpane.js) | `buildInstrumentPane` — the retargetable, **kind-aware** "Edit instrument" pane (instrument selector, body rebuilt per kind; slider / drawbar-fader / checkbox / dropdown / **stepped-list slider** / **knob** widgets; target chip, Test, Copy/Paste, Factory Reset) |
 | [src/knob.js](src/knob.js) | `makeKnob` — click-vertical-drag rotary widget (detents, dbl-click reset, gesture-bracketed callbacks) + `PAN_MAP` / `GAIN_MAP` mixer mappings |
 | [src/delay.js](src/delay.js) | per-lane delay config (`defaultDelay`/`normalizeDelay`, `DELAY_TIMES`/`DELAY_MODES`) + `buildDelayEditor` (modal form) |
 | [src/chorus.js](src/chorus.js) | per-lane Juno-60 chorus config (`defaultChorus`/`normalizeChorus`, `CHORUS_MODES` = I/II/I+II) + `buildChorusEditor` (modal form; On + Mode only) |
@@ -72,6 +72,8 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 | [src/panes.js](src/panes.js) | reorderable vertical panes, order persisted |
 | [src/project.js](src/project.js) | versioned file envelope (`format`/`version`), migrate, save (download) / load (file read) helpers |
 | [src/triads.js](src/triads.js) | Triadulator engine (pure): partition a pitch-class set into chords — families `trad` (maj/min/dim/aug) + `sus` (12-ET), `septimal` (16-ET: 4:5:7 `[0,5,13]`, supermajor `[0,6,13]`); `enumerateTriadulations(pcs, {families, edo})` / `classifyTriad(pcs, edo)`. Templates tagged by **EDO**, pools per-edo; `familiesFor(edo)`/`familyLabel` drive the per-tuning family toggles |
+| [src/random.js](src/random.js) | New Random generator (pure): a contiguous in-scale degree window around the viewport centroid → random degrees, bent by Unique / Run / Triad settings; injectable rng |
+| [src/mods.js](src/mods.js) | per-lane playback modulators: config model (`modsByKind`), waveform evaluation (`modWave` incl. value-noise walk), position-space patch application (`applyMods`), target filtering, and the modal editor |
 | [src/midi.js](src/midi.js) | Standard MIDI File writer (pure): note data → bytes (Format 1, tempo, track names) |
 | [src/wav.js](src/wav.js) | WAV encoder (pure): an `AudioBuffer` → 16-bit PCM RIFF bytes |
 | [src/main.js](src/main.js) | wires everything; transport, undo, active pane, persistence, project save/load |
@@ -118,15 +120,98 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   only **3 oscillators/voice**, so it's by far the cheapest voice. **Op 1 is always the final carrier**
   and its ADSR is the **reference/amp envelope**; a 4-way **Algorithm** selects how Ops 2 & 3 route —
   **Stack** (3→2→1), **Y** ((2+3)→1), **Pair** (3→2 · 1), **Parallel** (1·2·3) — as modulators (into
-  another op's frequency) or extra carriers. Each modulator's **depth = index × its own frequency**
+  another op's frequency) or extra carriers. Each op's **frequency ratio = Coarse + Fine**: Coarse snaps
+  to exact values `[0.25, 0.5, 1, 2 … 16]` (so you can reliably land on integer/harmonic ratios — vital for
+  FM), Fine is a ±1.0 knob (0 = exactly the coarse value, double-click resets; off-zero = inharmonic/bell);
+  effective ratio clamped to `[1/16, 17]`. Each modulator's **depth = index × its own frequency**
   (`index = Level × TERVIK_MAX_INDEX`), so brightness stays even across pitch (the Zindel trick). Ops 2
   & 3 each have a **Follow Op 1** toggle: off = its own ADSR, on = shaped by Op 1's envelope with **Level
   as the "amount"** (one slider serves both — the user's scheme). **Feedback** morphs Ops 2 & 3 from sine
   toward a band-limited saw (a cheap stand-in for true operator feedback — Op 1 stays sine; blended
   `PeriodicWave`s cached per context). Default = a DX-style **electric piano** (Op 3 at 14:1 with a fast-
   decaying index = the metallic "tine" over a 1:1 body). Carriers summed, scaled by `TERVIK_NORM` (tunable).
-  Introduced the editor's **enum/`select`** param type (the Algorithm dropdown). v1: when Follow is on, that
+  Introduced the editor's **enum/`select`** (Algorithm dropdown), **stepped-list slider** (Coarse) and
+  **knob** (Fine, reusing `makeKnob`'s detent + double-click-reset) param types. v1: when Follow is on, that
   op's own A/D/S/R sliders stay visible but inert (graying-out is a fast follow-up if wanted).
+- **Nayumi** — a **breathy formant "voice"** (oohs/ahhs) by **source–filter** synthesis, aimed at the
+  **Fairlight ARR1** zone: a lush, *synthetic*, slightly grainy choir that can slide from a clear sung
+  vowel toward a hollow "blown vessel" (ARR1 famously reads as a blown bottle — the design leans into that
+  ambiguity). **Carrier** = a per-context **glottal-pulse `PeriodicWave`** (harmonics `1/h^1.1`, slightly
+  softer than a saw); **male↔female is one `Size` knob that scales the formants**, not a different carrier.
+  The carrier (through a **Brightness** lowpass) and **aspiration noise** both feed a **parallel 3-band
+  bandpass formant bank** (`Vowel` = ooh/oh/ah/eh/ee select → F1/F2/F3 Hz, scaled by Size; `Resonance` =
+  bandpass Q = vowel sharpness/hollowness); a little **air** noise high-passed bypasses the formants.
+  **Breath** crossfades tone↔noise. The sum runs an optional **bit-crush** `WaveShaper` (`Grit` — the lo-fi
+  Fairlight grain, `oversample:'none'` so the aliasing reads; gated off at grit 0) into one **soft-attack
+  ADSR**. A **vibrato** sine LFO sways `carrier.detune` (cents) to keep held vowels alive. One looping
+  white-noise buffer + the glottal wave + crush curves are **cached per context** (live + offline export).
+  v1 decisions (user): **WaveShaper grit** (not an AudioWorklet decimator — fast-follow if the grain isn't
+  enough), **no unison** (single carrier; lean on the existing chorus insert for choir width), **3 formants**.
+  Heaviest voice (~17 nodes/note), so it's the polyphony-expensive one.
+  - **Soprano rounding** (`soprano` knob, 0–1): high notes got harsh because fixed formants ring on sparse
+    harmonics (a high-Q bandpass with no harmonic under it screeches). Real sopranos do **formant tuning** —
+    raise F1 onto the fundamental, vowels dissolve to a pure tone. Modelled **per vowel** off `r = f0/F1`:
+    below `R0` (0.6) nothing happens (low/mid untouched — *Soprano 0 also = no change anywhere*, fully
+    back-compat), then by `t = engage × soprano` the **F1 bandpass tunes onto f0**, **F2/F3 fade out**,
+    **breath rolls off** (folded into `t`), and the source **darkens** a touch. User: favour *smooth over
+    vowel identity* up high (full dissolve), so high notes converge to a clean fluty "whistle".
+  - **Pink noise + band-limited grit** (the "too white/sizzly" fix): the breath buffer is now **pink**
+    (Paul Kellet's filter baked into the per-context buffer fill — the natural breath spectrum, far less
+    white sizzle than flat noise). The bit-crush gained a **grit-tracked post-crush lowpass** (≈11 kHz →
+    5.5 kHz as Grit rises) — the bandwidth ceiling that turns raw quantization fizz into warm lo-fi (the
+    CMI low-sample-rate move). Crush still hits the whole mix (one cohesive grain); the lowpass tames it.
+- **Boshwick** — a multipurpose **808-style percussion** synth (no samples; "Son of TR-808"). Monotimbral
+  per the user's call — **one drum per lane, layer lanes for a kit**. A **`Type` select** (Kick / Tom /
+  Snare / Hat / Clap / Cowbell / Rimshot / Clave / Cymbal) picks the **topology** over a shared knob set
+  (the Tervik `sel`-swaps-DSP + inert-param precedent — no pane change): **pitched body + downward pitch-
+  env** (kick=sine, tom=triangle), **two shell tones + bandpassed noise** (snare, Snap = noise↔body),
+  **inharmonic 6-square cluster → highpass** (hat/cymbal — the 808 metallic fingerprint), **two squares →
+  bandpass** (cowbell), **3-burst-plus-tail bandpassed noise** (clap), **short pitched click** (rim = +noise
+  tick, clave = lone sine). All voices are **one-shot decays that ignore note duration** EXCEPT **Hat &
+  Cymbal**, which are **duration-gated**: the amp decays over Decay but a fast **choke** is scheduled at
+  note-off, so a *short* note = closed hat and a *long* note rings *open* (user: open HHs must understand
+  duration; cross-note choke groups deferred). **Everything is pitch-trackable**: `hz = nominal × Tune
+  (±1.5 oct) × (f0/C4)^PitchTrack` — **PitchTrack 1 (default)** = playable/melodic drums (and they follow
+  the active tuning — microtonal toms free), **0** = a fixed drum on every row. **Accent (velocity) raises
+  level and, just audibly, brightness** (filter cutoffs ×, user's ask). Shared knobs: Type · Tune ·
+  PitchTrack · Decay (mapped to a per-type seconds range) · Punch (attack click) · Pitch Env (inert for
+  noise/metallic) · Tone (per-type colour) · Snap (snare; inert otherwise). Per-context **white-noise
+  buffer** + `boshEnv` (instant-attack exp-decay, optional gated choke) in audio.js; cheap, short-lived
+  voices. v1 = **808 only** (user: the one 909 thing wanted is HH variety — a future Model select for
+  ride/china/crash/909-hats is noted). All level/centre/ratio constants are **by-ear tunable**.
+  - **Levels set by headless metering** (user: "way too soft"). A **sample-accurate Web Audio simulator**
+    (`C:\tmp\notch\wasim.mjs`: scheduled AudioParams incl. setTarget/exp-ramp semantics, sine/tri/square
+    oscillators, RBJ biquads, looping noise buffers, pull-based DAG render) renders each default drum and
+    meters peak/RMS against a **default Vesperia note** (`meter-bosh.mjs`). This exposed a real **bug**:
+    hat/cymbal/cowbell applied `peak` **twice** (sources scaled ×peak AND the bus envelope ramped to peak
+    → peak², ~−20 dB) — their envelopes now ramp to **1** (shape only). Remaining per-topology filter
+    losses (a hat's ~8 kHz highpass swallows most of its 540 Hz-based square cluster) are equalized by a
+    measured **`BOSH_LVL`** per-type trim map: every drum's rendered peak ≈ the Vesperia reference peak,
+    **+2 dB for the click-length hits** (clap/rim/clave — equal peak reads softer that short). Note the
+    noise-based drums wobble ~±1 dB between renders (fresh random buffer per context). Re-meter with
+    `node meter-bosh.mjs` after any voicing change.
+  - **Kick reworked for variability + snap** (user: "needs more variability and definitely more
+    click/snap potential"; kick split from the tom branch, tom untouched). **Tone = body drive**: a
+    soft-clip `tanh(d·x)/tanh(d)` WaveShaper between the ±1 sine and the level envelope (unit-peak, so
+    levels stay anchored; drive tapered `tone²×6` so the lower half is warmth not fuzz; cached per
+    context like Nayumi's crush; Tone 0 skips the node — bit-clean sub). This *fulfils* Tone's original
+    "body harmonics" tooltip, which the old kick never implemented. **Punch = a two-part attack**: an
+    oscillator sweep spike (+5× on top of the main sweep, collapsing in ~4 ms — the 808 "knock") + a
+    beater noise click scaling to 1.1×peak with a tighter 8 ms decay (the 909 snap). **Pitch Env opened
+    up**: depth to ~9× (was 3×), sweep time to ~140 ms (was 75) — tight thump through dubby drop.
+    `BOSH_LVL.kick` re-trimmed 1.25 → 0.95 (metered; the stronger default click had pushed +2.4 dB).
+    *Planned:* the **other Boshwick tones get the same treatment** in later passes; user has sanctioned
+    **per-type factory presets** if needed to put the sliders in expected positions (ties into the
+    parked preset-system discussion).
+  - **Preverb: considered and REJECTED.** User noticed a ~10–20 ms lead-in on 808 samples auditioned
+    online. Analysis: a real TR-808 emits nothing pre-trigger; tape print-through / vinyl pre-echo are
+    ~0.5–2 s early (not tens of ms); the tens-of-ms smear is most plausibly **MP3/AAC codec pre-echo**
+    (transient quantization noise spread across the ~13–26 ms codec block — the user's own suspicion),
+    linear-phase pre-ringing, or sample-pack design. Decided not to emulate an encoding artifact.
+    **Kept for the future** (user explicitly flagged it as clever/useful): the **pre-beat scheduling**
+    technique — schedule lead-in audio at `time − preT` so the hit stays on the grid and the lead-in
+    eats into the previous beat (works because the scheduler commits whole cycles ahead and playback
+    starts at now+100 ms; clamp at audition/t=0). Useful for swells, grace notes, reverse builds.
 - **Multi-instrument registry** ([src/instrument.js](src/instrument.js)): each **kind** owns its
   defaults + `PARAMS` (editor metadata) + description; a patch carries a `kind` tag, the engine
   dispatches on it in `buildVoice` (a `switch`, one DSP branch per kind), and `normalizePatch` /
@@ -153,6 +238,11 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
     and Sustain > 0 holds the note (pad/organ territory).
   - **Timbre** — one slider: a spectral tilt over the fixed partial mix (`k^e`), **0.5 =
     neutral (the old mix exactly)**, left darkens (upper partials attenuated), right brightens.
+    **Energy-normalized** (metered fix): the raw tilt swelled the summed partials **~+24 dB at
+    full bright** — a loudness slider, not a timbre slider. Each note's tilted mix is now scaled
+    by `sqrt(E_neutral/E_tilted)` so total energy matches the neutral mix (0.5 stays bit-identical;
+    RMS across the whole travel now sits in a ~4 dB window, the bright end a touch down post-filter,
+    which offsets brightness reading louder per RMS).
   - **Filter** — **Cutoff**, **Resonance** (Q), **Env Amount** (octaves the filter envelope
     opens cutoff above base at the attack, then settles) and **Key Track** (0 = fixed Hz,
     1 = cutoff fully follows pitch). All native Web Audio `BiquadFilter` — no WASM.
@@ -271,8 +361,38 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   (`_labelColumns` merges `prospective` into the scan), so proposed chords get labeled live.
 - Vertical **resize** (drag handle, min 12 rows) + **wheel scroll** of pitch range, with a
   fixed-position dashed resize guide.
+- **Navigable pitch range = the 88-key piano, A0 (27.5 Hz) → C8, per tuning.** The grid's low/high
+  degree bounds are no longer the fixed `24`/`108` (a 12-ET-only ruler that left 16-ET squeezed and
+  bottoming out at "81"). `degreeBounds(tuningId, root)` ([src/tuning.js](src/tuning.js)) resolves the
+  **A0..C8 frequency band** (`LOW_HZ`/`HIGH_HZ`) to the **degrees closest in pitch** to those edges in
+  the pattern's tuning (closest, not strict ≥, so 16-ET's "80" at ~1¢ under A0 still counts; monotonic
+  scan, so any future/non-EDO tuning works without an inverse; memoized). Result: 12-ET = A0..C8 (MIDI
+  21–108, exactly the piano); **16-ET = "80"..​"c7" (degree 8–124, ~7.25 octaves — no longer squeezed,
+  and reaches its own A0**, fixing "the grid won't go below 81"). Bounds are **per-pattern** — gridview's
+  clamps/transpose-guards/viewport read `this._loDeg`/`_hiDeg` and `centerGridOn` uses `degreeBounds`,
+  retiring the duplicated `24`/`108` (the latter had been hardcoded again in main.js). 12-ET stays in
+  MIDI 0–127, so plain-MIDI export is unaffected.
+- **New Random** (toolbar, next to New/Clone; [src/random.js](src/random.js) + `openRandomModal` in
+  main.js): generates a **new pattern** (same New semantics — parks the current one; same `canCreate`
+  gating) from random in-scale notes, via a dialog with **live grid preview**. Default = a **generalized
+  tone row**: a contiguous window of N in-scale degrees (N = the pattern's column count) approximately
+  **centered on the grid viewport's middle**, in random order, **no degree reused** (uniqueness is
+  by-degree, so narrow masks like pentatonic span extra octaves rather than starving); notes take the
+  **brush duration**, no accents. Three persistent sliders bend it — **Unique** (100% = permutation …
+  0% = sampling with replacement), **Run** (−1…+1: |v| = chance of stepwise continuation in that
+  direction; at the ends a single unbroken run = the sorted window; run outranks triad so full runs
+  stay intact), **Triad** (chance each note completes a harmonic triad with the previous two — EDO-aware
+  `classifyTriad` pc-set keys from the **Triadulator's enabled family toggles**, so 16-ET gets septimal
+  bias). Dialog: **Randomize** (re-roll in place, repeatable), **♪ Audition** (plays the preview once
+  through the grid patch), **Reset** (defaults), **Accept** (disabled until first roll; keeps it),
+  **Cancel/Esc** (restores the library *exactly* — the generated pattern is dropped and current/parked/
+  counter put back, re-adding an evaporated empty float). Settings persist in `notorolla.randgen`.
+  The new pattern **inherits the source's tuning/scale/root** (Pattern.initial resets them; the
+  generator ran in that context so the pattern must carry it). Pure generator (`generateRandom`,
+  injectable rng) — headless-tested incl. run extremes, triad bias, 16-ET Mavila, short-ladder reuse.
+  *Deferred (user):* generator **presets**, more controls (e.g. articulation/rhythm randomization).
 - **Opening a pattern auto-centers the pitch viewport** on its notes (`centerGridOn`: midpoint of
-  the note span, clamped to the navigable C1..C8 range), so a pattern a couple octaves away doesn't
+  the note span, clamped to the pattern's navigable range), so a pattern a couple octaves away doesn't
   land off-screen. Applies on double-click-open a tile, Restore, and project load; a note-less
   pattern leaves the view untouched. A plain reload keeps the last-scrolled view.
 - Generous **audition** (fixed quarter-note preview on edits).
@@ -318,9 +438,21 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   still updates both (each re-applying its own transforms). Application is a **note-list pipeline**
   (`applyTransforms`): **transpose** maps pitch (and re-resolves freq in the tile's tuning),
   **reverse** retrogrades time — walked in list order (so ordering is honored once a time-op like
-  Rotate joins; transpose+reverse commute, so it doesn't matter yet). A **transform bar** under the
-  lanes holds the **Transpose** and **Reverse** brushes (mutually exclusive, **Esc** disarms): arm
-  one, then **click or click-drag over tiles** to paint it (drag paints, doesn't move). **Transpose**
+  Rotate joins; transpose+reverse commute, so it doesn't matter yet). A **transform bar ABOVE the
+  lanes** (moved from below — it sits between the controls row and the lanes, doubling as the
+  selected tile's chip readout) holds the **Transpose**, **Reverse** and **Clone** tools (mutually
+  exclusive, **Esc** disarms). **Brushes are ONE-SHOT** (user): a completed gesture — one click OR
+  one full drag-sweep — **disarms the brush at pointer-up**, unless **Shift is held at release**,
+  which keeps it armed for repeated use. **Sweeps are path-exact** (user: "not cool to miss them"):
+  the gesture hit-tests the **segment between pointer samples** (`segmentHits` in tileplayer.js,
+  Liang–Barsky vs a rect snapshot taken at gesture start — painting never moves tiles), so a fast
+  flick can't skip narrow tiles; hits land in path order. Touched tiles get a **live outline in the
+  brush's colour** (purple/teal/amber) for the gesture's duration — visibility for tiny tiles,
+  especially Clone's relabeling. **Esc mid-sweep CANCELS the gesture**: the pre-gesture snapshot is
+  restored with **no undo entry** (Clone also deletes the patterns that gesture minted — a
+  cancelled gesture cleans up completely, unlike the accepted stray-on-undo), and the brush
+  disarms; the global Esc handler defers while a sweep is active. Arm one, then **click or
+  click-drag over tiles** to paint it (drag paints, doesn't move). **Transpose**
   = SET to the brush **Amount** (a second replaces it; 0 clears), with **Scale** = **Auto (from
   tile)** or an explicit **Major/Minor-pent / Chromatic** override (root always the tile's, **tuning
   never changed**; walks `stepInScale`). **Reverse** = toggle (the drag *anchor* decides on/off,
@@ -334,6 +466,20 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   notes**. Saved per-tile (`tile.transforms`, optional/backward-safe), **undoable** (carried through
   `arrApply`), **copies carry cloned transforms**. Future Phase 2: append semantics + reorderable
   chips + **Rotate** (the non-commuting case that forces real ordering UI); hover "tip" deferred.
+- **Clone tool** (in the transform bar; click or **drag-sweep**): swept tiles **repoint to fresh
+  deep copies of their patterns** (`library.cloneOf(name)` — clones an arbitrary pattern *without*
+  touching current/parked, invariant-safe since the copies are instantly referenced) — "as if
+  cloned in the grid". **Deduped per source pattern**: every swept tile sharing A1 gets the SAME
+  new clone (5×A1 + 3×A3 → 5×A8 + 3×A9), so a swept **section keeps its internal sharing while
+  diverging as a block** from the un-swept originals — the "clone this chorus to vary it" move.
+  The **dedup map lives for the brush's whole armed session** (user: for the duration of
+  Shift-held) — a second Shift-kept sweep of more A1 tiles JOINS A8; re-arming starts a fresh map;
+  `minted` guards re-sweeps of already-repointed tiles (never clones a clone made this session).
+  Positions + per-tile transforms untouched. After each gesture the **ANCHOR tile's clone opens in
+  the grid editor** (like double-click). One-shot like the brushes; one undo entry per gesture.
+  **Known/accepted:** undoing a clone repoints tiles back but the cloned pattern(s) **linger in the
+  registry** (invisible, ride saves) — same class as deleting a pattern's last tile today; a future
+  **pattern browser / orphan-GC** is the real fix (deferred).
 - Both lanes share **one horizontal time axis** (a single scale `tilePlayer.ppb`, one shared
   scroll, common origin), so tiles **align in time** across lanes. Tiles are **freely positioned**:
   each carries an explicit **`start` beat** (snapped to the 1/4-note grid = integer beats), so gaps
@@ -346,7 +492,8 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 - Each lane has a **sticky header block** (stays pinned during horizontal scroll): a color
   stripe + an **instrument block** (the **Vesperia** name — a label now, the future instrument
   selector — over an **Edit** button that opens the per-lane instrument editor) + a **stacked effect
-  column** (**"D" delay** on top, **"C" chorus** under; each lit when its effect is on, opening its modal) + a **knob column**
+  column** (**"M" modulators** alone at left, then **"D" delay** over **"C" chorus**; each lit when its
+  feature is on, opening its modal) + a **knob column**
   (**Pan** over **Gain**) + the **Mute / Solo** stack. The knobs are mixer-style: click +
   **vertical-drag** to turn (Shift = fine, **double-click = reset**); Pan has a center detent, Gain is
   a **dB knob** (−∞…+6 dB, unity detent at 0 dB) storing linear gain. A knob drag is **one undo step**
@@ -377,32 +524,45 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 - Click = select; double-click = open the pattern in the editor (keeps tiles active +
   selected); Delete (button or key) removes; each lane has its own drop zone.
 - **Drag to position / move / copy** (pointer-based; a small movement threshold distinguishes
-  a drag from a click/double-click). The dragged tile lands at the **snapped drop beat**, clamped so
-  it can't overlap the anchored left neighbor. Positioning and ripple are **one rigid operation**:
-  tiles to the right shift right by a **single amount** = just enough to clear the dropped tile —
-  **0 when it already fits** (free positioning, gaps preserved) — and that shift **preserves the
-  gaps among the right-side tiles**. So there's no overlap and **no invalid/rejected drop**; only
-  dropping *off* the lanes cancels. Drag all the way left → contiguous; mid-gap → silence/offset on
-  the left is kept. **Shift = a shallow copy** ("+" badge on the ghost); no modifier = move (keeps
-  the id). **Removing** a tile (Delete, or moving it *out* to the other lane) rigid-ripples
-  everything to its right **left** by the tile's length; **repositioning within a lane** just lifts
-  and re-places (no source ripple-close, so dropping back where it started is a true no-op). Each
-  real change is one undo step; afterward the tile is selected and its lane active. (`moveTile` /
-  `copyTile` / `removeRipple` in [library.js](src/library.js), via the shared `rippleInsertInto` /
+  a drag from a click/double-click). Placement semantics are governed by the **Ripple toggle**
+  (leftmost in the transform bar, **default OFF**, a workspace pref in `notorolla.ui`; it covers
+  insert AND delete):
+  - **Ripple OFF (default) — exact placement, overwrite on collision.** The tile lands with its
+    left edge at the **snapped drop beat, exactly** — empty lane, mid-gap, wherever ("the tile goes
+    exactly where the user drops it"). Every existing tile the drop **overlaps is removed whole**
+    (tiles are **atomic** — no trimming for now (user); clipping the edge of an 8-beat tile removes
+    all 8 beats, leaving silence). Deletes/move-outs **leave a gap**. One undo entry incl. removals.
+    (`overwriteInsertInto` / `remove` in [library.js](src/library.js).)
+  - **Ripple ON — the original rigid ripple.** Clamped so it can't overlap the anchored left
+    neighbor; tiles to the right shift right by a **single amount** = just enough to clear (0 when
+    it already fits, gaps among them preserved); no overlap, no rejected drop. Deletes/move-outs
+    rigid-ripple everything right of them **left** by the tile's length. Repositioning within a
+    lane lifts without a source close (drop-back = no-op).
+  Either mode: only dropping *off* the lanes cancels; **Ctrl = a shallow copy** ("+" badge on the
+  ghost; moved off Shift, which the upcoming multi-select needs for range selection); no modifier =
+  move (keeps the id). Each real change is one undo step; afterward the tile is selected and its
+  lane active. (`moveTile(…, ripple)` / `copyTile(…, ripple)` / `insertAt` / `removeRipple` in
+  [library.js](src/library.js), via the shared `rippleInsertInto` / `overwriteInsertInto` /
   `rippleRemoveFrom` primitives.)
-- **Prospective preview while dragging** (DAW-style): the lanes show the *result* of the
-  ripple — the rigid shift applied, a dashed **slot** at the dropped tile's snapped spot — computed
-  by running the **same ripple ops on a throwaway copy** (so preview == commit), FLIP-animated,
-  while a floating **ghost** follows the cursor. Crucially this preview is **visual only**: audio,
+- **Prospective preview while dragging** (DAW-style), mode-aware, computed by running the **same
+  placement ops on a throwaway copy** (so preview == commit) while a floating **ghost** follows the
+  cursor. **Landing is a filled band** (translucent blue over the exact span the drop occupies —
+  user: highlight the area, not an outline; ripple mode's in-flow slot got the same fill). **Ripple
+  OFF** additionally marks the tiles the drop would remove as **doomed — dimmed to 40% + red
+  outline** ("fading out, marked for deletion"); nothing shifts. **Ripple ON** keeps the
+  FLIP-animated rigid-shift preview. Crucially the preview is **visual only**: audio,
   the roll, and the playhead keep playing the **committed** layout (the preview "is not what's
   playing"). During an active drag the green "playing" badge is suppressed (the playhead still runs)
   so it doesn't mark a hypothetical slot. **Editing while playing is fully supported** — the drag
   never touches the committed model until drop; a committed change's audio lands at the next tile
   boundary / loop per the reconciliation, visual is immediate.
-- The **grab-handle drop** (a new tile from the grid) **appends flush** — as far left as possible
-  (right after the lane's last tile, snapped up to the next beat; beat 0 if empty); reposition later
-  by dragging. Old gapless projects migrate by deriving each tile's `start` from the cumulative order
-  (`ensureTileStarts`), so they open identically.
+- The **grab-handle drop** (a new tile from the grid) is **position-honoring**: the tile lands at
+  the **beat under the cursor** (was: append-flush-at-end, ignoring position — the user's reported
+  inconsistency), via the mode-aware `insertAt`. The HTML5 dragover feeds the **same landing
+  preview** as tile drags (`onGridDragOver` → an `external` preview, re-rendered only when the
+  snapped target changes; cleared on the grab handle's `dragend`). A fresh lane still adopts the
+  grid's instrument on drop. Old gapless projects migrate by deriving each tile's `start` from the
+  cumulative order (`ensureTileStarts`), so they open identically.
 - **Active lane** (highlighted) set on drop / select / empty-lane click.
 - **Playhead**: during tile playback a vertical line sweeps each lane track at the current beat
   (one `.tile-playhead` per track, positioned track-relative so it scrolls with the tiles and aligns
@@ -476,6 +636,41 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   LFO presets — I: 0.513 Hz, II: 0.863 Hz (the measured Juno-60 rates), I+II runs both at once. Built
   lazily per strip / rebuilt on a mode change (`applyLaneChorus`); chorus-modal session is **one undo
   step**, same bracket as the delay. No WASM. ([src/chorus.js](src/chorus.js) owns the config + editor.)
+- **Per-lane playback MODULATORS** ([src/mods.js](src/mods.js)) — slow parameter movement à la Cubase
+  modulators, for "notes sound different as their patterns repeat" (user's goal). **"M" chiclet** (left
+  of the D/C stack, lit violet when active) opens a modal with **two fixed mod slots**, each: **On** ·
+  **Shape** (Sine / Triangle / Ramp↑ / Ramp↓ / **Walk**) · **Parameter** (dropdown from `paramsFor(kind)`
+  — numeric sliders/knobs only, **no bool/select/stepped**: cycling vowels/algos isn't musical) ·
+  **Amount** (0–100% = peak deviation in **slider-position space** via `toPos/fromPos` — perceptually
+  even on log params, clamped at the ends) · **Rate** (0.01–1 Hz, log) · **Phase** (0–360°, 0 = centered
+  rising).
+  - **Note-time sampling** (user decision: fine for now): a mod is a pure function of time; at each
+    note-on the voice is built from `patch + offsets(t)` — **no persistent nodes, works for every
+    numeric param of every kind, zero cost when off** (`modsFor` returns null). No within-note movement
+    (a future "continuous" tier could add strip-level pan/gain + held-note cutoff).
+  - **Time anchors** (user decisions): **Loop Mod OFF** (default) = *elapsed* — t counts from the
+    **session's first Play press** (`engine.modEpoch`), so looped passes keep evolving. **Loop Mod ON**
+    = *ruler* — t = the note's absolute timeline position (`note.rulerBeat`, set in `arrangementScore`,
+    survives region windowing), so every pass is identical and t0 is always the ruler's 0 regardless of
+    where playback started. Deterministic both ways. **Loop Mod is ONE GLOBAL toggle** (user: "one
+    checkbox for the entire tile player, for now") — a `tbtn` next to the ↻ loop button, persisted as
+    `state.modLoop` (workspace pref, `notorolla.ui`); the resolver overrides every mod's `loop` flag
+    with it (the per-mod field stays in the data model for a possible per-mod return). A **modulator
+    clock** (`mm:ss.hh`, left of Undo) shows the clock the mods actually read: elapsed since first Play
+    (ticks even while stopped) or the playhead's ruler time when Loop Mod is on (50 ms interval,
+    writes only on change). *Deferred (user):* "Scale Mod Rate to Tempo" checkbox.
+  - **Walk** = interpolated **value-noise** (seeded hash points, smoothstep between): bounded by
+    construction, centered, deterministic, O(1) — the "tempered random walk"; seed = lane × slot, so
+    walks decorrelate across lanes/slots.
+  - **Per-kind storage** (`lane.modsByKind = { kind: [mod, mod] }`, persists with the project): each
+    instrument kind keeps its own pair — switch instruments and back and the setup is intact (the user's
+    "save and put it back", with no stash mechanism at all). Copy/Paste patch does NOT carry mods;
+    lane Reset wipes them; `normalizeModsByKind` is forward-safe (unknown kinds preserved).
+  - **Both mods on one target add** in position space, then clamp once (drift + sine on cutoff = legit).
+  - Applied at the note→voice seam (`engine.moddedPatch`, non-destructive copy — the transforms
+    doctrine), so **WAV + stem exports inherit modulation automatically** (bounce = a fresh play from
+    ruler 0 = the first live pass); grid audition / ♪ Test are unmodulated (lanes only). Modal is one
+    undo step (the delay/chorus bracket). Lane head widened 178 → 202 px for the M column.
 - **Gain calibration (done against the meter):** the master `DynamicsCompressor` is a **transparent
   ceiling limiter** (`setupLimiter`: threshold −1.5 dB, knee 0, ratio 20, attack 3 ms, release 100 ms)
   — idle below −1.5 dB (no always-on compression), only holding peaks under 0 dBFS; the **per-voice
@@ -606,6 +801,48 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   that playback also applies articulation (fixed), the export **matches what you hear**.
   Filename defaults to the project name (or a timestamp) + `.mid`.
 
+#### MIDI + microtonality — design discussion (NOT built; deferred 2026-06-24)
+Captured from a design discussion; **no code written**, the user parked it ("audio export is
+fine at the moment"). Decisions reached + open questions, so we can pick it back up cold.
+- **The current export is wrong for non-12-ET.** It writes `n.pitch` (the scale **degree**) as
+  the note number. In 12-ET degree == MIDI note, so it's fine. But a 16-ET pattern stores
+  degrees in **16-steps-per-octave** space anchored at 60 ([grid.js](src/grid.js):
+  `freq = noteToFreq(60)·2^((degree−60)/16)`), so degree 76 is an octave up yet we'd emit MIDI
+  76 (E5) — a 16-ET piece currently exports **transposed/compressed gibberish**.
+- **Chosen direction: two separate export options, NO pitch bend.** The user finds pitch-bend /
+  MPE "grotesque" and explicitly rejected it (its only real upsides — tuning-ignorant synths +
+  the Dorico-notation hack — don't matter for a Surge-centric workflow).
+  - **Plain MIDI** — for `edo === 12` pieces. This is *exactly today's output* (degree == MIDI
+    note), no change needed. The dividing line is the **EDO, not the scale's "feel"**: a Mavila
+    scale is 16-EDO → Scala, even though it sounds diatonic-ish.
+  - **Scala (microtonal)** — the **degree IS the interchange unit, no pitch math**. Emit the
+    same degree-MIDI **plus a generated `.scl` + `.kbm`**, zipped (reuse [src/zip.js](src/zip.js)),
+    loaded into a tuning-aware synth (Surge XT, Pianoteq, Vital, anything Scala/MTS-ESP). The
+    synth retunes per key → exact pitch, **full polyphony, lane tracks intact, one channel**.
+- **Why Scala fits Notorolla naturally:** our internal degree space (EDO steps anchored at
+  degree 60) is *exactly* what a **linear `.kbm`** expects. `.kbm` anchor = middle note 60,
+  reference note 60, **261.6256 Hz** (`noteToFreq(60)`), period = EDO size; `.scl` = `edo` equal
+  lines (16 × 75¢ → 1200¢). Because our `freq` is defined off that same anchor, Surge reproduces
+  our pitches to the cent. Non-octave tunings would just change the `.scl`'s last (period) line.
+- **How Surge-family microtonality works (for reference):** two philosophies — *tuning baked in
+  the MIDI* (pitch bend/MPE; rejected) vs *tuning held by the synth* (what we want). The latter
+  via **Scala `.scl`/`.kbm`** files (static, what we'd export), **MTS-ESP** (Oddsound real-time
+  broadcast; needs a master plugin, not a file we emit), or **MTS SysEx** (old, patchy support).
+- **Open wrinkles to resolve before building:**
+  1. **Plain MIDI invoked on non-12 content** — refuse-with-a-nudge ("use Scala") [leaning] vs
+     quantize-to-nearest-12 (deliberate lossy reduction).
+  2. **Mixed-tuning pieces** (per-pattern tuning means a lane can mix EDOs across tiles). A `.scl`
+     is one scale per synth instance. Proposed general design: **one MIDI track per (lane ×
+     tuning)** actually present + **one `.scl`/`.kbm` per distinct tuning** (12-EDO file shared,
+     not duplicated) + a `README.txt`. Collapses to "tracks = lanes, one scale file" for a
+     single-tuning piece. Open: do this splitting in v1, or require single-tuning lanes (warn)
+     and defer the split.
+  3. **MIDI 0–127 range** — degree-as-note-number must fit. 16-EDO over its A0..C8 grid (degree
+     8–124) is fine; a future high EDO (e.g. 31) over several octaves would clip 127 (escape hatch: Surge's
+     "channel for octave" mode — avoid until forced).
+- **Real microtonal *notation* (Dorico) is out of scope for MIDI entirely** — Dorico won't turn
+  imported pitch-bend into notated microtones; that path wants a future **MusicXML** export.
+
 ### Export to audio (WAV)
 - **Export Audio** (Tile-player controls, right of Export MIDI) renders the whole arrangement to a
   **WAV** (16-bit PCM, mono) — a faster-than-realtime **offline bounce** of the Vesperia. One pass,
@@ -622,6 +859,38 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   drive a determinate bar) isn't supported in Firefox, the primary browser — so an honest busy
   indicator is used. Render is fast (faster than realtime) for one pass anyway.
 - *Deferred:* loop-count / range selection (one pass only), stereo, finer progress.
+- **Release-tail = per-kind, not `patch.release`.** The bounce tail (`Math.max(2.5, maxRelease*6+0.5)`)
+  must size to each lane's actual ring-out. Tervik has **no top-level `release`** (its amp tail
+  tracks Op 1's `r1`, [src/audio.js](src/audio.js) `buildTervikVoice`), so reading `patch.release`
+  for a Tervik lane returned `undefined` → `Math.max(…, undefined)` = **NaN** → NaN frames →
+  `OfflineAudioContext` "**Length must be nonzero**" and a dead export. Fixed: `patchRelease(patch)`
+  ([src/instrument.js](src/instrument.js)) returns the kind's effective release (`r1` for Tervik,
+  else `release`), defaulting non-finite to 0; export uses it for the grid patch and every lane.
+  `renderToBuffer` also now floors a non-finite/zero `durationSec` to one frame as a backstop.
+
+### Export stems (BWF, per lane → zip)
+- **Export Stems** (Tile-player controls, right of Export Audio) opens a small modal — **Export Stems**
+  ([src/modal.js](src/modal.js)) — to pick a **bus mode**, then renders **one Broadcast Wave (BWF)
+  per lane** and bundles them in a **zip**. Every lane with notes is rendered (**mute/solo ignored** —
+  you mute in the DAW; the single-file mixdown export still respects it). All stems share one length
+  (mix length + release tail via `patchRelease`) and **`TimeReference = 0`**, so dragging the set into
+  Cubase/Reaper (Import at Origin) lands them **aligned**. File = `NN <Instrument>.wav`
+  (lane index + kind, de-duplicated, filesystem-sanitized); archive = `<project>-stems.zip`.
+- **Bus modes** (`engine.renderStem(notes, durSec, laneId, busMode)`, [src/audio.js](src/audio.js) —
+  a per-lane sibling of `renderToBuffer`):
+  - **`dry`** (default) — voice straight to output: no volume/pan/chorus/delay, no master limiter.
+  - **`postfader`** — lane volume/pan/chorus/delay baked, master limiter **off** so stems **sum to the mix**.
+  - **`baked`** — as post-fader, plus the master fader + limiter (sounds as soloed-in-mix, but the
+    nonlinear limiter means stems no longer sum exactly). `masterLevel` is applied only in `baked`.
+- **BWF writer** — [src/wav.js](src/wav.js) refactored to share a `pcm16Bytes` core + a `cursor`/chunk
+  assembler between `encodeWav` and new **`encodeBwf(buffer, meta)`**, which inserts a 602-byte **`bext`**
+  chunk (EBU Tech 3285 v1; Description / Originator=`Notorolla` / OriginationDate+Time / 64-bit
+  `TimeReference`). It stays a valid WAVE — players ignoring `bext` still find `fmt `+`data`. `bext`
+  fields are ASCII (non-printable → `?`).
+- **Zip writer** — new [src/zip.js](src/zip.js): `zipStore([{name,bytes}], date)`, **STORE method (no
+  compression)** — PCM is already uncompressed, so deflate would cost a dependency for ~nothing. Pure,
+  no-deps (own CRC-32 table); writes local headers + central directory + EOCD, UTF-8 names (flag set).
+- *Deferred:* range/loop selection; mono "pre-pan" option; a single multichannel poly-WAV alternative.
 
 ---
 

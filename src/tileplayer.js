@@ -12,6 +12,7 @@ import { PALETTE, DURATIONS } from './grid.js';
 import { laneColor, rippleInsertInto, rippleRemoveFrom } from './library.js';
 import { makeKnob, PAN_MAP, GAIN_MAP } from './knob.js';
 import { instrument } from './instrument.js';
+import { modsActive } from './mods.js';
 import { transformKindLabel } from './transforms.js';
 
 // Quantized horizontal-scale notches (px per beat), smaller → bigger. The old
@@ -27,7 +28,9 @@ const RULER_H = 20;     // beat-ruler height (px)
 const GRAB = 8;         // px radius for grabbing a ruler marker handle
 
 export class TilePlayer {
-  // cb: onTileDown(id, pointerEvent), onOpen(name, id), onDropAppend(laneId),
+  // cb: onTileDown(id, pointerEvent), onOpen(name, id),
+  //     onGridDragOver(laneId, startBeat) / onDropAt(laneId, startBeat) — the
+  //       grid-pattern drag: live landing preview + position-honoring drop,
   //     onLaneClick(laneId), onMute(laneId), onSolo(laneId), onAddLane(),
   //     onResetLane(laneId) — clear the lane (tiles + instrument), red "R",
   //     onEdit(laneId) — open the instrument editor on that lane's patch,
@@ -45,6 +48,7 @@ export class TilePlayer {
     this.cb = cb;
     this.ppb = TILE_SCALES[DEFAULT_SCALE_IDX]; // current time scale; main sets it from saved UI
     this.editLaneId = null; // lane whose patch the instrument editor is showing (lights its Edit)
+    this.rippleMode = false; // Ripple toggle (main syncs from state): insert/delete ripple vs exact-overwrite
   }
 
   // Render the lanes. Tiles are positioned by their explicit `start` beat (gaps
@@ -60,9 +64,10 @@ export class TilePlayer {
     c.innerHTML = '';
 
     // Prospective per-lane tile lists (committed, or transformed by the preview
-    // via the exact same ripple ops the commit will use).
-    const lanes = this._layout(preview);
-    const maxBeats = Math.max(0, ...lanes.map((tiles) => tiles.reduce((m, t) => Math.max(m, t.start + this._len(t.name)), 0)));
+    // via the exact same ops the commit will use) + landing band / doomed tiles.
+    const { laneTiles, landing, doomed } = this._layout(preview);
+    let maxBeats = Math.max(0, ...laneTiles.map((tiles) => tiles.reduce((m, t) => Math.max(m, t.start + this._len(t.name)), 0)));
+    if (landing) maxBeats = Math.max(maxBeats, landing.start + landing.len); // band can extend past the last tile
     const trackWidth = Math.max(Math.round(maxBeats * ppb), MIN_TRACK);
 
     // Beat ruler on top (numbers + ticks) carrying the play-region markers.
@@ -119,6 +124,13 @@ export class TilePlayer {
       delayBtn.textContent = 'D';
       delayBtn.title = 'Delay (per lane)';
       delayBtn.onclick = () => this.cb.onDelay(lane.id);
+      // Modulators: "M" chiclet (lit when the current instrument has an active
+      // mod), left of the D/C stack, vertically centered.
+      const modBtn = document.createElement('button');
+      modBtn.className = 'lane-mod' + (modsActive(lane.modsByKind, lane.patch && lane.patch.kind) ? ' on' : '');
+      modBtn.textContent = 'M';
+      modBtn.title = 'Modulators (per lane) — slow parameter movement over playback';
+      modBtn.onclick = () => this.cb.onMods(lane.id);
 
       // Mixer knobs: Pan on top, Gain below (click + vertical-drag, dbl-click to
       // reset). The widget updates itself live during a drag; main applies the
@@ -147,31 +159,38 @@ export class TilePlayer {
       const muteBtn = laneToggle('M', 'mute', lane.mute, 'Mute this lane', () => this.cb.onMute(lane.id));
       const soloBtn = laneToggle('S', 'solo', lane.solo, 'Solo this lane', () => this.cb.onSolo(lane.id));
       ms.append(muteBtn, soloBtn);
-      // Stack the effect buttons in one narrow column: Delay on top, Chorus under.
+      // Stack the effect buttons in one narrow column: Delay on top, Chorus under;
+      // the Mod chiclet sits alone to their left (centered until a sibling comes).
       const fx = document.createElement('div');
       fx.className = 'lane-fx';
       fx.append(delayBtn, chorusBtn);
-      head.append(stripe, resetBtn, info, fx, knobs, ms);
+      const modCol = document.createElement('div');
+      modCol.className = 'lane-fx lane-modcol';
+      modCol.append(modBtn);
+      head.append(stripe, resetBtn, info, modCol, fx, knobs, ms);
 
       const track = document.createElement('div');
       track.className = 'lane-track';
       track.dataset.lane = lane.id;
       track.style.width = `${trackWidth}px`;
       track.style.backgroundImage = gridBackground(ppb); // 1/4-note + bar guidelines
+      // Grid-drag (HTML5 dnd from the toolbar grab handle): position-honoring.
+      // dragover reports the prospective {lane, beat} so main can preview the
+      // landing (same visuals as tile drags); drop places at that exact beat.
+      // No dragleave handling — main clears the preview on the handle's dragend.
+      const dropBeat = (e) => Math.max(0, Math.round((e.clientX - track.getBoundingClientRect().left) / this.ppb));
       track.addEventListener('dragover', (e) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'copy';
-        track.classList.add('drop');
+        this.cb.onGridDragOver(lane.id, dropBeat(e));
       });
-      track.addEventListener('dragleave', () => track.classList.remove('drop'));
       track.addEventListener('drop', (e) => {
         e.preventDefault();
-        track.classList.remove('drop');
-        this.cb.onDropAppend(lane.id);
+        this.cb.onDropAt(lane.id, dropBeat(e));
       });
       track.addEventListener('click', (e) => { if (e.target === track) this.cb.onLaneClick(lane.id); });
 
-      const tiles = lanes[li];
+      const tiles = laneTiles[li];
       if (tiles.length === 0) {
         const hint = document.createElement('div');
         hint.className = 'tile-hint';
@@ -181,7 +200,7 @@ export class TilePlayer {
         for (const t of tiles) {
           const w = Math.max(2, Math.round(this._len(t.name) * ppb));
           const left = Math.round(t.start * ppb);
-          if (t.ghost) { // the dragged tile's prospective slot
+          if (t.ghost) { // the dragged tile's prospective landing (ripple mode)
             const slot = document.createElement('div');
             slot.className = 'tile-gap';
             slot.style.left = `${left}px`;
@@ -192,7 +211,8 @@ export class TilePlayer {
           const pattern = this.library.patterns.get(t.name);
 
           const el = document.createElement('div');
-          el.className = 'tile' + (this.arrangement.selectedId === t.id ? ' selected' : '');
+          el.className = 'tile' + (this.arrangement.selectedId === t.id ? ' selected' : '')
+            + (doomed.has(t.id) ? ' doomed' : ''); // would be overwritten by the pending drop
           el.dataset.id = t.id;
           el.style.borderColor = color;
           el.style.left = `${left}px`;
@@ -232,6 +252,16 @@ export class TilePlayer {
           el.addEventListener('dblclick', () => this.cb.onOpen(t.name, t.id));
           track.append(el);
         }
+      }
+
+      // Non-ripple landing band: a filled highlight of the exact span the drop
+      // would occupy (ripple mode shows the in-flow `tile-gap` slot instead).
+      if (landing && landing.laneIdx === li) {
+        const band = document.createElement('div');
+        band.className = 'drop-band';
+        band.style.left = `${Math.round(landing.start * ppb)}px`;
+        band.style.width = `${Math.max(2, Math.round(landing.len * ppb))}px`;
+        track.append(band);
       }
 
       const ph = document.createElement('div');
@@ -279,34 +309,81 @@ export class TilePlayer {
     return p ? patternBeats(p) : 0;
   }
 
-  // Per-lane prospective tile lists (parallel to arrangement.lanes). With no
-  // preview these are the committed tiles; with a preview the drag op is applied
-  // to a throwaway copy using the SAME ripple primitives the commit uses, so the
-  // preview is exactly what a drop would produce. The dragged tile is flagged
-  // `ghost` so render draws it as a slot outline (the real tile is the cursor ghost).
+  // Per-lane prospective tile lists (parallel to arrangement.lanes) + preview
+  // metadata. With no preview these are the committed tiles; with a preview the
+  // drag op is applied to a throwaway copy using the SAME primitives the commit
+  // uses, so the preview is exactly what a drop would produce. Preview kinds:
+  // an internal move/copy ({id, fromLaneId, copy, toLaneId, start}) or an
+  // EXTERNAL drag from the grid ({external, name, toLaneId, start}).
+  // RIPPLE mode: the dragged tile is flagged `ghost` (drawn as the landing band
+  // in flow, everything else rippled around it). NON-RIPPLE mode: nothing moves —
+  // `landing` reports the exact band and `doomed` the tiles the drop would
+  // remove (drawn dimmed + red).
   _layout(preview) {
     const lenOf = (name) => this._len(name);
     const clone = this.arrangement.lanes.map((l) => l.tiles.map((t) => ({ ...t })));
+    let landing = null;
+    const doomed = new Set();
     if (preview) {
-      const dragged = this.arrangement.allTiles().find((t) => t.id === preview.id);
       const laneIdx = (id) => this.arrangement.lanes.findIndex((l) => l.id === id);
-      if (dragged) {
-        if (preview.copy) {
-          rippleInsertInto(clone[laneIdx(preview.toLaneId)], { id: '__drag__', name: dragged.name, start: 0, ghost: true }, preview.start, lenOf);
-        } else {
-          const from = clone[laneIdx(preview.fromLaneId)];
-          const t = from.find((x) => x.id === preview.id);
-          if (preview.fromLaneId === preview.toLaneId) {
-            const i = from.indexOf(t); if (i >= 0) from.splice(i, 1); // lift out, no ripple
+      const dragged = preview.external ? null : this.arrangement.allTiles().find((t) => t.id === preview.id);
+      const name = preview.external ? preview.name : dragged && dragged.name;
+      const ti = laneIdx(preview.toLaneId);
+      if (name != null && ti >= 0) {
+        if (this.rippleMode) {
+          if (preview.external || preview.copy) {
+            rippleInsertInto(clone[ti], { id: '__drag__', name, start: 0, ghost: true }, preview.start, lenOf);
           } else {
-            rippleRemoveFrom(from, t, lenOf); // moving out ripple-closes the source
+            const from = clone[laneIdx(preview.fromLaneId)];
+            const t = from.find((x) => x.id === preview.id);
+            if (preview.fromLaneId === preview.toLaneId) {
+              const i = from.indexOf(t); if (i >= 0) from.splice(i, 1); // lift out, no ripple
+            } else {
+              rippleRemoveFrom(from, t, lenOf); // moving out ripple-closes the source
+            }
+            t.ghost = true;
+            rippleInsertInto(clone[ti], t, preview.start, lenOf);
           }
-          t.ghost = true;
-          rippleInsertInto(clone[laneIdx(preview.toLaneId)], t, preview.start, lenOf);
+        } else {
+          // Exact placement: nothing shifts. A move lifts the dragged tile
+          // (its old spot empties); overlapped tiles in the target are doomed.
+          if (!preview.external && !preview.copy) {
+            const from = clone[laneIdx(preview.fromLaneId)];
+            const i = from.findIndex((x) => x.id === preview.id);
+            if (i >= 0) from.splice(i, 1);
+          }
+          const len = lenOf(name);
+          for (const t of clone[ti]) {
+            if (t.start < preview.start + len && preview.start < t.start + lenOf(t.name)) doomed.add(t.id);
+          }
+          landing = { laneIdx: ti, start: preview.start, len };
         }
       }
     }
-    return clone;
+    return { laneTiles: clone, landing, doomed };
+  }
+
+  // Every tile's client-space rect, for the brushes' segment hit-testing.
+  // Snapshotted at gesture start — painting never moves tiles, so the geometry
+  // is stable for the whole sweep.
+  tileRects() {
+    const out = [];
+    this.container.querySelectorAll('.tile').forEach((el) => {
+      const r = el.getBoundingClientRect();
+      out.push({ id: Number(el.dataset.id), left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+    });
+    return out;
+  }
+
+  // Live brush-gesture highlight: outline the touched tiles in the brush's
+  // colour (`kind` = transpose | reverse | clone). null clears. The gesture
+  // re-applies this after each render (render rebuilds the tile DOM).
+  setPainted(idSet, kind) {
+    this.container.querySelectorAll('.tile').forEach((el) => {
+      const on = !!idSet && idSet.has(Number(el.dataset.id));
+      el.classList.toggle('painted', on);
+      for (const k of ['transpose', 'reverse', 'clone']) el.classList.toggle('pk-' + k, on && kind === k);
+    });
   }
 
   // Hit-test a viewport point to the tile id under it (for brush painting), or
@@ -545,6 +622,31 @@ function drawRuler(cv, ppb) {
     ctx.stroke();
     if (isMajor) { ctx.fillStyle = '#8a93a3'; ctx.fillText(String(b), x + 2, 1); }
   }
+}
+
+// Which tile rects the pointer segment (x0,y0)→(x1,y1) crosses, in path order.
+// The brushes test the PATH between pointer samples — pointermove arrives at
+// ~60–125 Hz, so a fast flick can jump 30–80 px between samples and a point test
+// (elementFromPoint) skips any tile narrower than the jump. Liang–Barsky
+// segment/rect clipping; a zero-length segment degenerates to point-in-rect.
+// Pure (exported for headless tests).
+export function segmentHits(rects, x0, y0, x1, y1) {
+  const dx = x1 - x0, dy = y1 - y0;
+  const hits = [];
+  for (const r of rects) {
+    let t0 = 0, t1 = 1, ok = true;
+    const clip = (p, q) => {
+      if (p === 0) return q >= 0;              // parallel: inside iff q ≥ 0
+      const t = q / p;
+      if (p < 0) { if (t > t1) return false; if (t > t0) t0 = t; }
+      else { if (t < t0) return false; if (t < t1) t1 = t; }
+      return true;
+    };
+    ok = clip(-dx, x0 - r.left) && clip(dx, r.right - x0) && clip(-dy, y0 - r.top) && clip(dy, r.bottom - y0);
+    if (ok) hits.push({ id: r.id, t: t0 });
+  }
+  hits.sort((a, b) => a.t - b.t);              // in order along the path
+  return hits.map((h) => h.id);
 }
 
 // A small lane-header toggle (Mute / Solo). `kind` drives the active styling.

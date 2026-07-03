@@ -88,3 +88,32 @@ export function degreeToName(degree, tuningId = '12-et') {
   const cls = (((degree % edo) + edo) % edo);
   return `${pitchClassName(cls, tuningId)}${Math.floor(degree / edo)}`;
 }
+
+// The navigable pitch range as a frequency band — the 88-key piano, A0 (27.5 Hz)
+// to C8. Anchored at A0 so the grid always covers a real keyboard, in any tuning.
+export const LOW_HZ = 27.5;             // A0
+export const HIGH_HZ = noteToFreq(108); // C8 (≈ 4186 Hz)
+
+// The degree range { min, max } for a tuning that best covers A0..C8 — the degree
+// CLOSEST (in pitch, i.e. log-frequency) to each band edge, so a degree a cent
+// under A0 (e.g. 16-ET's "80") still counts rather than being rounded away. freq
+// is monotonic in degree, so a scan over a generous degree window finds the
+// nearest; this needs no per-tuning inverse, so future (even non-EDO) tunings
+// work for free. Memoized per tuning+root (the grid asks for it on every draw).
+const _boundsCache = new Map();
+export function degreeBounds(tuningId = '12-et', root = 0) {
+  const key = `${tuningId}:${root}`;
+  const hit = _boundsCache.get(key);
+  if (hit) return hit;
+  const nearest = (targetHz) => {
+    let best = 0, bestErr = Infinity;
+    for (let d = -200; d <= 400; d++) {
+      const err = Math.abs(Math.log2(tuningFreq(d, tuningId, root) / targetHz));
+      if (err < bestErr) { bestErr = err; best = d; }
+    }
+    return best;
+  };
+  const res = { min: nearest(LOW_HZ), max: nearest(HIGH_HZ) };
+  _boundsCache.set(key, res);
+  return res;
+}

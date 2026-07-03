@@ -209,26 +209,36 @@ const TERVIK_ALGO_OPTS = [
   { id: 'parallel', label: 'Parallel  1·2·3' },
 ];
 
+// Operator frequency ratio = COARSE + FINE. Coarse snaps to exact values (so you
+// can reliably land on integer/harmonic ratios — vital for FM); fine is a ±1.0
+// nudge (0 = exactly the coarse value, off-0 = deliberate inharmonicity). The
+// effective ratio is clamped in audio.js. Coarse covers the snap targets; fine
+// reaches everything between them (1 + 0.5 = the 1.5 ratio, etc.).
+export const TERVIK_RATIOS = [0.25, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+
 // Default = a DX-style electric piano: Op 1 a 1:1 body, Op 2 a 1:1 carrier
 // modulated by Op 3 at 14:1 with a fast-decaying index (the metallic "tine"
 // attack that mellows into the body). Algorithm "pair" (Op3→Op2 · Op1).
 const TERVIK_DEFAULTS = {
   algo: 'pair',
   feedback: 0,
-  ratio1: 1,  level1: 0.5,                 a1: 0.002, d1: 1.4,  s1: 0, r1: 0.18,
-  ratio2: 1,  level2: 0.5, follow2: false, a2: 0.002, d2: 1.4,  s2: 0, r2: 0.18,
-  ratio3: 14, level3: 0.35, follow3: false, a3: 0.001, d3: 0.18, s3: 0, r3: 0.10,
+  coarse1: 1,  fine1: 0,  level1: 0.5,                 a1: 0.002, d1: 1.4,  s1: 0, r1: 0.18,
+  coarse2: 1,  fine2: 0,  level2: 0.5, follow2: false, a2: 0.002, d2: 1.4,  s2: 0, r2: 0.18,
+  coarse3: 14, fine3: 0,  level3: 0.35, follow3: false, a3: 0.001, d3: 0.18, s3: 0, r3: 0.10,
 };
 
 const xratio = (v) => `${v.toFixed(2)}×`;
+const fineFmt = (v) => (Math.abs(v) < 0.005 ? '0' : `${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}`);
 const followFmt = (v) => (v ? 'follow Op 1' : 'own ADSR');
 
-// The per-operator params (Ratio, Level, [Follow Op 1], A D S R). Op 1 has no
-// Follow toggle — it IS the reference envelope.
+// The per-operator params (Coarse + Fine ratio, Level, [Follow Op 1], A D S R).
+// Op 1 has no Follow toggle — it IS the reference envelope.
 function tervikOpParams(n, group) {
   const P = [
-    { key: `ratio${n}`, group, label: 'Ratio', min: 0.5, max: 16, fmt: xratio,
-      title: `Op ${n} frequency as a ratio of the played pitch. Integers = harmonic; non-integers = inharmonic/bell.` },
+    { key: `coarse${n}`, group, label: 'Coarse', steps: TERVIK_RATIOS, fmt: xratio,
+      title: `Op ${n} frequency ratio (coarse). Snaps to exact values — integers = harmonic, 0.25/0.5 = sub-octaves.` },
+    { key: `fine${n}`, group, label: 'Fine', knob: true, min: -1, max: 1, reset: 0, detents: [0], fmt: fineFmt,
+      title: `Op ${n} fine ratio offset (added to Coarse). 0 = exactly the coarse ratio; off-zero = inharmonic/bell. Double-click to reset.` },
     { key: `level${n}`, group, label: 'Level', min: 0, max: 1, fmt: pct,
       title: n === 1 ? 'Output level of this carrier.' : 'Level — as a carrier its volume, as a modulator its FM depth (the "amount" when following Op 1).' },
   ];
@@ -253,6 +263,119 @@ const TERVIK_PARAMS = [
   ...tervikOpParams(3, 'Op 3'),
 ];
 
+// --- Nayumi: a breathy formant "voice" (oohs/ahhs) by source–filter synthesis —
+// a glottal-pulse carrier through a parallel bank of formant resonators, mixed
+// with aspiration/air noise, then a lo-fi bit-crush. Aimed at the Fairlight
+// ARR1 zone: a lush, synthetic, slightly grainy choir that can slide from a clear
+// sung vowel toward a hollow "blown vessel". Male↔female is a single formant-scale
+// (Size) knob, not a different carrier. ---------------------------------------
+
+const NAYUMI_VOWEL_OPTS = [
+  { id: 'ooh', label: 'ooh' },
+  { id: 'oh', label: 'oh' },
+  { id: 'ah', label: 'ah' },
+  { id: 'eh', label: 'eh' },
+  { id: 'ee', label: 'ee' },
+];
+
+const NAYUMI_DEFAULTS = {
+  vowel: 'ah',      // formant preset
+  size: 1.0,        // formant-frequency scale: <1 larger/darker (male), >1 smaller (female)
+  formantQ: 9,      // vowel sharpness (bandpass Q)
+  soprano: 0.6,     // how much the voice rounds toward a pure tone up high (per-vowel)
+  breath: 0.3,      // aspiration + air noise mixed in
+  bright: 0.55,     // lowpass on the glottal source (dark → bright)
+  grit: 0.25,       // lo-fi bit-crush (the Fairlight graininess)
+  vibRate: 5.5,     // Hz
+  vibDepth: 18,     // cents
+  // Amp envelope — a soft attack + high sustain for the choral swell.
+  attack: 0.12,
+  decay: 0.4,
+  sustain: 0.85,
+  release: 0.45,
+};
+
+const NAYUMI_PARAMS = [
+  { key: 'vowel', group: 'Formant', label: 'Vowel', sel: true, options: NAYUMI_VOWEL_OPTS,
+    title: 'Which vowel the formant bank shapes (ooh/oh/ah/eh/ee).' },
+  { key: 'size', group: 'Formant', label: 'Size', min: 0.8, max: 1.3,
+    fmt: (v) => (v < 0.97 ? 'larger' : v > 1.03 ? 'smaller' : 'neutral'),
+    title: 'Vocal-tract size — scales every formant. Low = larger/darker (toward male), high = smaller/brighter (toward female/child). The carrier is unchanged.' },
+  { key: 'formantQ', group: 'Formant', label: 'Resonance', min: 2, max: 24, fmt: (v) => `Q ${v.toFixed(1)}`,
+    title: 'How sharp/pronounced the vowel is. High = strongly vowel-like and hollow; low = smeared toward a plain tone.' },
+  { key: 'soprano', group: 'Formant', label: 'Soprano', min: 0, max: 1, fmt: pct,
+    title: 'Soprano rounding: as a note climbs toward a vowel’s first formant the timbre rounds off to a pure, fluty tone (the formant tunes onto the fundamental, upper formants and breath fade). Engages per vowel; 0 = off (no high-note change).' },
+  { key: 'breath', group: 'Breath', label: 'Breath', min: 0, max: 1, fmt: pct,
+    title: 'Airy noise mixed in (aspiration through the formants, plus air on top). Up = whispery/blown; down = clear/sung.' },
+  { key: 'bright', group: 'Voice', label: 'Brightness', min: 0, max: 1, fmt: pct,
+    title: 'Lowpass on the glottal source — darker to brighter tone before the formants.' },
+  { key: 'grit', group: 'Voice', label: 'Grit', min: 0, max: 1, fmt: pct,
+    title: 'Lo-fi bit-crush — the vintage Fairlight-sampler graininess. Higher blurs the vowel toward a hollow, "blown" character.' },
+  { key: 'vibRate', group: 'Vibrato', label: 'Rate', min: 3, max: 8, fmt: hz,
+    title: 'Vibrato speed.' },
+  { key: 'vibDepth', group: 'Vibrato', label: 'Depth', min: 0, max: 60, fmt: cents,
+    title: 'Vibrato depth in cents. A little keeps a held vowel alive.' },
+  { key: 'attack', group: 'Amp Envelope', label: 'Attack', min: 0.001, max: 2, log: true, fmt: secs,
+    title: 'Onset time — a soft attack gives the choral swell.' },
+  { key: 'decay', group: 'Amp Envelope', label: 'Decay', min: 0.02, max: 5, log: true, fmt: secs,
+    title: 'Fall toward the sustain level after the attack.' },
+  { key: 'sustain', group: 'Amp Envelope', label: 'Sustain', min: 0, max: 1, fmt: pct,
+    title: 'Level the note holds at while sounding.' },
+  { key: 'release', group: 'Amp Envelope', label: 'Release', min: 0.01, max: 3, log: true, fmt: secs,
+    title: 'Fade once the note ends.' },
+];
+
+// --- Boshwick: a multipurpose 808-style percussion synth (no samples). One
+// monotimbral voice whose Type select picks the drum topology (kick/tom/snare =
+// pitched body + pitch-env; hat/cymbal/cowbell = inharmonic square cluster; clap =
+// burst-noise; rim/clave = short pitched click), over a shared knob set. All
+// voices are one-shot decays EXCEPT Hat & Cymbal, which honour the note duration
+// (short note chokes = closed, long = open). Everything is pitch-trackable. -----
+
+const BOSHWICK_TYPE_OPTS = [
+  { id: 'kick', label: 'Kick' },
+  { id: 'tom', label: 'Tom' },
+  { id: 'snare', label: 'Snare' },
+  { id: 'hat', label: 'Hat' },
+  { id: 'clap', label: 'Clap' },
+  { id: 'cowbell', label: 'Cowbell' },
+  { id: 'rim', label: 'Rimshot' },
+  { id: 'clave', label: 'Clave' },
+  { id: 'cymbal', label: 'Cymbal' },
+];
+
+const BOSHWICK_DEFAULTS = {
+  type: 'kick',
+  tune: 0.5,        // ±1.5 octaves around the type's nominal pitch (0.5 = nominal)
+  pitchTrack: 1.0,  // 0 = fixed drum on every row, 1 = the note transposes it (rel. C4)
+  decay: 0.5,       // 0..1, mapped to a per-type seconds range
+  punch: 0.4,       // attack transient / click
+  pitchEnv: 0.5,    // downward sweep depth (kick/tom); inert for noise/metallic
+  tone: 0.5,        // brightness/colour (per-type meaning)
+  snap: 0.5,        // noise↔body balance (snare); inert for pure types
+};
+
+const boshTuneFmt = (v) => { const st = Math.round((v - 0.5) * 2 * 18); return st === 0 ? 'nominal' : `${st > 0 ? '+' : '−'}${Math.abs(st)} st`; };
+
+const BOSHWICK_PARAMS = [
+  { key: 'type', group: 'Voice', label: 'Type', sel: true, options: BOSHWICK_TYPE_OPTS,
+    title: 'Which drum this voice is. Hat & Cymbal honour note length (short = closed/choked, long = open); the rest are one-shot hits.' },
+  { key: 'tune', group: 'Voice', label: 'Tune', min: 0, max: 1, fmt: boshTuneFmt,
+    title: 'Pitch offset around the drum’s nominal tuning (±1.5 octaves).' },
+  { key: 'pitchTrack', group: 'Voice', label: 'Pitch Track', min: 0, max: 1, fmt: pct,
+    title: '0 = a fixed drum on every row; 1 = the note pitch transposes it (playable toms / melodic kick), relative to C4.' },
+  { key: 'decay', group: 'Envelope', label: 'Decay', min: 0, max: 1, fmt: pct,
+    title: 'Length of the hit (mapped per type). For Hat/Cymbal this is the *open* length — a short note chokes it.' },
+  { key: 'punch', group: 'Envelope', label: 'Punch', min: 0, max: 1, fmt: pct,
+    title: 'Attack transient. Kick: an oscillator "knock" spike + a strong beater click (none → prominent snap); others: click/snap emphasis.' },
+  { key: 'pitchEnv', group: 'Pitch', label: 'Pitch Env', min: 0, max: 1, fmt: pct,
+    title: 'Downward pitch-sweep depth at the attack. Kick: tight thump → deep dubby drop (~9×, up to 140 ms); tom: milder. Inert for noise/metallic types.' },
+  { key: 'tone', group: 'Tone', label: 'Tone', min: 0, max: 1, fmt: pct,
+    title: 'Kick: body drive — pure sine sub (0) to growly saturated 808 (1). Others: brightness/colour (tom click, filter centre for hat/snare/clap/cowbell).' },
+  { key: 'snap', group: 'Tone', label: 'Snap', min: 0, max: 1, fmt: pct,
+    title: 'Noise↔body balance — the snare "snappy". Inert for pure types.' },
+];
+
 // --- The registry. Each entry: id, display label, a one-line description (shown
 // in the pane), the parameter defaults, and the editor PARAMS metadata. -------
 export const INSTRUMENTS = {
@@ -260,6 +383,8 @@ export const INSTRUMENTS = {
   zindel: { id: 'zindel', label: 'Zindel', desc: 'drawbar additive organ', defaults: ZINDEL_DEFAULTS, params: ZINDEL_PARAMS },
   wendelhorn: { id: 'wendelhorn', label: 'Wendelhorn', desc: 'brass supersaw ensemble', defaults: WENDELHORN_DEFAULTS, params: WENDELHORN_PARAMS },
   tervik: { id: 'tervik', label: 'Tervik', desc: '3-op FM', defaults: TERVIK_DEFAULTS, params: TERVIK_PARAMS },
+  nayumi: { id: 'nayumi', label: 'Nayumi', desc: 'breathy formant voice', defaults: NAYUMI_DEFAULTS, params: NAYUMI_PARAMS },
+  boshwick: { id: 'boshwick', label: 'Boshwick', desc: '808 percussion', defaults: BOSHWICK_DEFAULTS, params: BOSHWICK_PARAMS },
 };
 
 export const DEFAULT_KIND = 'vesperia';
@@ -286,6 +411,17 @@ export function defaultPatch(kind = DEFAULT_KIND) {
 // per-lane migration seed) without aliasing the source object.
 export function clonePatch(p) { return normalizePatch(p); }
 
+// The patch's effective amp release in seconds — the time-constant the voice's
+// ring-out follows. Most kinds expose a top-level `release`; Tervik has no
+// top-level release (its amp tail tracks Op 1's release, r1). Callers sizing a
+// bounce tail need a finite value for every kind, so default missing/non-finite
+// to 0 rather than let an `undefined` poison a Math.max.
+export function patchRelease(patch) {
+  if (!patch) return 0;
+  const r = patch.kind === 'tervik' ? patch.r1 : patch.release;
+  return typeof r === 'number' && isFinite(r) ? r : 0;
+}
+
 // Coerce a loaded/partial patch to a full, in-range one for its kind
 // (forward/backward safe: unknown kind → default kind, unknown keys dropped,
 // missing keys defaulted, values clamped).
@@ -293,18 +429,44 @@ export function normalizePatch(obj) {
   const kind = obj && obj.kind && INSTRUMENTS[obj.kind] ? obj.kind : DEFAULT_KIND;
   const p = defaultPatch(kind);
   if (obj && typeof obj === 'object') {
+    if (kind === 'tervik') obj = migrateTervikRatios(obj); // legacy single ratioN → coarseN + fineN
     for (const spec of instrument(kind).params) {
       const v = obj[spec.key];
       if (spec.bool) {
         if (typeof v === 'boolean') p[spec.key] = v;
       } else if (spec.sel) {
         if (typeof v === 'string' && spec.options.some((o) => o.id === v)) p[spec.key] = v;
+      } else if (spec.steps) {
+        if (typeof v === 'number' && isFinite(v)) p[spec.key] = nearestStep(spec.steps, v);
       } else if (typeof v === 'number' && isFinite(v)) {
         p[spec.key] = Math.min(spec.max, Math.max(spec.min, v));
       }
     }
   }
   return p;
+}
+
+// The exact step nearest `v` from a quantized list (e.g. Tervik's coarse ratios).
+export function nearestStep(steps, v) {
+  let best = steps[0], bd = Infinity;
+  for (const s of steps) { const d = Math.abs(s - v); if (d < bd) { bd = d; best = s; } }
+  return best;
+}
+
+// Migrate a pre-split Tervik patch: an old single `ratioN` becomes `coarseN`
+// (nearest snap) + `fineN` (the remainder). Returns a shallow copy so the caller's
+// object isn't mutated; a no-op once patches carry coarse/fine.
+function migrateTervikRatios(obj) {
+  let o = obj;
+  for (const n of [1, 2, 3]) {
+    if (o[`coarse${n}`] == null && typeof o[`ratio${n}`] === 'number' && isFinite(o[`ratio${n}`])) {
+      if (o === obj) o = { ...obj };
+      const c = nearestStep(TERVIK_RATIOS, o[`ratio${n}`]);
+      o[`coarse${n}`] = c;
+      o[`fine${n}`] = Math.min(1, Math.max(-1, o[`ratio${n}`] - c));
+    }
+  }
+  return o;
 }
 
 // Slider feel: time/frequency knobs move multiplicatively (log), the rest

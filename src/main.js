@@ -6,19 +6,22 @@ import { PianoRoll } from './pianoroll.js';
 import { Note, Score } from './model.js';
 import { Pattern, BASE_PITCH } from './grid.js';
 import { PatternLibrary, Arrangement, laneColor } from './library.js';
-import { enumerateTriadulations, familiesFor, familyLabel } from './triads.js';
-import { edoOf, tuningFreq, pitchClassName } from './tuning.js';
+import { enumerateTriadulations, familiesFor, familyLabel, chordsFor } from './triads.js';
+import { generateRandom, RANDOM_DEFAULTS } from './random.js';
+import { edoOf, tuningFreq, pitchClassName, degreeBounds } from './tuning.js';
 import { scalesFor, scaleValidForEdo } from './scales.js';
 import { notesToMidi } from './midi.js';
-import { encodeWav } from './wav.js';
+import { encodeWav, encodeBwf } from './wav.js';
+import { zipStore } from './zip.js';
 import { GridView } from './gridview.js';
-import { TilePlayer, TILE_SCALES, DEFAULT_SCALE_IDX } from './tileplayer.js';
+import { TilePlayer, TILE_SCALES, DEFAULT_SCALE_IDX, segmentHits } from './tileplayer.js';
 import { buildToolbar } from './toolbar.js';
 import { buildInstrumentPane } from './instrumentpane.js';
-import { normalizePatch, defaultPatch, clonePatch } from './instrument.js';
+import { normalizePatch, defaultPatch, clonePatch, patchRelease, instrument } from './instrument.js';
 import { normalizeDelay } from './delay.js';
 import { buildDelayEditor } from './delay.js';
 import { normalizeChorus, buildChorusEditor } from './chorus.js';
+import { MOD_SLOTS, defaultMod, buildModEditor, modTargetsFor, modsActive, normalizeModsByKind } from './mods.js';
 import { applyTransforms, setTileTranspose, setTileReverse, hasReverse, describeTransform, transformKindLabel, normalizeTransforms } from './transforms.js';
 import { openModal } from './modal.js';
 import { setupPanes } from './panes.js';
@@ -53,6 +56,8 @@ const state = {
   activePane: 'grid', // 'grid' | 'tiles' — which pane the roll mirrors
   tileScaleIdx: DEFAULT_SCALE_IDX, // tile-player horizontal scale (view-only)
   masterGain: 0.9,    // master fader (0..1.4); applied live and to the export
+  modLoop: false,     // global "Loop Mod": modulators on ruler time (reset each loop) vs elapsed
+  ripple: false,      // tile insert/delete ripple (off = exact placement, overwrite on overlap)
 };
 Object.assign(state, readJSON(UI_KEY) || {});
 // Migrate older persisted UI state (top-level trad/sus booleans) to the per-id
@@ -157,6 +162,19 @@ engine.laneChorus = (laneId) => {
   return { on: true, mode: lane.chorus.mode };
 };
 
+// Resolve a lane's playback modulators: the mod pair stored for its CURRENT
+// instrument kind (each kind keeps its own pair — switch back and it's intact).
+// null when nothing's active, so the engine skips the per-note work entirely.
+// The GLOBAL "Loop Mod" toggle overrides every mod's time anchor (for now —
+// the per-mod flag stays in the data model for a possible per-mod return).
+engine.modsFor = (laneId) => {
+  const lane = arrangement.lane(laneId);
+  if (!lane || !lane.modsByKind) return null;
+  const kind = lane.patch && lane.patch.kind;
+  if (!modsActive(lane.modsByKind, kind)) return null;
+  return lane.modsByKind[kind].map((m) => ({ ...m, loop: state.modLoop }));
+};
+
 // (Re)apply every lane's chorus to the engine — after a modal edit or a load/undo.
 function applyLaneChorusAll() {
   for (const lane of arrangement.lanes) engine.applyLaneChorus(lane.id);
@@ -229,6 +247,7 @@ function arrangementScore() {
         nn.laneId = lane.id;      // routes the voice through this lane's gain bus
         nn.muted = muted;         // for the roll's hatch (audio mute is the lane bus)
         nn.tileStart = tile.start; // this tile's start beat — the scheduler's commit unit
+        nn.rulerBeat = nn.start;  // absolute timeline position (survives region windowing) — the "Loop Mod" anchor
         notes.push(nn);
       }
       maxLen = Math.max(maxLen, tile.start + s.lengthBeats); // tiles are freely positioned
@@ -324,7 +343,8 @@ const tb = buildToolbar(document.getElementById('toolbar'), state, onToolbarChan
 const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, arrangement, {
   onTileDown: (id, ev) => onTileDown(id, ev),
   onOpen: (name, id) => openTile(name, id),
-  onDropAppend: (laneId) => appendCurrentTile(laneId),
+  onGridDragOver: (laneId, start) => gridDragOver(laneId, start),
+  onDropAt: (laneId, start) => dropCurrentTile(laneId, start),
   onLaneClick: (laneId) => {
     setActive('tiles');
     arrangement.activeLaneId = laneId;
@@ -346,7 +366,9 @@ const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, 
   onMarkers: (start, end) => setPlayMarkers(start, end),
   onDelay: (laneId) => openDelayModal(laneId),
   onChorus: (laneId) => openChorusModal(laneId),
+  onMods: (laneId) => openModModal(laneId),
 });
+tilePlayer.rippleMode = state.ripple; // restore the Ripple toggle (workspace pref)
 
 // Open the per-lane delay editor in a modal. The whole editing session is ONE
 // undo step: snapshot on open (the shared arrangement-edit bracket), apply each
@@ -383,6 +405,28 @@ function openChorusModal(laneId) {
       engine.applyLaneChorus(laneId);
       onMixEnd();          // commit one undo step if changed + persist + dirty
       tilePlayer.render(); // reflect the C-button lit state
+    },
+  });
+}
+
+// Open the per-lane modulators editor in a modal — same one-undo-step bracket
+// as the delay/chorus modals. Edits need no audio rewiring (mods are evaluated
+// at each note-on from the live lane data), so onChange is a no-op until close.
+function openModModal(laneId) {
+  const lane = arrangement.lane(laneId);
+  if (!lane) return;
+  const idx = arrangement.lanes.indexOf(lane);
+  const kind = lane.patch && lane.patch.kind;
+  if (!lane.modsByKind) lane.modsByKind = {};
+  if (!lane.modsByKind[kind]) lane.modsByKind[kind] = Array.from({ length: MOD_SLOTS }, defaultMod);
+  onMixStart(); // capture the pre-edit snapshot
+  const body = buildModEditor(lane.modsByKind[kind], modTargetsFor(kind), { onChange: () => {} });
+  openModal({
+    title: `Modulators — Lane ${idx + 1} (${instrument(kind).label})`,
+    body,
+    onClose: () => {
+      onMixEnd();          // commit one undo step if changed + persist + dirty
+      tilePlayer.render(); // reflect the M-button lit state
     },
   });
 }
@@ -463,8 +507,9 @@ function applyLaneGains(rampSec) {
 // Pointer-based so we can preview the prospective ripple and animate it. A drag
 // only mutates the committed arrangement on DROP — until then audio, roll, and
 // playhead keep playing the committed order (the preview "is not what's
-// playing"). No modifier = move (keeps the tile id so selection follows); Shift =
-// a shallow copy (new id, same pattern reference). A committed reorder's audio
+// playing"). No modifier = move (keeps the tile id so selection follows); CTRL =
+// a shallow copy (new id, same pattern reference — moved off Shift, which the
+// upcoming multi-select needs for range selection). A committed reorder's audio
 // lands at the next loop boundary, like other live edits.
 const DRAG_THRESH = 5; // px of movement before a press becomes a drag (else click)
 let tileDrag = null;   // { id, fromLaneId, preview } while a drag is active
@@ -475,6 +520,7 @@ function onTileDown(id, ev) {
   if (ev.button != null && ev.button !== 0) return;
   if (brushMode === 'transpose') return onTransposePaint(id, ev); // armed brush → paint, not move/select
   if (brushMode === 'reverse') return onReversePaint(id, ev);
+  if (brushMode === 'clone') return onClonePaint(id, ev);
   const startX = ev.clientX, startY = ev.clientY;
   let dragging = false;
 
@@ -504,7 +550,7 @@ function startTileDrag(id) {
 }
 
 function updateTileDrag(e) {
-  const copy = e.shiftKey;
+  const copy = e.ctrlKey;
   const tgt = tilePlayer.dropTarget(e.clientX, e.clientY);
   const preview = tgt
     ? { id: tileDrag.id, fromLaneId: tileDrag.fromLaneId, copy, toLaneId: tgt.laneId, start: tgt.start }
@@ -522,7 +568,7 @@ function endTileDrag(e) {
   tileDrag = null;
 
   if (!preview) { refresh(); return; } // dropped off the lanes → cancel
-  const copy = e.shiftKey;             // authoritative copy state at the drop
+  const copy = e.ctrlKey;              // authoritative copy state at the drop
 
   // Moving/copying a tile into a FRESH lane (brand-new / just-reset) seeds that
   // lane's instrument from the SOURCE lane (a tile carries no patch — its lane
@@ -534,8 +580,8 @@ function endTileDrag(e) {
 
   const before = arrSnap();
   const newId = copy
-    ? arrangement.copyTile(preview.id, preview.toLaneId, preview.start, patternLen)
-    : (arrangement.moveTile(preview.id, preview.toLaneId, preview.start, patternLen), preview.id);
+    ? arrangement.copyTile(preview.id, preview.toLaneId, preview.start, patternLen, state.ripple)
+    : (arrangement.moveTile(preview.id, preview.toLaneId, preview.start, patternLen, state.ripple), preview.id);
   arrCommit(before);
   if (srcPatch) destLane.patch = clonePatch(srcPatch); // adopt the source instrument
   if (destLane) destLane.fresh = false;                // the lane now has a tile
@@ -564,15 +610,18 @@ function selectTile(id) {
   persist();
 }
 
-// --- transform brushes: paint per-tile transforms (Transpose, Reverse) --------
+// --- transform brushes: paint per-tile transforms (Transpose, Reverse, Clone) --
 //
 // Armed via the transform bar (one brush at a time). While a brush is armed, a
 // click / click-drag over tiles PAINTS it onto each instead of the normal
 // select/move: Transpose SETs the tile's transpose to the brush amount (a second
 // transpose replaces it; amount 0 clears); Reverse toggles the tile, with the drag
-// anchor deciding the on/off state that's then painted across the sweep. Transforms
-// are nondestructive (an ordered list applied in arrangementScore) and undoable.
-let brushMode = null;                                  // null | 'transpose' | 'reverse'
+// anchor deciding the on/off state that's then painted across the sweep; Clone
+// diverges swept tiles onto fresh copies of their patterns (deduped per source —
+// see paintClone). Transforms are nondestructive (an ordered list applied in
+// arrangementScore) and undoable. Brushes are ONE-SHOT: a completed gesture (click
+// or full drag-sweep) disarms — unless SHIFT is held at release, which keeps it armed.
+let brushMode = null;                                  // null | 'transpose' | 'reverse' | 'clone'
 const transposeOpts = { amount: 1, scaleId: 'auto' };  // persists across arming
 
 // Paint the transpose brush onto one tile. Scale 'auto' = the tile's own mask
@@ -587,31 +636,66 @@ function paintTranspose(tid) {
 }
 
 // A paint gesture (click or click-drag across tiles) = one undo step. `apply(tid)`
-// mutates one tile; it runs on the anchor and each tile the drag sweeps (once each).
-function paintGesture(startId, apply) {
+// mutates one tile; it runs on the anchor and every tile the pointer PATH
+// crosses (segment hit-testing between pointer samples via segmentHits, so a
+// fast flick can't skip narrow tiles), once each, in path order. Touched tiles
+// are outlined live in the brush's colour. ESC mid-gesture CANCELS: the
+// pre-gesture snapshot is restored with no undo entry, `onCancel` cleans any
+// brush-specific state (Clone deletes the patterns it minted), and the brush
+// disarms. Optional `onDone(startId)` runs after a commit, before the one-shot
+// disarm decision.
+let paintGestureActive = false; // the global Esc handler defers to the gesture's own
+function paintGesture(startId, ev, apply, onDone, onCancel) {
   const before = arrSnap();
+  const rects = tilePlayer.tileRects(); // stable for the whole sweep
   const painted = new Set();
+  let last = { x: ev.clientX, y: ev.clientY };
+  paintGestureActive = true;
   const touch = (tid) => {
     if (tid == null || painted.has(tid)) return;
     painted.add(tid);
     apply(tid);
     tilePlayer.render(); // show the swath(s) live as the sweep touches each tile
+    tilePlayer.setPainted(painted, brushMode); // re-apply the highlight after the rebuild
   };
-  touch(startId);
-  const onMove = (e) => touch(tilePlayer.tileAt(e.clientX, e.clientY));
-  const onUp = () => {
+  const cleanup = () => {
     window.removeEventListener('pointermove', onMove);
     window.removeEventListener('pointerup', onUp);
-    arrCommit(before);
-    selectTile(startId); // reflect it in the transform bar + roll, persist
+    window.removeEventListener('keydown', onKey, true);
+    paintGestureActive = false;
   };
+  const onMove = (e) => {
+    for (const tid of segmentHits(rects, last.x, last.y, e.clientX, e.clientY)) touch(tid);
+    last = { x: e.clientX, y: e.clientY };
+  };
+  const onUp = (e) => {
+    cleanup();
+    tilePlayer.setPainted(null);
+    arrCommit(before);
+    if (onDone) onDone(startId); // brush-specific finish (e.g. Clone opens the anchor's clone)
+    selectTile(startId); // reflect it in the transform bar + roll, persist
+    if (!e.shiftKey) disarmBrush(); // one-shot; Shift at release keeps painting
+  };
+  const onKey = (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation(); // don't let the app's global Esc also fire
+    cleanup();
+    tilePlayer.setPainted(null);
+    arrApply(before); // cancelled — restore the snapshot, NO undo entry
+    if (onCancel) onCancel();
+    disarmBrush();
+    refresh();
+  };
+  touch(startId);
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
+  window.addEventListener('keydown', onKey, true); // capture: beats the global handler
 }
 
 function onTransposePaint(startId, ev) {
   if (ev.button != null && ev.button !== 0) return;
-  paintGesture(startId, paintTranspose);
+  paintGesture(startId, ev, paintTranspose);
 }
 
 // Reverse: the anchor tile toggles to a new state, then that state is painted
@@ -620,15 +704,68 @@ function onReversePaint(startId, ev) {
   if (ev.button != null && ev.button !== 0) return;
   const anchor = arrangement.allTiles().find((t) => t.id === startId);
   const target = anchor ? !hasReverse(anchor.transforms) : true;
-  paintGesture(startId, (tid) => {
+  paintGesture(startId, ev, (tid) => {
     const tile = arrangement.allTiles().find((t) => t.id === tid);
     if (tile) setTileReverse(tile, target);
   });
 }
 
+// Clone: repoint swept tiles onto fresh copies of their patterns, "as if cloned
+// in the grid" — position + per-tile transforms untouched, un-swept tiles of the
+// original unaffected. DEDUPED per source: every swept tile sharing pattern A1
+// gets the SAME new clone (5×A1 + 3×A3 → 5×A8 + 3×A9), so a swept section keeps
+// its internal sharing while diverging as a block. The source→clone map lives for
+// the brush's whole ARMED SESSION (user: dedup for the duration of Shift-held) —
+// a second Shift-kept sweep of more A1 tiles joins A8; re-arming starts fresh.
+// `minted` guards re-sweeps of already-repointed tiles (never clone a clone made
+// this session). After the gesture the ANCHOR tile's clone opens in the grid
+// editor (like double-click). Undo repoints the tiles back; the cloned patterns
+// linger in the registry (accepted — same as deleting a pattern's last tile
+// today; a future pattern browser / orphan-GC is the real fix).
+let cloneSession = null; // { map: srcName -> cloneName, minted: Set<cloneName> } while armed
+
+function paintClone(tid) {
+  const tile = arrangement.allTiles().find((t) => t.id === tid);
+  if (!tile || !cloneSession || cloneSession.minted.has(tile.name)) return;
+  let cloneName = cloneSession.map.get(tile.name);
+  if (!cloneName) {
+    const p = library.cloneOf(tile.name);
+    if (!p) return;
+    cloneSession.map.set(tile.name, p.name);
+    cloneSession.minted.add(p.name);
+    if (cloneSession.gestureMinted) cloneSession.gestureMinted.add(p.name); // for Esc-cancel
+    cloneName = p.name;
+  }
+  tile.name = cloneName;
+}
+
+function onClonePaint(startId, ev) {
+  if (ev.button != null && ev.button !== 0) return;
+  if (cloneSession) cloneSession.gestureMinted = new Set(); // clones THIS gesture mints
+  paintGesture(startId, ev, paintClone,
+    (sid) => {
+      const anchor = arrangement.allTiles().find((t) => t.id === sid);
+      const p = anchor && library.patterns.get(anchor.name);
+      if (p) { library.open(p.name); centerGridOn(p); } // the anchor's clone becomes the grid's current
+    },
+    () => {
+      // Esc-cancel: unlike the accepted stray-on-undo, a cancelled gesture can
+      // clean up completely — the clones it minted are referenced by nothing
+      // (the snapshot restore already repointed the tiles back).
+      if (!cloneSession || !cloneSession.gestureMinted) return;
+      for (const name of cloneSession.gestureMinted) {
+        library.patterns.delete(name);
+        cloneSession.minted.delete(name);
+        for (const [src, cl] of [...cloneSession.map]) if (cl === name) cloneSession.map.delete(src);
+      }
+    });
+}
+
 // Arm/disarm a brush (mutually exclusive; clicking the armed one or Esc disarms).
+// The clone dedup session lives exactly as long as the clone brush stays armed.
 function setBrush(mode) {
   brushMode = brushMode === mode ? null : mode;
+  cloneSession = brushMode === 'clone' ? { map: new Map(), minted: new Set() } : null;
   tileLaneEl.classList.toggle('brush', !!brushMode);
   refreshTransformBar();
 }
@@ -684,16 +821,32 @@ function resetPlayer() {
 // transform chips (each clearable). One bar, two roles (tool palette + per-tile
 // readout). Built once; refreshTransformBar syncs state.
 const transformBarEl = document.getElementById('transformBar');
-let xbTransBtn, xbRevBtn, xbArmedEl, xbAmountEl, xbScaleSel, xbSelEl;
+let xbRippleBtn, xbTransBtn, xbRevBtn, xbCloneBtn, xbArmedEl, xbAmountEl, xbScaleSel, xbSelEl;
 
 function buildTransformBar() {
   transformBarEl.innerHTML = '';
   const mkBtn = (text, title, onclick) => { const b = document.createElement('button'); b.textContent = text; b.title = title; b.onclick = onclick; return b; };
 
+  // Ripple mode toggle (default OFF): governs insert AND delete. Off = tiles
+  // land exactly where dropped, overwriting what they overlap, and deletes
+  // leave a gap; on = the rigid ripple (clamp-left/push-right, close on delete).
+  xbRippleBtn = mkBtn('Ripple',
+    'Ripple mode — inserts push later tiles right and deletes close the gap. '
+    + 'Off (default): tiles land exactly where dropped, overwriting any tiles they overlap; deletes leave a gap.',
+    () => {
+      state.ripple = !state.ripple;
+      tilePlayer.rippleMode = state.ripple;
+      refreshTransformBar();
+      persist();
+    });
+  xbRippleBtn.className = 'tbtn';
+  const rippleSep = document.createElement('span');
+  rippleSep.className = 'tsep';
+
   xbTransBtn = document.createElement('button');
   xbTransBtn.className = 'xb-brush xf-transpose';
   xbTransBtn.textContent = 'Transpose';
-  xbTransBtn.title = 'Transpose brush — arm, then click or drag over tiles to transpose them (Esc disarms)';
+  xbTransBtn.title = 'Transpose brush — arm, then click or drag over tiles to transpose them. One use disarms; hold Shift to keep painting. Esc cancels a sweep in progress (or disarms).';
   xbTransBtn.onclick = () => setBrush('transpose');
 
   // Transpose's controls (amount + scale), shown only when it's armed.
@@ -713,20 +866,28 @@ function buildTransformBar() {
   xbRevBtn = document.createElement('button');
   xbRevBtn.className = 'xb-brush xf-reverse';
   xbRevBtn.textContent = '◄ Reverse';
-  xbRevBtn.title = 'Reverse brush — arm, then click or drag over tiles to reverse them (Esc disarms)';
+  xbRevBtn.title = 'Reverse brush — arm, then click or drag over tiles to reverse them. One use disarms; hold Shift to keep painting. Esc cancels a sweep in progress (or disarms).';
   xbRevBtn.onclick = () => setBrush('reverse');
+
+  xbCloneBtn = document.createElement('button');
+  xbCloneBtn.className = 'xb-brush xf-clone';
+  xbCloneBtn.textContent = 'Clone';
+  xbCloneBtn.title = 'Clone tool — arm, then click or drag over tiles: they diverge onto fresh copies of their patterns (tiles sharing a pattern share one new clone; the first tile’s clone opens in the grid). One use disarms; hold Shift to keep cloning — the sharing map persists while armed. Esc cancels a sweep in progress (or disarms).';
+  xbCloneBtn.onclick = () => setBrush('clone');
 
   xbSelEl = document.createElement('span');
   xbSelEl.className = 'xb-sel';
 
-  transformBarEl.append(xbTransBtn, xbArmedEl, xbRevBtn, xbSelEl);
+  transformBarEl.append(xbRippleBtn, rippleSep, xbTransBtn, xbArmedEl, xbRevBtn, xbCloneBtn, xbSelEl);
   refreshTransformBar();
 }
 
 function refreshTransformBar() {
   if (!xbTransBtn) return;
+  xbRippleBtn.classList.toggle('active', !!state.ripple);
   xbTransBtn.classList.toggle('active', brushMode === 'transpose');
   xbRevBtn.classList.toggle('active', brushMode === 'reverse');
+  xbCloneBtn.classList.toggle('active', brushMode === 'clone');
   xbArmedEl.style.display = brushMode === 'transpose' ? '' : 'none';
   xbAmountEl.textContent = (transposeOpts.amount > 0 ? '+' : '') + transposeOpts.amount;
   xbScaleSel.value = transposeOpts.scaleId;
@@ -1012,6 +1173,7 @@ function arrApply(json, full = false) {
     gain: l.gain == null ? 1 : l.gain, pan: l.pan == null ? 0 : l.pan, // mixer IS undoable
     delay: normalizeDelay(l.delay), // delay edits are undoable too
     chorus: normalizeChorus(l.chorus), // chorus edits are undoable too
+    modsByKind: normalizeModsByKind(l.modsByKind), // modulators restore too (modal edits are bracketed)
     patch: full ? normalizePatch(l.patch) : (livePatch.get(l.id) || normalizePatch(l.patch)),
     fresh: !!l.fresh,
   }));
@@ -1029,7 +1191,28 @@ function arrApply(json, full = false) {
 function arrUndo() { if (!arrPast.length) return; const e = arrPast.pop(); arrFuture.push({ snap: arrSnap(), full: e.full }); arrApply(e.snap, e.full); refresh(); }
 function arrRedo() { if (!arrFuture.length) return; const e = arrFuture.pop(); arrPast.push({ snap: arrSnap(), full: e.full }); arrApply(e.snap, e.full); refresh(); }
 
-function appendCurrentTile(laneId) {
+// Grid-drag landing preview: while the toolbar grab handle is dragged over a
+// track, show the prospective placement (landing band / doomed tiles, or the
+// rippled slot) — the same preview pipeline as tile drags. Cleared on the
+// handle's dragend (fires drop or no drop). Re-rendered only when the snapped
+// target changes (dragover fires very fast).
+let gridDragPreview = null;
+function gridDragOver(laneId, start) {
+  if (gridDragPreview && gridDragPreview.toLaneId === laneId && gridDragPreview.start === start) return;
+  gridDragPreview = { external: true, name: library.current().name, toLaneId: laneId, start };
+  tilePlayer.render(gridDragPreview);
+}
+function clearGridDragPreview() {
+  if (!gridDragPreview) return;
+  gridDragPreview = null;
+  tilePlayer.render();
+}
+
+// Drop the grid's current pattern at the dropped beat (was: append at the lane's
+// end, ignoring position — "the tile should go exactly where the user drops it").
+// Ripple mode ripple-opens; non-ripple overwrites whatever it overlaps.
+function dropCurrentTile(laneId, start) {
+  gridDragPreview = null;
   arrRecord();
   // Dropping into a FRESH lane (brand-new / just-reset) seeds it with the grid's
   // instrument (the patch you were just auditioning), so the tile sounds the way
@@ -1037,15 +1220,17 @@ function appendCurrentTile(laneId) {
   // Clone so the lane's patch doesn't alias (and keep being edited by) the grid's.
   const lane = arrangement.lane(laneId);
   if (lane && lane.fresh) lane.patch = clonePatch(gridPatch);
-  arrangement.append(laneId, library.current().name, patternLen);
+  arrangement.insertAt(laneId, library.current().name, start, patternLen, state.ripple);
   if (lane) lane.fresh = false; // the lane now has a tile
   arrangement.activeLaneId = laneId;
   refresh();
 }
+
 function deleteSelectedTile() {
   if (arrangement.selectedId == null) return;
   arrRecord();
-  arrangement.removeRipple(arrangement.selectedId, patternLen); // ripple-close the gap
+  if (state.ripple) arrangement.removeRipple(arrangement.selectedId, patternLen); // ripple-close the gap
+  else arrangement.remove(arrangement.selectedId);                                // leave the gap (silence)
   refresh();
 }
 
@@ -1053,15 +1238,16 @@ function deleteSelectedTile() {
 
 // Re-center the grid's pitch viewport on a pattern's notes, so opening one that
 // sits a couple of octaves away doesn't land off-screen. Best-effort: centers on
-// the note span's midpoint, clamped to the navigable range (C1..C8); leaves the
-// view untouched for an empty (note-less) pattern.
+// the note span's midpoint, clamped to the pattern's navigable range (the A0..C8
+// piano band in its tuning); leaves the view untouched for an empty pattern.
 function centerGridOn(pattern) {
   const degs = pattern.columns.filter((c) => !c.isRest).map((c) => c.degree);
   if (!degs.length) return;
   const mid = (Math.min(...degs) + Math.max(...degs)) / 2;
   const rows = state.visibleRows;
   const top = Math.round(mid + (rows - 1) / 2);
-  state.topDegree = Math.max(24 + rows - 1, Math.min(108, top)); // MIN_DEGREE/MAX_DEGREE in gridview.js
+  const { min, max } = degreeBounds(pattern.tuningId, pattern.root || 0);
+  state.topDegree = Math.max(min + rows - 1, Math.min(max, top));
 }
 
 function newOrRestore() {
@@ -1093,6 +1279,152 @@ function clearPattern() {
   pushHistory(before);
   arrangement.selectedId = null;
   refresh();
+}
+
+// --- New Random ---------------------------------------------------------
+//
+// A dialog that generates a NEW pattern (like New: parks the current one) from
+// random in-scale notes around the viewport's center, live-previewed on the grid.
+// Randomize re-rolls in place; Accept keeps it; Cancel/Esc restores the library
+// exactly as it was. Slider settings persist across uses (Reset = defaults).
+
+const RAND_KEY = 'notorolla.randgen';
+
+function openRandomModal() {
+  if (!library.canCreate()) return;
+  // Sanitize persisted settings (clamp each to its slider's range).
+  const saved = readJSON(RAND_KEY) || {};
+  const cl = (v, lo, hi, dflt) => (typeof v === 'number' && isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt);
+  const settings = {
+    unique: cl(saved.unique, 0, 1, RANDOM_DEFAULTS.unique),
+    run: cl(saved.run, -1, 1, RANDOM_DEFAULTS.run),
+    triad: cl(saved.triad, 0, 1, RANDOM_DEFAULTS.triad),
+  };
+
+  // Library snapshot for Cancel: names + counter + the current Pattern object
+  // itself (newPattern may evaporate an empty float — we re-add it on revert).
+  const prev = { currentName: library.currentName, parkedName: library.parkedName, counter: library.counter, pattern: library.current() };
+  const src = prev.pattern; // pitch context the generated pattern inherits
+  let genPattern = null;
+  let accepted = false;
+
+  const body = document.createElement('div');
+  body.className = 'delay-editor rand-editor';
+
+  // Slider rows. Each: label, range input, live value readout.
+  const sliders = [];
+  const row = (label, min, max, key, fmt, title) => {
+    const r = document.createElement('div');
+    r.className = 'delay-row';
+    const l = document.createElement('span');
+    l.className = 'delay-label'; l.textContent = label; if (title) r.title = title;
+    const input = document.createElement('input');
+    input.type = 'range'; input.min = String(min); input.max = String(max); input.step = '0.01';
+    input.value = String(settings[key]);
+    const val = document.createElement('span');
+    val.className = 'delay-val';
+    const show = () => { val.textContent = fmt(settings[key]); };
+    input.addEventListener('input', () => { settings[key] = +input.value; show(); });
+    show();
+    r.append(l, input, val);
+    body.append(r);
+    sliders.push({ key, input, show });
+  };
+  row('Unique', 0, 1, 'unique', (v) => `${Math.round(v * 100)}%`,
+    'How strictly pitches avoid repeating: 100% = never reuse a degree (a tone row); lower = repeats allowed.');
+  row('Run', -1, 1, 'run', (v) => (Math.abs(v) < 0.005 ? '0' : `${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}`),
+    'Stepwise-run tendency: 0 = none; toward + ascending runs, toward − descending; at the ends a single unbroken run.');
+  row('Triad', 0, 1, 'triad', (v) => (v < 0.005 ? 'no effect' : v > 0.995 ? 'max' : `${Math.round(v * 100)}%`),
+    'Harmonic bias: chance each note completes a triad (the Triadulator’s enabled families) with the two before it.');
+
+  // Generate into the preview pattern (created via the New flow on first use).
+  function doRandomize() {
+    if (!genPattern) {
+      genPattern = library.newPattern();
+      if (!genPattern) return;
+      // Inherit the source's pitch context (Pattern.initial resets it) so the
+      // random notes live in the tuning/scale you were just looking at.
+      genPattern.tuningId = src.tuningId; genPattern.scaleId = src.scaleId; genPattern.root = src.root;
+    }
+    const width = genPattern.columns.length;
+    const edo = edoOf(src.tuningId);
+    const families = familiesFor(edo).filter((id) => state.families[id]);
+    const chordKeys = new Set(chordsFor(edo, families).map((t) => t.pcs.join(',')));
+    const centroid = Math.round(state.topDegree - (state.visibleRows - 1) / 2);
+    const degrees = generateRandom({
+      count: width, centroid, scaleId: src.scaleId, root: src.root, edo,
+      bounds: degreeBounds(src.tuningId, src.root), chordKeys, settings,
+    });
+    // Fill every column with a brush-duration note; if the scale+range offered
+    // fewer degrees than columns (tiny masks), the remainder stays rests.
+    genPattern.columns = [];
+    for (let i = 0; i < width; i++) {
+      const has = i < degrees.length;
+      genPattern.columns.push({
+        durIndex: state.brush.durIndex, isRest: !has,
+        degree: has ? degrees[i] : (degrees[degrees.length - 1] ?? BASE_PITCH), accent: false,
+      });
+    }
+    acceptBtn.disabled = false;
+    audBtn.disabled = false;
+    refresh();
+  }
+
+  // Play the previewed pattern once through the grid's audition patch.
+  async function doAudition() {
+    if (!genPattern) return;
+    const score = genPattern.toScore(state.bpm, state.articulation);
+    const t0 = await engine.ensureRunning();
+    const spb = 60 / state.bpm;
+    for (const n of score.notes) {
+      engine.playNote(n.pitch, t0 + 0.06 + n.start * spb, n.duration * state.articulation * spb, n.velocity, n.freq, null);
+    }
+  }
+
+  // Cancel: put the library back exactly as it was (drop the generated pattern,
+  // restore current/parked/counter, re-add the old current if it evaporated).
+  function revert() {
+    if (!genPattern) return;
+    library.patterns.delete(genPattern.name);
+    library.patterns.set(prev.pattern.name, prev.pattern);
+    library.currentName = prev.currentName;
+    library.parkedName = prev.parkedName;
+    library.counter = prev.counter;
+    genPattern = null;
+    refresh();
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'delay-row rand-actions';
+  const mkbtn = (text, cls, title, fn) => {
+    const b = document.createElement('button');
+    b.className = cls; b.textContent = text; if (title) b.title = title;
+    b.addEventListener('click', fn);
+    actions.append(b);
+    return b;
+  };
+  mkbtn('Randomize', 'seg', 'Generate (or re-generate) a candidate — previewed live on the grid', doRandomize);
+  const audBtn = mkbtn('♪ Audition', 'seg', 'Play the previewed pattern once', doAudition);
+  audBtn.disabled = true;
+  mkbtn('Reset', 'seg', 'Restore the sliders to their defaults', () => {
+    Object.assign(settings, RANDOM_DEFAULTS);
+    for (const s of sliders) { s.input.value = String(settings[s.key]); s.show(); }
+  });
+  const spacer = document.createElement('span'); spacer.style.flex = '1';
+  actions.append(spacer);
+  const acceptBtn = mkbtn('Accept', 'stem-go', 'Keep this pattern', () => { accepted = true; modal.close(); });
+  acceptBtn.disabled = true;
+  mkbtn('Cancel', 'seg', 'Discard and restore the previous pattern', () => modal.close());
+  body.append(actions);
+
+  const modal = openModal({
+    title: 'New Random Pattern',
+    body,
+    onClose: () => {
+      safeSet(RAND_KEY, JSON.stringify(settings)); // settings persist across uses
+      if (!accepted) revert();
+    },
+  });
 }
 
 // --- Triadulator ------------------------------------------------------
@@ -1235,6 +1567,7 @@ function onToolbarChange(what) {
     case 'redo': redo(); return;
     case 'new': newOrRestore(); return;
     case 'clone': clonePattern(); return;
+    case 'random': openRandomModal(); return;
     case 'clear': clearPattern(); return;
     case 'triadulate': triadulate(); return;
     case 'confirmTriad': confirmTriadulation(); return;
@@ -1333,6 +1666,7 @@ function updateEditButtons() {
     tb.newBtn.disabled = !library.canCreate();
   }
   tb.cloneBtn.disabled = !library.canClone(); // independent of the parked slot
+  tb.randomBtn.disabled = !library.canCreate(); // same gating as New (it IS a New)
   const h = hist(library.currentName);
   tb.undoBtn.disabled = h.past.length === 0;
   tb.redoBtn.disabled = h.future.length === 0;
@@ -1362,7 +1696,8 @@ function persist() {
     bpm: state.bpm, brush: state.brush, mode: state.mode, audition: state.audition,
     cursor: state.cursor, highlightRows: state.highlightRows, showTriads: state.showTriads, proper: state.proper, families: state.families,
     topDegree: state.topDegree, visibleRows: state.visibleRows, activePane: state.activePane,
-    tileScaleIdx: state.tileScaleIdx, masterGain: state.masterGain,
+    tileScaleIdx: state.tileScaleIdx, masterGain: state.masterGain, modLoop: state.modLoop,
+    ripple: state.ripple,
   }));
   recomputeDirty();
 }
@@ -1552,7 +1887,7 @@ async function exportAudio() {
   }
   if (!notes.length) return;
   // Release tail: let the longest-releasing lane ring out fully.
-  const maxRelease = Math.max(gridPatch.release, ...arrangement.lanes.map((l) => l.patch.release));
+  const maxRelease = Math.max(patchRelease(gridPatch), ...arrangement.lanes.map((l) => patchRelease(l.patch)));
   const tail = Math.max(2.5, maxRelease * 6 + 0.5);
   const durSec = score.lengthBeats * spb + tail;
 
@@ -1572,6 +1907,122 @@ function setExporting(on) {
   exportProgEl.classList.toggle('on', on);
   audioExportBtn.textContent = on ? 'Rendering…' : 'Export Audio';
   audioExportBtn.disabled = on || arrangement.allTiles().length === 0;
+}
+
+// Make a string safe as a filename across OSes (no \ / : * ? " < > |, no control
+// chars, trimmed of trailing dots/spaces). Empty falls back to 'Track'.
+function safeFileName(s) {
+  const out = String(s).replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/[. ]+$/g, '').trim();
+  return out || 'Track';
+}
+
+// Export the arrangement as STEMS: one BWF (Broadcast Wave) per lane, bundled in
+// a zip. Every lane with notes is rendered (mute/solo ignored — you mute in the
+// DAW), all sharing one length + TimeReference 0 so they import aligned. The
+// bus mode (how much of the lane strip is baked in) is chosen in the dialog.
+let exportingStems = false;
+async function exportStems(busMode) {
+  if (exportingStems || arrangement.allTiles().length === 0) return;
+  const score = arrangementScore();
+  const spb = 60 / state.bpm;
+  // Group every note by lane (ignore n.muted: stems include muted lanes too).
+  const byLane = new Map();
+  for (const n of score.notes) {
+    let arr = byLane.get(n.laneId);
+    if (!arr) { arr = []; byLane.set(n.laneId, arr); }
+    arr.push({
+      pitch: n.pitch, time: n.start * spb, duration: n.duration * state.articulation * spb,
+      velocity: n.velocity, freq: n.freq, laneId: n.laneId,
+    });
+  }
+  if (byLane.size === 0) return;
+  // One shared duration (mix length + release tail) so all stems are equal-length.
+  const maxRelease = Math.max(patchRelease(gridPatch), ...arrangement.lanes.map((l) => patchRelease(l.patch)));
+  const tail = Math.max(2.5, maxRelease * 6 + 0.5);
+  const durSec = score.lengthBeats * spb + tail;
+  const proj = projectName || defaultName();
+
+  setExportingStems(true);
+  try {
+    const now = new Date();
+    const used = new Set();
+    const files = [];
+    for (let li = 0; li < arrangement.lanes.length; li++) {
+      const lane = arrangement.lanes[li];
+      const notes = byLane.get(lane.id);
+      if (!notes || !notes.length) continue;   // skip empty lanes
+      const buffer = await engine.renderStem(notes, durSec, lane.id, busMode);
+      const label = instrument(lane.patch && lane.patch.kind).label;
+      let base = safeFileName(`${String(li + 1).padStart(2, '0')} ${label}`);
+      let name = base, k = 2;                   // de-dup same-instrument lanes
+      while (used.has(name.toLowerCase())) name = `${base} (${k++})`;
+      used.add(name.toLowerCase());
+      const meta = {
+        description: `${proj} - lane ${li + 1} (${label})`,
+        originator: 'Notorolla', date: now, timeReferenceSamples: 0,
+      };
+      files.push({ name: `${name}.wav`, bytes: encodeBwf(buffer, meta) });
+    }
+    if (!files.length) return;
+    downloadBytes(`${safeFileName(proj)}-stems.zip`, zipStore(files, now), 'application/zip');
+  } catch (err) {
+    alert(`Stem export failed: ${err.message}`);
+  } finally {
+    setExportingStems(false);
+  }
+}
+
+function setExportingStems(on) {
+  exportingStems = on;
+  exportProgEl.classList.toggle('on', on);
+  stemExportBtn.textContent = on ? 'Rendering…' : 'Export Stems';
+  stemExportBtn.disabled = on || arrangement.allTiles().length === 0;
+}
+
+// The stem-export dialog: pick the bus mode, then render. Defaults to Dry.
+const STEM_MODES = [
+  { id: 'dry', label: 'Dry — pre-insert, pre-fader',
+    desc: 'Voice only: no volume, pan, chorus or delay. The driest stems — process them in the DAW.' },
+  { id: 'postfader', label: 'Post-fader — pre-limiter',
+    desc: 'Volume, pan, chorus & delay baked in; the master limiter is left off, so stems sum back to the mix.' },
+  { id: 'baked', label: 'Fully baked — incl. limiter',
+    desc: 'As post-fader, plus the master limiter. Each stem sounds as it does soloed in the mix, but stems no longer sum exactly.' },
+];
+function openStemModal() {
+  if (exportingStems || arrangement.allTiles().length === 0) return;
+  const body = document.createElement('div');
+  body.className = 'stem-export';
+  const intro = document.createElement('p');
+  intro.className = 'stem-intro';
+  intro.textContent = 'One Broadcast Wave (BWF) per lane, bundled in a zip. All stems share a start (TimeReference 0) so they import aligned. Choose how much of each lane’s strip to bake in:';
+  body.append(intro);
+
+  let chosen = 'dry';
+  for (const m of STEM_MODES) {
+    const row = document.createElement('label');
+    row.className = 'stem-mode';
+    const radio = document.createElement('input');
+    radio.type = 'radio'; radio.name = 'stemMode'; radio.value = m.id;
+    if (m.id === chosen) radio.checked = true;
+    radio.addEventListener('change', () => { if (radio.checked) chosen = m.id; });
+    const text = document.createElement('div');
+    text.className = 'stem-mode-text';
+    const t = document.createElement('div'); t.className = 'stem-mode-label'; t.textContent = m.label;
+    const d = document.createElement('div'); d.className = 'stem-mode-desc'; d.textContent = m.desc;
+    text.append(t, d);
+    row.append(radio, text);
+    body.append(row);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'stem-actions';
+  const go = document.createElement('button');
+  go.className = 'stem-go'; go.textContent = 'Export';
+  go.addEventListener('click', () => { modal.close(); exportStems(chosen); });
+  actions.append(go);
+  body.append(actions);
+
+  const modal = openModal({ title: 'Export Stems', body });
 }
 
 projNewBtn.addEventListener('click', newProject);
@@ -1636,11 +2087,49 @@ const arrRedoBtn = document.getElementById('arrRedo');
 const tileDeleteBtn = document.getElementById('tileDelete');
 const midiExportBtn = document.getElementById('midiExport');
 const audioExportBtn = document.getElementById('audioExport');
+const stemExportBtn = document.getElementById('stemExport');
 const exportProgEl = document.getElementById('exportProg');
+const modLoopBtn = document.getElementById('modLoop');
+const modClockEl = document.getElementById('modClock');
 const gridName = document.getElementById('gridName');
+
+// Global "Loop Mod" toggle: all modulators on ruler time (reset each loop pass)
+// vs elapsed time from the session's first Play. A workspace preference.
+modLoopBtn.className = 'tbtn' + (state.modLoop ? ' active' : '');
+modLoopBtn.addEventListener('click', () => {
+  state.modLoop = !state.modLoop;
+  modLoopBtn.classList.toggle('active', state.modLoop);
+  persist();
+});
+
+// The modulator clock (mm:ss.hh): shows the clock the mods actually read —
+// elapsed since the session's first Play (ticking even while stopped), or the
+// playhead's ruler time when Loop Mod is on. Cheap fixed interval; only writes
+// the DOM when the text changes.
+function modClockText() {
+  let sec;
+  if (state.modLoop) {
+    const beat = scheduler.isPlaying && activeSource === 'tiles'
+      ? playStartBeat() + scheduler.currentBeat
+      : playStartBeat();
+    sec = beat * (60 / state.bpm);
+  } else {
+    sec = engine.modEpoch != null ? Math.max(0, engine.currentTime - engine.modEpoch) : 0;
+  }
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  const h = Math.floor((sec % 1) * 100);
+  const p2 = (n) => String(n).padStart(2, '0');
+  return `${p2(m)}:${p2(s)}.${p2(h)}`;
+}
+setInterval(() => {
+  const t = modClockText();
+  if (modClockEl.textContent !== t) modClockEl.textContent = t;
+}, 50);
 
 midiExportBtn.addEventListener('click', exportMidi);
 audioExportBtn.addEventListener('click', exportAudio);
+stemExportBtn.addEventListener('click', openStemModal);
 document.getElementById('resetPlayer').addEventListener('click', resetPlayer);
 
 let rafId = null;
@@ -1680,6 +2169,9 @@ async function startTransport(source, loop) {
   if (source === 'tiles' && arrangement.allTiles().length === 0) return;
   setActive(source);
   const now = await engine.ensureRunning();
+  // The "elapsed" modulator clock's zero: the session's FIRST Play, counting up
+  // from there (later plays do NOT reset it — modulators keep evolving).
+  if (engine.modEpoch == null) engine.modEpoch = now;
   scheduler.stop();
   activeSource = source;
   if (source === 'tiles') applyLaneGains(0); // set mute/solo before the first note
@@ -1721,6 +2213,7 @@ function updateTransportButtons() {
   tileLoopBtn.disabled = !haveTiles;
   midiExportBtn.disabled = !haveTiles;
   audioExportBtn.disabled = exporting || !haveTiles;
+  stemExportBtn.disabled = exportingStems || !haveTiles;
 
   const gridLooping = activeSource === 'grid' && scheduler.isLooping;
   loopBtn.textContent = loopLabel(gridLooping);
@@ -1785,6 +2278,9 @@ tb.grabHandle.addEventListener('dragstart', (e) => {
   e.dataTransfer.setData('text/plain', 'pattern');
   e.dataTransfer.effectAllowed = 'copy';
 });
+// dragend always fires (drop or cancel) — the one reliable point to clear the
+// grid-drag landing preview.
+tb.grabHandle.addEventListener('dragend', () => clearGridDragPreview());
 
 tempo.value = state.bpm;
 tempoLabel.textContent = `${state.bpm} BPM`;
@@ -1934,7 +2430,11 @@ window.addEventListener('keydown', (e) => {
   if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
   const k = e.key.toLowerCase();
 
-  if (e.key === 'Escape') { if (brushMode) { disarmBrush(); return; } selectNone(); return; }
+  if (e.key === 'Escape') {
+    if (paintGestureActive) return; // a sweep in progress owns Esc (cancel, in paintGesture)
+    if (brushMode) { disarmBrush(); return; }
+    selectNone(); return;
+  }
 
   if (mod && k === 'z') { // undo / shift = redo
     e.preventDefault();

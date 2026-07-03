@@ -15,6 +15,7 @@ import { defaultPatch, normalizePatch } from './instrument.js';
 import { normalizeTransforms } from './transforms.js';
 import { defaultDelay, normalizeDelay } from './delay.js';
 import { defaultChorus, normalizeChorus } from './chorus.js';
+import { normalizeModsByKind } from './mods.js';
 
 export class PatternLibrary {
   // isReferenced(name) -> bool, supplied by the arrangement.
@@ -90,6 +91,16 @@ export class PatternLibrary {
     const p = this._add(src.clone(this._mint()));
     this.currentName = p.name;
     return p;
+  }
+
+  // Deep-copy an arbitrary pattern by name under a fresh minted name WITHOUT
+  // touching the current/parked editor state (the tile player's Clone tool: the
+  // copy is immediately referenced by the clicked tile, so the one-floating-
+  // pattern invariant is untouched). The caller decides whether to open it.
+  cloneOf(name) {
+    const src = this.patterns.get(name);
+    if (!src) return null;
+    return this._add(src.clone(this._mint()));
   }
 
   // Double-click a tile: focus the editor on that (referenced) pattern.
@@ -197,6 +208,7 @@ export class Arrangement {
     lane.delay = defaultDelay();
     lane.chorus = defaultChorus();
     lane.patch = defaultPatch();
+    lane.modsByKind = {};
     lane.fresh = true;
     if (this.selectedId != null && !this.allTiles().some((t) => t.id === this.selectedId)) this.selectedId = null;
   }
@@ -247,30 +259,55 @@ export class Arrangement {
     if (this.selectedId === id) this.selectedId = null;
   }
 
-  // Move a tile to beat `start` in `toLaneId`, then ripple-open the target (right
-  // side right by just enough to make room — 0 if it already fits). Repositioning
-  // *within* a lane just lifts the tile out (leaving its gap); moving *out* to a
-  // different lane ripple-closes the source (right side left by the tile's length).
-  // Keeps the tile's id so selection follows.
-  moveTile(id, toLaneId, start, lenOf) {
+  // Delete a tile WITHOUT rippling (non-ripple mode): later tiles stay put, the
+  // removed tile's span becomes a gap (silence).
+  remove(id) {
+    const lane = this.laneOfTile(id);
+    if (!lane) return;
+    const i = lane.tiles.findIndex((t) => t.id === id);
+    if (i >= 0) lane.tiles.splice(i, 1);
+    if (this.selectedId === id) this.selectedId = null;
+  }
+
+  // Insert a NEW tile of `name` at `start` in `laneId` — ripple mode uses the
+  // rigid ripple (clamp-left, push-right); non-ripple places it exactly there,
+  // overwriting whatever it overlaps. Returns the new tile.
+  insertAt(laneId, name, start, lenOf, ripple = true) {
+    const lane = this.lane(laneId);
+    if (!lane) return null;
+    const tile = { id: ++this.seq, name, start: 0 };
+    if (ripple) rippleInsertInto(lane.tiles, tile, start, lenOf);
+    else overwriteInsertInto(lane.tiles, tile, start, lenOf);
+    return tile;
+  }
+
+  // Move a tile to beat `start` in `toLaneId`. Ripple mode: ripple-open the
+  // target (right side right by just enough to make room — 0 if it already
+  // fits); repositioning *within* a lane just lifts the tile out (leaving its
+  // gap); moving *out* to a different lane ripple-closes the source. Non-ripple:
+  // the tile is lifted plainly (source keeps its gap either way) and lands
+  // exactly at `start`, overwriting whatever it overlaps. Keeps the tile's id so
+  // selection follows.
+  moveTile(id, toLaneId, start, lenOf, ripple = true) {
     const from = this.laneOfTile(id);
     const to = this.lane(toLaneId);
     if (!from || !to) return id;
     const tile = from.tiles.find((t) => t.id === id);
-    if (from === to) {
+    if (!ripple || from === to) {
       const i = from.tiles.indexOf(tile);
       if (i >= 0) from.tiles.splice(i, 1); // lift out, no ripple
     } else {
-      rippleRemoveFrom(from.tiles, tile, lenOf); // moving out ripple-closes the source
+      rippleRemoveFrom(from.tiles, tile, lenOf); // ripple mode: moving out closes the source
     }
-    rippleInsertInto(to.tiles, tile, start, lenOf);
+    if (ripple) rippleInsertInto(to.tiles, tile, start, lenOf);
+    else overwriteInsertInto(to.tiles, tile, start, lenOf);
     return id;
   }
 
   // Insert a shallow copy (new id, same pattern reference) at beat `start` in
-  // `toLaneId`, ripple-opening the target. The source is untouched. Returns the
-  // new tile id.
-  copyTile(id, toLaneId, start, lenOf) {
+  // `toLaneId` — ripple-opening the target, or (non-ripple) landing exactly there
+  // and overwriting. The source is untouched. Returns the new tile id.
+  copyTile(id, toLaneId, start, lenOf, ripple = true) {
     const src = this.allTiles().find((t) => t.id === id);
     const to = this.lane(toLaneId);
     if (!src || !to) return null;
@@ -278,7 +315,8 @@ export class Arrangement {
     // (cloned, not shared) — same pattern reference, same per-tile transforms.
     const tile = { id: ++this.seq, name: src.name, start: 0 };
     if (src.transforms) tile.transforms = src.transforms.map((t) => ({ ...t }));
-    rippleInsertInto(to.tiles, tile, start, lenOf);
+    if (ripple) rippleInsertInto(to.tiles, tile, start, lenOf);
+    else overwriteInsertInto(to.tiles, tile, start, lenOf);
     return tile.id;
   }
 
@@ -294,6 +332,7 @@ export class Arrangement {
         delay: l.delay, // per-lane delay insert
         chorus: l.chorus, // per-lane Juno chorus insert
         patch: l.patch, // the lane's instrument settings
+        modsByKind: l.modsByKind, // playback modulators, one pair per instrument kind
         fresh: !!l.fresh, // never-used lane (adopts a dropped tile's instrument)
       })),
       seq: this.seq,
@@ -313,11 +352,12 @@ export class Arrangement {
       id: l.id, tiles: l.tiles.map(tile), mute: !!l.mute, solo: !!l.solo,
       gain: l.gain == null ? 1 : l.gain, pan: l.pan == null ? 0 : l.pan,
       delay: normalizeDelay(l.delay), chorus: normalizeChorus(l.chorus), patch: normalizePatch(l.patch),
+      modsByKind: normalizeModsByKind(l.modsByKind),
       fresh: !!l.fresh, // optional; old saves default not-fresh (won't auto-seed)
     });
     const lanes = o.lanes
       ? o.lanes.map(lane)
-      : [{ id: 0, tiles: (o.tiles || []).map(tile), mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), chorus: defaultChorus(), patch: defaultPatch(), fresh: false }, newLane(1)];
+      : [{ id: 0, tiles: (o.tiles || []).map(tile), mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), chorus: defaultChorus(), patch: defaultPatch(), modsByKind: {}, fresh: false }, newLane(1)];
     const a = new Arrangement(lanes);
     a.seq = o.seq || 0;
     a.activeLaneId = o.activeLaneId ?? lanes[0].id;
@@ -331,7 +371,7 @@ export class Arrangement {
 // the instrument of the first tile dropped into it (from the grid, or the source
 // lane on a cross-lane move); it stops being fresh once it gets a tile OR its
 // instrument is edited, so a lane you set up and later emptied keeps its sound.
-function newLane(id) { return { id, tiles: [], mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), chorus: defaultChorus(), patch: defaultPatch(), fresh: true }; }
+function newLane(id) { return { id, tiles: [], mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), chorus: defaultChorus(), patch: defaultPatch(), modsByKind: {}, fresh: true }; }
 function sortLane(lane) { lane.tiles.sort((a, b) => a.start - b.start); }
 
 // --- tile positioning: rigid ripple --------------------------------------
@@ -368,4 +408,25 @@ export function rippleRemoveFrom(tiles, tile, lenOf) {
   const i = tiles.indexOf(tile);
   if (i >= 0) tiles.splice(i, 1);
   for (const t of tiles) if (t.start > tile.start) t.start -= len;
+}
+
+// Non-ripple insert: `tile` lands with its left edge EXACTLY at `start`; every
+// existing tile it overlaps is removed whole (tiles are atomic — no trimming),
+// everything else stays put. Returns the removed tiles (the drag preview marks
+// them doomed). Exported so the preview can compute the same overlaps.
+export function overwriteInsertInto(tiles, tile, start, lenOf) {
+  const s = Math.max(0, start);
+  const len = lenOf(tile.name);
+  const removed = [];
+  for (let i = tiles.length - 1; i >= 0; i--) {
+    const t = tiles[i];
+    if (t.start < s + len && s < t.start + lenOf(t.name)) {
+      removed.push(t);
+      tiles.splice(i, 1);
+    }
+  }
+  tile.start = s;
+  tiles.push(tile);
+  tiles.sort((a, b) => a.start - b.start);
+  return removed;
 }

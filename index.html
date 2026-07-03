@@ -159,6 +159,8 @@
     /* enum param dropdown (e.g. Tervik Algorithm): spans the control + value columns */
     .instr-sel { grid-column: 2 / 4; width: 100%; background: #181c24; color: #cbd2e0;
       border: 1px solid #313747; border-radius: 4px; padding: 0.18rem 0.3rem; font-size: 0.8rem; }
+    /* knob param (e.g. Tervik Fine): the rotary sits left in the control column */
+    .instr-knob-holder { display: flex; align-items: center; }
     .instr-val { color: #8a93a3; font-size: 0.78rem; text-align: right; font-variant-numeric: tabular-nums; }
     /* instrument selector */
     .instr-kind-sel { background: #11141c; color: #cbd2e0; border: 1px solid #2a3040; border-radius: 4px;
@@ -188,7 +190,7 @@
     }
     @keyframes prog-slide { from { transform: translateX(-110%); } to { transform: translateX(260%); } }
     /* Both lanes share one horizontal scroll + origin, so tiles align in time. */
-    .tile-lanes { --lane-head-w: 178px; display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; overflow-x: auto; }
+    .tile-lanes { --lane-head-w: 202px; display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; overflow-x: auto; }
     .lane { display: flex; align-items: stretch; width: max-content; }
     /* Beat ruler (sticky top): left spacer aligns with the lane heads, then a
        scrolling track of ticks/numbers carrying the play-region markers. */
@@ -244,6 +246,13 @@
     }
     .lane-chorus:hover { background: #272c38; color: #cbd2e0; }
     .lane-chorus.on { background: #1e3050; border-color: #3d5a80; color: #cfe0ff; }
+    /* Modulators "M" chiclet (its own column left of D/C, centered); lit violet when active. */
+    .lane-mod {
+      align-self: center; width: 20px; height: 20px; padding: 0; font-size: 0.74rem; font-weight: 700;
+      line-height: 1; border-radius: 4px; background: #20242e; color: #8a93a3; border: 1px solid #313747;
+    }
+    .lane-mod:hover { background: #272c38; color: #cbd2e0; }
+    .lane-mod.on { background: #35284a; border-color: #6a4f9a; color: #e0d0ff; }
     /* Modal (delay editor, future effect panels) */
     .modal-overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
       background: rgba(4, 6, 10, 0.62); }
@@ -263,6 +272,39 @@
     .seg { padding: 0.28rem 0.6rem; font-size: 0.82rem; border-radius: 4px; background: #20242e; color: #8a93a3; border: 1px solid #313747; }
     .seg:hover { background: #272c38; color: #cbd2e0; }
     .seg.on { background: #1e3050; border-color: #3d5a80; color: #cfe0ff; }
+    /* Modulator clock: mm:ss.hh readout in the tile-player controls. */
+    .mod-clock {
+      font-family: ui-monospace, Consolas, monospace; font-size: 0.8rem; color: #8a93a3;
+      background: #10131a; border: 1px solid #232936; border-radius: 4px;
+      padding: 0.22rem 0.5rem; min-width: 74px; text-align: center; align-self: center;
+    }
+    /* Modulators dialog: two mod sections of delay-style rows. */
+    .mod-editor { min-width: 420px; }
+    .mod-editor input[type="range"] { flex: 1; }
+    .mod-editor .delay-val { min-width: 64px; text-align: right; }
+    .mod-head { display: flex; align-items: center; gap: 0.6rem; padding-top: 0.35rem; border-top: 1px solid #1c2029; }
+    .mod-head:first-child { border-top: none; padding-top: 0; }
+    .mod-title { font-weight: 700; color: #cbd2e0; font-size: 0.85rem; flex: 1; }
+    .mod-loop { display: flex; align-items: center; gap: 0.35rem; color: #9aa1ad; font-size: 0.8rem; cursor: pointer; }
+    /* New Random dialog: slider rows (delay-row styles) + an actions row. */
+    .rand-editor { min-width: 380px; }
+    .rand-editor input[type="range"] { flex: 1; }
+    .rand-editor .delay-val { min-width: 62px; text-align: right; }
+    .rand-actions { gap: 0.4rem; margin-top: 0.2rem; }
+    .rand-actions .seg:disabled, .rand-actions .stem-go:disabled { opacity: 0.45; cursor: default; }
+    /* Stem-export dialog: bus-mode radio list + Export button. */
+    .stem-export { padding: 0.8rem; display: flex; flex-direction: column; gap: 0.6rem; max-width: 420px; }
+    .stem-intro { margin: 0; color: #9aa1ad; font-size: 0.82rem; line-height: 1.4; }
+    .stem-mode { display: flex; gap: 0.55rem; align-items: flex-start; padding: 0.45rem 0.5rem; border-radius: 6px;
+      border: 1px solid #232936; cursor: pointer; }
+    .stem-mode:hover { background: #171b23; border-color: #313747; }
+    .stem-mode input { margin-top: 0.15rem; }
+    .stem-mode-label { color: #cbd2e0; font-size: 0.85rem; font-weight: 600; }
+    .stem-mode-desc { color: #8a93a3; font-size: 0.78rem; line-height: 1.35; margin-top: 0.1rem; }
+    .stem-actions { display: flex; justify-content: flex-end; margin-top: 0.2rem; }
+    .stem-go { padding: 0.35rem 0.9rem; font-size: 0.85rem; border-radius: 5px; background: #1e3050;
+      color: #cfe0ff; border: 1px solid #3d5a80; cursor: pointer; }
+    .stem-go:hover { background: #264066; }
     /* Pan (top) + Gain (bottom) knobs: click + vertical-drag, dbl-click resets. */
     .lane-knobs { display: flex; flex-direction: column; gap: 5px; justify-content: center; align-items: center; }
     .lane-knob {
@@ -293,18 +335,25 @@
     }
     .lane-add-btn:hover { background: #272c38; color: #cbd2e0; }
     .lane.active-lane .lane-track { border-color: #3d5a80; background: #0e1422; }
-    .lane-track.drop { outline: 2px dashed #5aa9ff; outline-offset: -2px; }
     .tile-hint { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: #4a5160; font-size: 0.85rem; }
+    /* Non-ripple drop preview: a filled band over the exact landing span… */
+    .drop-band {
+      position: absolute; top: 0; bottom: 0; border-radius: 4px; pointer-events: none; z-index: 1;
+      background: rgba(90, 169, 255, 0.22); border: 1px solid rgba(90, 169, 255, 0.45);
+    }
+    /* …and the tiles that drop would overwrite: dimmed + red = marked for removal. */
+    .tile.doomed { opacity: 0.4; outline: 2px solid #d66a6a; outline-offset: 1px; }
     .tile {
       position: absolute; top: 2px; height: 52px; box-sizing: border-box; overflow: hidden;
       border: 1px solid #2a2f3d; border-radius: 6px; background: #11131a;
       cursor: pointer; line-height: 0; user-select: none; touch-action: none;
     }
     .tile:hover { border-color: #3a4150; }
-    /* prospective drop slot (drag preview) + the floating drag ghost's badge */
+    /* prospective drop slot (ripple-mode drag preview — a filled landing band,
+       matching .drop-band) + the floating drag ghost's badge */
     .tile-gap {
       position: absolute; top: 2px; height: 52px; box-sizing: border-box;
-      border: 2px dashed #5aa9ff; border-radius: 6px; background: rgba(90, 169, 255, 0.10);
+      border: 1px solid rgba(90, 169, 255, 0.45); border-radius: 6px; background: rgba(90, 169, 255, 0.22);
     }
     .ghost-badge {
       position: absolute; top: -7px; right: -7px; width: 18px; height: 18px;
@@ -337,14 +386,21 @@
     .tile-xform.xf-transpose { background: rgba(150, 110, 220, 0.55); }
     .tile-xform.xf-reverse { background: rgba(70, 175, 160, 0.55); color: #eafff8; }
     .tile-lanes.brush { cursor: cell; }
+    /* Live brush-gesture highlight: touched tiles outlined in the brush's colour. */
+    .tile.painted { outline: 2px solid #cbd2e0; outline-offset: 1px; z-index: 2; }
+    .tile.painted.pk-transpose { outline-color: #a07cde; }
+    .tile.painted.pk-reverse { outline-color: #5ec8b4; }
+    .tile.painted.pk-clone { outline-color: #e8a04e; }
     /* transform bar: the brush palette + armed-brush controls + selected-tile chips */
-    .transform-bar { display: flex; align-items: center; gap: 0.6rem; padding-top: 0.6rem; flex-wrap: wrap; font-size: 0.82rem; color: #aeb9d0; }
+    /* Sits between the controls row and the lanes (tool palette + selected tile's chips). */
+    .transform-bar { display: flex; align-items: center; gap: 0.6rem; padding-bottom: 0.6rem; flex-wrap: wrap; font-size: 0.82rem; color: #aeb9d0; }
     .transform-bar button { font-size: 0.82rem; padding: 0.28rem 0.6rem; }
     /* brush buttons: black-text-on-color swatch (color-keyed per transform), blue
        outline when armed (matches the note-duration brush buttons) */
     .xb-brush { color: #241c14; border: 1px solid rgba(0,0,0,0.3); font-weight: 600; }
     .xb-brush.xf-transpose, .xb-brush.xf-transpose:hover { background: #a07cde; }
     .xb-brush.xf-reverse, .xb-brush.xf-reverse:hover { background: #5ec8b4; }
+    .xb-brush.xf-clone, .xb-brush.xf-clone:hover { background: #e8a04e; }
     .xb-brush.active { outline: 2px solid #5aa9ff; outline-offset: 1px; }
     .xb-armed { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.1rem 0.5rem; border: 1px solid #3a3350; border-radius: 4px; background: rgba(150,110,220,0.08); }
     .xb-amt-val { min-width: 2.4rem; text-align: center; font-variant-numeric: tabular-nums; color: #cbd2e0; font-weight: 700; }
@@ -412,16 +468,20 @@
           <button id="tilePlay" title="Play the lane once">▶</button>
           <button id="tileStop" disabled>■</button>
           <button id="tileLoop" title="Loop — tap to add passes (max 8)">↻</button>
+          <button id="modLoop" title="Loop Mod — modulators follow ruler time (phase resets each loop pass). Off: modulators run on elapsed time from the session’s first Play.">Loop Mod</button>
           <span class="tsep"></span>
+          <span id="modClock" class="mod-clock" title="Modulator clock — elapsed time since the session’s first Play (or ruler time when Loop Mod is on)">00:00.00</span>
           <button id="arrUndo">Undo</button>
           <button id="arrRedo">Redo</button>
           <button id="tileDelete">Delete</button>
           <span class="tsep"></span>
           <button id="midiExport" title="Export the arrangement as a Standard MIDI file">Export MIDI</button>
           <button id="audioExport" title="Render the arrangement to a WAV audio file">Export Audio</button>
+          <button id="stemExport" title="Render each lane to its own Broadcast Wave (BWF) stem, bundled as a zip">Export Stems</button>
           <span id="exportProg" class="export-prog" title="Rendering…"></span>
           <button id="resetPlayer" class="danger" title="Reset the tile player to two empty lanes (undoable)" style="margin-left:auto">Reset player</button>
         </div>
+        <div id="transformBar" class="transform-bar"></div>
         <div id="tileLane" class="tile-lanes"></div>
         <div class="tile-scale">
           <span class="ts-end">smaller</span>
@@ -430,7 +490,6 @@
           <button id="tileZoomIn" title="Zoom in (bigger tiles)">+</button>
           <span class="ts-end">bigger</span>
         </div>
-        <div id="transformBar" class="transform-bar"></div>
       </div>
     </section>
 

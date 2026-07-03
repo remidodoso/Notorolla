@@ -29,7 +29,10 @@ export function buildToolbar(el, state, onChange) {
   newBtn.onclick = () => onChange('new');
   const cloneBtn = button('Clone');
   cloneBtn.onclick = () => onChange('clone');
-  el.append(newBtn, cloneBtn, sep());
+  const randomBtn = button('New Random');
+  randomBtn.title = 'Create a new pattern from random in-scale notes (a dialog previews candidates before you accept)';
+  randomBtn.onclick = () => onChange('random');
+  el.append(newBtn, cloneBtn, randomBtn, sep());
 
   // Per-pattern undo/redo.
   const undoBtn = button('Undo');
@@ -237,7 +240,7 @@ export function buildToolbar(el, state, onChange) {
     for (const b of familyBox.children) b.classList.toggle('active', !!state.families[b._family]);
   }
   refresh();
-  return { refresh, setRootOptions, setScaleOptions, setFamilyButtons, setCols, grabHandle, newBtn, cloneBtn, undoBtn, redoBtn, clearBtn, triadBtn, confirmBtn, properBtn, rotateBtn, reverseBtn, sortAscBtn, sortDescBtn, shuffleBtn, shuffleNoRepBtn, transUpBtn, transDownBtn, tuningSel, scaleSel, rootSel };
+  return { refresh, setRootOptions, setScaleOptions, setFamilyButtons, setCols, grabHandle, newBtn, cloneBtn, randomBtn, undoBtn, redoBtn, clearBtn, triadBtn, confirmBtn, properBtn, rotateBtn, reverseBtn, sortAscBtn, sortDescBtn, shuffleBtn, shuffleNoRepBtn, transUpBtn, transDownBtn, tuningSel, scaleSel, rootSel };
 }
 
 function button(text) {

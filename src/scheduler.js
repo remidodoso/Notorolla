@@ -126,7 +126,10 @@ export class Scheduler {
         // Every note is scheduled (even from muted lanes) and routed by laneId;
         // Mute/Solo is applied downstream by the lane's gain bus, so it acts in
         // real time on present tails and future notes alike (no re-snapshot).
-        this.engine.playNote(note.pitch, noteTime, note.duration * this.articulation * this.spb, note.velocity, note.freq, note.laneId);
+        // rulerBeat = the note's absolute timeline position (set by the score
+        // builder; survives region windowing) — the "Loop Mod" time anchor.
+        this.engine.playNote(note.pitch, noteTime, note.duration * this.articulation * this.spb, note.velocity, note.freq, note.laneId,
+          (note.rulerBeat != null ? note.rulerBeat : note.start) * this.spb);
         this.nextIndex++;
       }
 
