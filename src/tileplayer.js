@@ -28,7 +28,9 @@ const RULER_H = 20;     // beat-ruler height (px)
 const GRAB = 8;         // px radius for grabbing a ruler marker handle
 
 export class TilePlayer {
-  // cb: onTileDown(id, pointerEvent), onOpen(name, id),
+  // cb: onTileDown(id, pointerEvent) — all tile clicks/drags (main detects
+  //       double-click itself: renders rebuild the element mid-gesture, so the
+  //       native dblclick event can't be relied on),
   //     onGridDragOver(laneId, startBeat) / onDropAt(laneId, startBeat) — the
   //       grid-pattern drag: live landing preview + position-honoring drop,
   //     onMarqueeStart() / onMarquee(laneId, b0, b1) / onMarqueeEnd(laneId,
@@ -205,8 +207,12 @@ export class TilePlayer {
       delayBtn.textContent = 'D';
       delayBtn.title = 'Delay (per lane)';
       delayBtn.onclick = () => this.cb.onDelay(lane.id);
-      // Modulators: "M" chiclet (lit when the current instrument has an active
-      // mod), left of the D/C stack, vertically centered.
+      const reverbBtn = document.createElement('button');
+      reverbBtn.className = 'lane-reverb' + (lane.reverb && lane.reverb.on ? ' on' : '');
+      reverbBtn.textContent = 'R';
+      reverbBtn.title = 'Reverb (per lane insert — gated, ambience, room…)';
+      reverbBtn.onclick = () => this.cb.onReverb(lane.id);
+      // Modulators: "M" chiclet (lit when the current instrument has an active mod).
       const modBtn = document.createElement('button');
       modBtn.className = 'lane-mod' + (modsActive(lane.modsByKind, lane.patch && lane.patch.kind) ? ' on' : '');
       modBtn.textContent = 'M';
@@ -240,15 +246,15 @@ export class TilePlayer {
       const muteBtn = laneToggle('M', 'mute', lane.mute, 'Mute this lane', () => this.cb.onMute(lane.id));
       const soloBtn = laneToggle('S', 'solo', lane.solo, 'Solo this lane', () => this.cb.onSolo(lane.id));
       ms.append(muteBtn, soloBtn);
-      // Stack the effect buttons in one narrow column: Delay on top, Chorus under;
-      // the Mod chiclet sits alone to their left (centered until a sibling comes).
-      const fx = document.createElement('div');
-      fx.className = 'lane-fx';
-      fx.append(delayBtn, chorusBtn);
-      const modCol = document.createElement('div');
-      modCol.className = 'lane-fx lane-modcol';
-      modCol.append(modBtn);
-      head.append(stripe, resetBtn, info, modCol, fx, knobs, ms);
+      // Effect chiclets, a 2×2 grid (user's layout):  M C
+      //                                               D R
+      const fx1 = document.createElement('div');
+      fx1.className = 'lane-fx';
+      fx1.append(modBtn, delayBtn);
+      const fx2 = document.createElement('div');
+      fx2.className = 'lane-fx';
+      fx2.append(chorusBtn, reverbBtn);
+      head.append(stripe, resetBtn, info, fx1, fx2, knobs, ms);
 
       const track = document.createElement('div');
       track.className = 'lane-track';
@@ -339,7 +345,6 @@ export class TilePlayer {
           }
 
           el.addEventListener('pointerdown', (ev) => this.cb.onTileDown(t.id, ev));
-          el.addEventListener('dblclick', () => this.cb.onOpen(t.name, t.id));
           track.append(el);
           this._tileEls.set(t.id, el);
         }

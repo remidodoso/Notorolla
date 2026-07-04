@@ -96,6 +96,16 @@
     .pane-body { padding: 0.7rem; position: relative; }
     .canvas-scroll { overflow-x: auto; }
     canvas { display: block; border-radius: 6px; }
+    /* roll: pitch-label gutter pinned to the pane's left edge while the canvas
+       scrolls under it (its negative margin-right — set from code, it's the
+       dynamic gutter width — gives it zero net layout width).
+       FIXED viewport height, scrolling inside: the canvas height follows the
+       content's pitch span, and letting it drive the pane height made the page
+       layout shift (grid pane "jumping into view") every time the roll's score
+       switched (pane activation, stop after windowed playback). flex-start so
+       the canvases keep their intrinsic height instead of stretching. */
+    .roll-scroll { display: flex; align-items: flex-start; height: 400px; overflow: auto; }
+    #rollGutter { position: sticky; left: 0; z-index: 2; border-radius: 6px 0 0 6px; }
 
     /* grid resize handle + interim guide */
     .grid-resize {
@@ -258,6 +268,13 @@
     }
     .lane-mod:hover { background: #272c38; color: #cbd2e0; }
     .lane-mod.on { background: #35284a; border-color: #6a4f9a; color: #e0d0ff; }
+    /* Insert-reverb "R" chiclet (under "C"); lit warm when on. */
+    .lane-reverb {
+      align-self: center; width: 20px; height: 20px; padding: 0; font-size: 0.74rem; font-weight: 700;
+      line-height: 1; border-radius: 4px; background: #20242e; color: #8a93a3; border: 1px solid #313747;
+    }
+    .lane-reverb:hover { background: #272c38; color: #cbd2e0; }
+    .lane-reverb.on { background: #4a3a26; border-color: #8a6a3a; color: #f0dcc0; }
     /* Modal (delay editor, future effect panels) */
     .modal-overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
       background: rgba(4, 6, 10, 0.62); }
@@ -538,7 +555,17 @@
     <section class="pane" data-pane="roll">
       <div class="pane-header"><span class="grip">⠿</span> Piano roll</div>
       <div class="pane-body">
-        <div class="canvas-scroll" id="rollScroll"><canvas id="roll"></canvas></div>
+        <div class="canvas-scroll roll-scroll" id="rollScroll"><canvas id="rollGutter"></canvas><canvas id="roll"></canvas></div>
+        <div class="tile-scale">
+          <span class="ts-end">V</span>
+          <button id="rollVOut" title="Zoom out vertically (shorter lanes)">−</button>
+          <input id="rollVScale" type="range" min="0" max="6" step="1" value="4" title="Piano-roll vertical scale (px per semitone)" />
+          <button id="rollVIn" title="Zoom in vertically (taller lanes)">+</button>
+          <span class="ts-end" style="margin-left:1rem">H</span>
+          <button id="rollHOut" title="Zoom out horizontally (narrower beats)">−</button>
+          <input id="rollHScale" type="range" min="0" max="4" step="1" value="3" title="Piano-roll horizontal scale (px per beat)" />
+          <button id="rollHIn" title="Zoom in horizontally (wider beats)">+</button>
+        </div>
       </div>
     </section>
 

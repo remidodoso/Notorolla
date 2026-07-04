@@ -14,12 +14,34 @@
 // never consults its pcs). The 16-ET masks are Mavila: a chain of the flat ~675¢
 // fifth (9 steps) gives the anti-diatonic Mavila[7] (2 2 2 3 2 2 3) and its
 // pentatonic — the natural xen "diatonic" of 16-ET.
+// The 12-ET group runs: the diatonic modes (major + its rotations, then the two
+// altered minors), the SYMMETRIC scales (whole-tone / octatonic / augmented — the
+// ones that make scale-STEP transposition warp most strikingly, since their even
+// spacing shifts every interval quality at once), blues, then the pentatonics.
+// Symmetric scales repeat under transposition (whole-tone has 2 transpositions,
+// octatonic 3, augmented 4) which is exactly why they're such good "atonal harmony"
+// engines. The 16-ET masks are Mavila: a chain of the flat ~675¢ fifth (9 steps)
+// gives the anti-diatonic Mavila[7] (2 2 2 3 2 2 3) and its pentatonic.
 export const SCALES = [
-  { id: 'chromatic',   name: 'Chromatic',         edo: null, pcs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },
-  { id: 'major-pent',  name: 'Major pentatonic',  edo: 12,   pcs: [0, 2, 4, 7, 9] },
-  { id: 'minor-pent',  name: 'Minor pentatonic',  edo: 12,   pcs: [0, 3, 5, 7, 10] },
-  { id: 'mavila7',     name: 'Mavila (7)',        edo: 16,   pcs: [0, 2, 4, 6, 9, 11, 13] },
-  { id: 'mavila-pent', name: 'Mavila pentatonic', edo: 16,   pcs: [0, 2, 4, 9, 11] },
+  { id: 'chromatic',      name: 'Chromatic',         edo: null, pcs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] },
+  { id: 'major',          name: 'Major (Ionian)',    edo: 12,   pcs: [0, 2, 4, 5, 7, 9, 11] },
+  { id: 'dorian',         name: 'Dorian',            edo: 12,   pcs: [0, 2, 3, 5, 7, 9, 10] },
+  { id: 'phrygian',       name: 'Phrygian',          edo: 12,   pcs: [0, 1, 3, 5, 7, 8, 10] },
+  { id: 'lydian',         name: 'Lydian',            edo: 12,   pcs: [0, 2, 4, 6, 7, 9, 11] },
+  { id: 'mixolydian',     name: 'Mixolydian',        edo: 12,   pcs: [0, 2, 4, 5, 7, 9, 10] },
+  { id: 'minor',          name: 'Minor (Aeolian)',   edo: 12,   pcs: [0, 2, 3, 5, 7, 8, 10] },
+  { id: 'locrian',        name: 'Locrian',           edo: 12,   pcs: [0, 1, 3, 5, 6, 8, 10] },
+  { id: 'harmonic-minor', name: 'Harmonic minor',    edo: 12,   pcs: [0, 2, 3, 5, 7, 8, 11] },
+  { id: 'melodic-minor',  name: 'Melodic minor',     edo: 12,   pcs: [0, 2, 3, 5, 7, 9, 11] },
+  { id: 'whole-tone',     name: 'Whole-tone',        edo: 12,   pcs: [0, 2, 4, 6, 8, 10] },
+  { id: 'octatonic-wh',   name: 'Octatonic (W–H)',   edo: 12,   pcs: [0, 2, 3, 5, 6, 8, 9, 11] },
+  { id: 'octatonic-hw',   name: 'Octatonic (H–W)',   edo: 12,   pcs: [0, 1, 3, 4, 6, 7, 9, 10] },
+  { id: 'augmented',      name: 'Augmented',         edo: 12,   pcs: [0, 3, 4, 7, 8, 11] },
+  { id: 'blues',          name: 'Blues (minor)',     edo: 12,   pcs: [0, 3, 5, 6, 7, 10] },
+  { id: 'major-pent',     name: 'Major pentatonic',  edo: 12,   pcs: [0, 2, 4, 7, 9] },
+  { id: 'minor-pent',     name: 'Minor pentatonic',  edo: 12,   pcs: [0, 3, 5, 7, 10] },
+  { id: 'mavila7',        name: 'Mavila (7)',        edo: 16,   pcs: [0, 2, 4, 6, 9, 11, 13] },
+  { id: 'mavila-pent',    name: 'Mavila pentatonic', edo: 16,   pcs: [0, 2, 4, 9, 11] },
 ];
 
 export function scaleById(id) {

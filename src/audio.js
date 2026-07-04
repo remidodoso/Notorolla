@@ -12,6 +12,7 @@
 import { degreeToFreq } from './tuning.js';
 import { defaultPatch } from './instrument.js';
 import { applyMods } from './mods.js';
+import { reverbSeconds, MAX_PREDELAY } from './reverb.js';
 
 // Relative amplitudes of the harmonic partials (1st = fundamental).
 // A gentle 1/k-ish rolloff: present enough upper harmonics for definition,
@@ -194,6 +195,8 @@ export class AudioEngine {
     // Resolve a lane's chorus insert config { on, mode } (mode = Juno I/II/I+II;
     // rate/depth are fixed presets in buildChorusInsert). { on:false } = no chorus.
     this.laneChorus = () => ({ on: false });
+    // Resolve a lane's insert-reverb config { on, mode, size, wet, damp, predelay }.
+    this.laneReverb = () => ({ on: false });
     // The fallback instrument patch (factory Vesperia). Real playback resolves
     // the patch PER LANE via patchFor: each arrangement lane owns its own patch,
     // and un-laned sound (grid audition) gets the grid/neutral patch. main.js
@@ -222,12 +225,12 @@ export class AudioEngine {
   }
 
   // The lane's mixer strip, created lazily and initialized from the resolvers:
-  //   volume -> panner -> [chorus insert] -> [delay insert] -> gate(mute) -> master
+  //   volume -> panner -> [chorus] -> [delay] -> [reverb] -> gate(mute) -> master
   // Pan is BEFORE the inserts (so ping-pong's hard-L/R and the chorus's stereo
   // aren't re-panned) and the mute gate is LAST (so mute is instant, yet the
   // inserts keep running while muted and unmute reveals their tails). The inserts
-  // are an ordered chain (chorus then delay); _relink rebuilds the edges between
-  // the panner, whichever inserts are active, and the gate. null laneId → laneBus.
+  // are an ordered chain (chorus, delay, reverb last); _relink rebuilds the edges
+  // between the panner, whichever inserts are active, and the gate. null laneId → laneBus.
   laneStrip(laneId) {
     let s = this.laneStrips.get(laneId);
     if (!s) {
@@ -236,13 +239,15 @@ export class AudioEngine {
       const panner = this.ctx.createStereoPanner(); panner.pan.value = m.pan;
       const gate = this.ctx.createGain(); gate.gain.value = 1;
       volume.connect(panner); panner.connect(gate); gate.connect(this.master);
-      s = { volume, panner, gate, chorus: null, chorusMode: null, delay: null, delayMode: null };
+      s = { volume, panner, gate, chorus: null, chorusMode: null, delay: null, delayMode: null, reverb: null, reverbKey: null };
       this.laneStrips.set(laneId, s);
       const ch = this.laneChorus(laneId);
       if (ch && ch.on) { s.chorus = buildChorusInsert(this.ctx, ch.mode); s.chorusMode = ch.mode; }
       const cfg = this.laneDelay(laneId);
       if (cfg && cfg.on) { s.delay = buildDelayInsert(this.ctx, cfg.mode); s.delayMode = cfg.mode; s.delay.setTime(cfg.timeSec); s.delay.setWet(cfg.wet); s.delay.setFeedback(cfg.feedback); }
-      if (s.chorus || s.delay) this._relink(s);
+      const rv = this.laneReverb(laneId);
+      if (rv && rv.on) { s.reverb = buildReverbInsert(this.ctx, rv); s.reverbKey = reverbShapeKey(rv); }
+      if (s.chorus || s.delay || s.reverb) this._relink(s);
     }
     return s;
   }
@@ -256,6 +261,7 @@ export class AudioEngine {
     for (const s of this.laneStrips.values()) {
       if (s.chorus) { try { s.chorus.dispose(); } catch (e) { /* already gone */ } }
       if (s.delay) { try { s.delay.dispose(); } catch (e) { /* already gone */ } }
+      if (s.reverb) { try { s.reverb.dispose(); } catch (e) { /* already gone */ } }
       s.volume.disconnect();
       s.panner.disconnect();
       s.gate.disconnect();
@@ -263,16 +269,19 @@ export class AudioEngine {
     this.laneStrips.clear();
   }
 
-  // Rebuild the insert-chain edges: panner -> [chorus] -> [delay] -> gate, skipping
-  // whichever inserts are absent. Only the edges between neighbors are touched; the
-  // inserts' internal nodes (delay buffers/feedback, chorus LFOs) keep running, so
-  // re-linking on one insert's change doesn't disturb the other's tail.
+  // Rebuild the insert-chain edges: panner -> [chorus] -> [delay] -> [reverb] ->
+  // gate, skipping whichever inserts are absent (reverb LAST — it reverberates
+  // the echoes, the conventional order). Only the edges between neighbors are
+  // touched; the inserts' internal nodes (delay buffers/feedback, chorus LFOs,
+  // convolver tails) keep running, so re-linking on one insert's change doesn't
+  // disturb the others' tails.
   _relink(strip) {
     strip.panner.disconnect();
     if (strip.chorus) strip.chorus.output.disconnect();
     if (strip.delay) strip.delay.output.disconnect();
+    if (strip.reverb) strip.reverb.output.disconnect();
     let head = strip.panner;
-    for (const ins of [strip.chorus, strip.delay]) {
+    for (const ins of [strip.chorus, strip.delay, strip.reverb]) {
       if (!ins) continue;
       head.connect(ins.input);
       head = ins.output;
@@ -310,6 +319,22 @@ export class AudioEngine {
       this._relink(strip);
     }
     if (strip.delay) { strip.delay.setTime(cfg.timeSec); strip.delay.setWet(cfg.wet); strip.delay.setFeedback(cfg.feedback); }
+  }
+
+  // (Re)configure a lane's insert reverb: an IR-shape change (mode/size/damp)
+  // rebuilds the convolver (the IR is baked per settings); wet/predelay are
+  // live parameters. main calls this on a modal edit and after load/undo.
+  applyLaneReverb(laneId) {
+    if (!this.ctx) return;
+    const strip = this.laneStrip(laneId);
+    const cfg = this.laneReverb(laneId);
+    const want = cfg && cfg.on ? reverbShapeKey(cfg) : null;
+    if (strip.reverbKey !== want) {
+      if (strip.reverb) { strip.reverb.dispose(); strip.reverb = null; strip.reverbKey = null; }
+      if (want) { strip.reverb = buildReverbInsert(this.ctx, cfg); strip.reverbKey = want; }
+      this._relink(strip);
+    }
+    if (strip.reverb) { strip.reverb.setWet(cfg.wet); strip.reverb.setPredelay(cfg.predelay); }
   }
 
   // The destination a lane's voices connect to: its strip input (the volume
@@ -470,7 +495,7 @@ export class AudioEngine {
         const volume = oac.createGain(); volume.gain.value = m.gain;
         const panner = oac.createStereoPanner(); panner.pan.value = m.pan;
         volume.connect(panner);
-        // Mirror the live insert chain panner -> [chorus] -> [delay] -> master.
+        // Mirror the live insert chain panner -> [chorus] -> [delay] -> [reverb] -> master.
         let head = panner;
         const ch = this.laneChorus(laneId);
         if (ch && ch.on) { const ci = buildChorusInsert(oac, ch.mode); head.connect(ci.input); head = ci.output; }
@@ -480,6 +505,8 @@ export class AudioEngine {
           ins.setTime(d.timeSec); ins.setWet(d.wet); ins.setFeedback(d.feedback);
           head.connect(ins.input); head = ins.output;
         }
+        const rv = this.laneReverb(laneId);
+        if (rv && rv.on) { const ri = buildReverbInsert(oac, rv); head.connect(ri.input); head = ri.output; }
         head.connect(master);
         s = volume; strips.set(laneId, s);
       }
@@ -535,6 +562,8 @@ export class AudioEngine {
         ins.setTime(d.timeSec); ins.setWet(d.wet); ins.setFeedback(d.feedback);
         h.connect(ins.input); h = ins.output;
       }
+      const rv = this.laneReverb(laneId);
+      if (rv && rv.on) { const ri = buildReverbInsert(oac, rv); h.connect(ri.input); h = ri.output; }
       h.connect(head);
       dest = volume;
     }
@@ -1432,5 +1461,105 @@ function buildChorusInsert(ctx, mode) {
       lfos.forEach((o) => { try { o.stop(); } catch (e) { /* already stopped */ } });
       nodes.concat(lfos).forEach((n) => n.disconnect());
     },
+  };
+}
+
+// --- insert reverb: a convolver over a SYNTHESIZED impulse response --------
+//
+// The IR is decaying noise shaped per mode — no samples. The gate in "gated"
+// mode lives in the IR itself (dense burst, hard cut, 2 ms anti-click fade);
+// "ambience" is early reflections only; "spring" fakes dispersion with a
+// periodic flutter + heavy damping. Damping is a one-pole lowpass whose
+// coefficient tightens along the tail (highs die first, like air). The noise
+// is SEEDED from the settings, so the live context and every offline export
+// build the bit-identical IR (bounces match playback, re-exports reproduce).
+// ConvolverNode.normalize (default true) equalizes IR energy, so Wet stays
+// comparable across sizes/modes.
+
+// Deterministic PRNG (mulberry32) for the IR noise.
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// The settings that change the IR's SHAPE (wet/predelay are live params).
+function reverbShapeKey(cfg) {
+  return `${cfg.mode}|${cfg.size.toFixed(3)}|${cfg.damp.toFixed(3)}`;
+}
+
+function reverbIR(ctx, cfg) {
+  const sr = ctx.sampleRate;
+  const dur = reverbSeconds(cfg);
+  const n = Math.max(sr * 0.01, Math.round(dur * sr));
+  const buf = ctx.createBuffer(2, n, sr);
+  const fadeN = Math.max(1, Math.round(0.002 * sr)); // gated's anti-click cut
+  // Plate reads brighter (metal, not air): damping bites at half strength.
+  const damp = cfg.damp * (cfg.mode === 'plate' ? 0.5 : 1) * (cfg.mode === 'spring' ? 1.4 : 1);
+  let seed = 2166136261;
+  for (const chch of cfg.mode) seed = Math.imul(seed ^ chch.charCodeAt(0), 16777619);
+  seed = (seed ^ Math.round(cfg.size * 1000) * 2654435761) >>> 0;
+  seed = (seed ^ Math.round(cfg.damp * 1000) * 40503) >>> 0;
+  for (let chn = 0; chn < 2; chn++) {
+    const data = buf.getChannelData(chn);
+    const rnd = mulberry32(seed + chn * 0x9e3779b9); // decorrelated channels = width
+    let lp = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / n; // 0..1 through the IR
+      let env;
+      switch (cfg.mode) {
+        case 'gated':
+          env = 1 - 0.35 * t;                                  // near-flat burst…
+          if (i > n - fadeN) env *= (n - i) / fadeN;           // …hard-cut (the gate)
+          break;
+        case 'ambience': env = Math.pow(10, -2 * t); break;    // fast, tight (−40 dB)
+        case 'spring':
+          env = Math.pow(10, -3 * t) * (0.55 + 0.45 * Math.cos((2 * Math.PI * i) / (0.055 * sr)));
+          break; // −60 dB decay with an ~18 Hz "boing" flutter
+        default: env = Math.pow(10, -3 * t);                   // room/hall/plate: −60 dB decay
+      }
+      const white = rnd() * 2 - 1;
+      // One-pole lowpass whose coefficient falls along the tail: more damp =
+      // darker, and the tail darkens faster than the onset (like a real room).
+      const a = Math.max(0.02, 1 - damp * (0.35 + 0.65 * t));
+      lp += a * (white - lp);
+      data[i] = lp * env;
+    }
+  }
+  return buf;
+}
+
+// Wet law: the convolver's normalization equalizes total ENERGY, so a
+// transient's reverb — smeared across the whole IR — reads several times
+// quieter than the dry hit; unity wet is far too subtle (user: a full-up gate
+// on a snare should go "Tssst"). Square law up to ×6: mid-travel stays
+// mixable, the top is reverb-dominated (the master limiter backstops).
+const reverbWetGain = (w) => w * w * 6;
+
+// The insert: dry passes through untouched (keeps its pan);
+// wet = predelay -> convolver(synth IR) -> wet gain.
+function buildReverbInsert(ctx, cfg) {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  const dry = ctx.createGain();
+  input.connect(dry); dry.connect(output);
+
+  const pre = ctx.createDelay(MAX_PREDELAY + 0.01);
+  pre.delayTime.value = cfg.predelay || 0;
+  const conv = ctx.createConvolver();
+  conv.buffer = reverbIR(ctx, cfg); // normalize=true equalizes energy across IRs
+  const wet = ctx.createGain();
+  wet.gain.value = reverbWetGain(cfg.wet);
+  input.connect(pre); pre.connect(conv); conv.connect(wet); wet.connect(output);
+
+  return {
+    input, output,
+    setWet: (w) => { wet.gain.value = reverbWetGain(w); },
+    setPredelay: (s) => { pre.delayTime.value = s || 0; },
+    dispose: () => { [input, output, dry, pre, conv, wet].forEach((nd) => nd.disconnect()); },
   };
 }

@@ -15,6 +15,7 @@ import { defaultPatch, normalizePatch } from './instrument.js';
 import { normalizeTransforms } from './transforms.js';
 import { defaultDelay, normalizeDelay } from './delay.js';
 import { defaultChorus, normalizeChorus } from './chorus.js';
+import { defaultReverb, normalizeReverb } from './reverb.js';
 import { normalizeModsByKind } from './mods.js';
 
 export class PatternLibrary {
@@ -272,6 +273,7 @@ export class Arrangement {
     lane.gain = 1; lane.pan = 0;
     lane.delay = defaultDelay();
     lane.chorus = defaultChorus();
+    lane.reverb = defaultReverb();
     lane.patch = defaultPatch();
     lane.modsByKind = {};
     lane.fresh = true;
@@ -551,6 +553,7 @@ export class Arrangement {
         gain: l.gain, pan: l.pan, // mixer: linear volume (1 = 0 dB), pan −1..+1
         delay: l.delay, // per-lane delay insert
         chorus: l.chorus, // per-lane Juno chorus insert
+        reverb: l.reverb, // per-lane insert reverb
         patch: l.patch, // the lane's instrument settings
         modsByKind: l.modsByKind, // playback modulators, one pair per instrument kind
         fresh: !!l.fresh, // never-used lane (adopts a dropped tile's instrument)
@@ -571,13 +574,13 @@ export class Arrangement {
     const lane = (l) => ({
       id: l.id, tiles: l.tiles.map(tile), mute: !!l.mute, solo: !!l.solo,
       gain: l.gain == null ? 1 : l.gain, pan: l.pan == null ? 0 : l.pan,
-      delay: normalizeDelay(l.delay), chorus: normalizeChorus(l.chorus), patch: normalizePatch(l.patch),
+      delay: normalizeDelay(l.delay), chorus: normalizeChorus(l.chorus), reverb: normalizeReverb(l.reverb), patch: normalizePatch(l.patch),
       modsByKind: normalizeModsByKind(l.modsByKind),
       fresh: !!l.fresh, // optional; old saves default not-fresh (won't auto-seed)
     });
     const lanes = o.lanes
       ? o.lanes.map(lane)
-      : [{ id: 0, tiles: (o.tiles || []).map(tile), mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), chorus: defaultChorus(), patch: defaultPatch(), modsByKind: {}, fresh: false }, newLane(1)];
+      : [{ id: 0, tiles: (o.tiles || []).map(tile), mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), chorus: defaultChorus(), reverb: defaultReverb(), patch: defaultPatch(), modsByKind: {}, fresh: false }, newLane(1)];
     const a = new Arrangement(lanes);
     a.seq = o.seq || 0;
     a.activeLaneId = o.activeLaneId ?? lanes[0].id;
@@ -597,7 +600,7 @@ export function deletePoint(p, s, e) { return p >= e ? p - (e - s) : Math.min(p,
 // the instrument of the first tile dropped into it (from the grid, or the source
 // lane on a cross-lane move); it stops being fresh once it gets a tile OR its
 // instrument is edited, so a lane you set up and later emptied keeps its sound.
-function newLane(id) { return { id, tiles: [], mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), chorus: defaultChorus(), patch: defaultPatch(), modsByKind: {}, fresh: true }; }
+function newLane(id) { return { id, tiles: [], mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), chorus: defaultChorus(), reverb: defaultReverb(), patch: defaultPatch(), modsByKind: {}, fresh: true }; }
 function sortLane(lane) { lane.tiles.sort((a, b) => a.start - b.start); }
 
 // --- tile positioning: rigid ripple --------------------------------------

@@ -2,7 +2,7 @@
 
 import { AudioEngine } from './audio.js';
 import { Scheduler } from './scheduler.js';
-import { PianoRoll } from './pianoroll.js';
+import { PianoRoll, ROLL_V_SCALES, ROLL_H_SCALES, ROLL_V_DEFAULT, ROLL_H_DEFAULT } from './pianoroll.js';
 import { Note, Score } from './model.js';
 import { Pattern, BASE_PITCH } from './grid.js';
 import { PatternLibrary, Arrangement, laneColor, insertPoint, deletePoint } from './library.js';
@@ -21,6 +21,7 @@ import { normalizePatch, defaultPatch, clonePatch, patchRelease, instrument } fr
 import { normalizeDelay } from './delay.js';
 import { buildDelayEditor } from './delay.js';
 import { normalizeChorus, buildChorusEditor } from './chorus.js';
+import { normalizeReverb, buildReverbEditor, reverbSeconds } from './reverb.js';
 import { MOD_SLOTS, defaultMod, buildModEditor, modTargetsFor, modsActive, normalizeModsByKind } from './mods.js';
 import { applyTransforms, setTileTranspose, setTileReverse, hasReverse, describeTransform, transformKindLabel, normalizeTransforms } from './transforms.js';
 import { openModal } from './modal.js';
@@ -60,6 +61,8 @@ const state = {
   ripple: false,      // tile insert/delete ripple (off = exact placement, overwrite on overlap)
   playheadBeat: 0,    // where the tile transport is parked when stopped (beats, absolute)
   tileScrollX: 0,     // tile player's horizontal scroll (px; restored on reload as-is)
+  rollVIdx: ROLL_V_DEFAULT, // piano-roll zoom notches (view-only)
+  rollHIdx: ROLL_H_DEFAULT,
 };
 Object.assign(state, readJSON(UI_KEY) || {});
 // Migrate older persisted UI state (top-level trad/sus booleans) to the per-id
@@ -180,6 +183,28 @@ engine.modsFor = (laneId) => {
 // (Re)apply every lane's chorus to the engine — after a modal edit or a load/undo.
 function applyLaneChorusAll() {
   for (const lane of arrangement.lanes) engine.applyLaneChorus(lane.id);
+}
+
+// Resolve a lane's insert-reverb config for the engine ({ on:false } = none).
+engine.laneReverb = (laneId) => {
+  const lane = arrangement.lane(laneId);
+  if (!lane || !lane.reverb || !lane.reverb.on) return { on: false };
+  return lane.reverb;
+};
+
+// (Re)apply every lane's reverb to the engine — after a modal edit or a load/undo.
+function applyLaneReverbAll() {
+  for (const lane of arrangement.lanes) engine.applyLaneReverb(lane.id);
+}
+
+// The longest reverb tail any lane needs at the end of a bounce (the IR decay
+// + predelay of every enabled insert; 0 when none are on).
+function maxReverbTail() {
+  let tail = 0;
+  for (const lane of arrangement.lanes) {
+    if (lane.reverb && lane.reverb.on) tail = Math.max(tail, reverbSeconds(lane.reverb) + (lane.reverb.predelay || 0));
+  }
+  return tail;
 }
 
 const scheduler = new Scheduler(engine);
@@ -346,7 +371,11 @@ function activeScore() {
   return activePane === 'tiles' ? arrangementScore() : buildScore();
 }
 
-const roll = new PianoRoll(document.getElementById('roll'), activeScore());
+const roll = new PianoRoll(document.getElementById('roll'), activeScore(), document.getElementById('rollGutter'));
+// Restore the persisted roll zoom (view-only; clamped to the notch ladders).
+state.rollVIdx = Math.max(0, Math.min(ROLL_V_SCALES.length - 1, state.rollVIdx | 0));
+state.rollHIdx = Math.max(0, Math.min(ROLL_H_SCALES.length - 1, state.rollHIdx | 0));
+roll.setZoom(ROLL_V_SCALES[state.rollVIdx], ROLL_H_SCALES[state.rollHIdx]);
 
 const grid = new GridView(document.getElementById('grid'), library.current(), {
   getMode: () => state.mode,
@@ -371,7 +400,6 @@ let marqueeBefore = null; // selection snapshot for Esc-cancelling a marquee
 
 const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, arrangement, {
   onTileDown: (id, ev) => onTileDown(id, ev),
-  onOpen: (name, id) => openTile(name, id),
   onGridDragOver: (laneId, start) => gridDragOver(laneId, start),
   onDropAt: (laneId, start) => dropCurrentTile(laneId, start),
   // Empty-space rubber-band selection (one lane). Live: each band change
@@ -444,6 +472,7 @@ const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, 
   onRangeCancel: () => { tilePlayer.setRangePreview(null, null); disarmRangeTool(); },
   onDelay: (laneId) => openDelayModal(laneId),
   onChorus: (laneId) => openChorusModal(laneId),
+  onReverb: (laneId) => openReverbModal(laneId),
   onMods: (laneId) => openModModal(laneId),
 });
 tilePlayer.rippleMode = state.ripple; // restore the Ripple toggle (workspace pref)
@@ -483,6 +512,26 @@ function openChorusModal(laneId) {
       engine.applyLaneChorus(laneId);
       onMixEnd();          // commit one undo step if changed + persist + dirty
       tilePlayer.render(); // reflect the C-button lit state
+    },
+  });
+}
+
+// Open the per-lane insert-reverb editor in a modal — same one-undo-step
+// bracket (snapshot on open, apply live on each change, commit on close).
+function openReverbModal(laneId) {
+  const lane = arrangement.lane(laneId);
+  if (!lane) return;
+  const idx = arrangement.lanes.indexOf(lane);
+  if (!lane.reverb) lane.reverb = normalizeReverb(null); // older autosaves lack the field
+  onMixStart(); // capture the pre-edit snapshot
+  const body = buildReverbEditor(lane.reverb, { onChange: () => engine.applyLaneReverb(laneId) });
+  openModal({
+    title: `Reverb — Lane ${idx + 1}`,
+    body,
+    onClose: () => {
+      engine.applyLaneReverb(laneId);
+      onMixEnd();          // commit one undo step if changed + persist + dirty
+      tilePlayer.render(); // reflect the R-button lit state
     },
   });
 }
@@ -610,12 +659,25 @@ function onTileDown(id, ev) {
   const onUp = (e) => {
     window.removeEventListener('pointermove', onMove);
     window.removeEventListener('pointerup', onUp);
-    if (dragging) endTileDrag(e);
-    else selectTile(id, e); // no movement → a click (modifiers pick the selection op)
+    if (dragging) { endTileDrag(e); return; }
+    // No movement → a click. Double-click is detected HERE (not via the DOM
+    // dblclick event — the first click's refresh REBUILDS the tile element, so
+    // a native dblclick would never fire on it): a second plain click on the
+    // same tile within the window auditions it.
+    const now = performance.now();
+    const plain = !e.shiftKey && !e.ctrlKey && !e.metaKey;
+    if (plain && lastTileClick && lastTileClick.id === id && now - lastTileClick.t < 400) {
+      lastTileClick = null;
+      auditionTile(id);
+      return;
+    }
+    lastTileClick = plain ? { id, t: now } : null;
+    selectTile(id, e); // modifiers pick the selection op
   };
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
 }
+let lastTileClick = null; // {id, t} — the double-click detector's memory
 
 function startTileDrag(id, grabX) {
   const lane = arrangement.laneOfTile(id);
@@ -707,21 +769,36 @@ function samePreview(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-// Click-select with modifiers: plain = fresh single selection; Ctrl = toggle
+// Click-select with modifiers: plain = fresh single selection AND opens the
+// tile's pattern in the grid editor (user: "no harm from that"); Ctrl = toggle
 // membership (one lane — a cross-lane Ctrl-click starts fresh there); Shift =
-// contiguous range from the anchor. `ev` optional (programmatic = plain).
+// contiguous range from the anchor. Modifier clicks are selection-building, so
+// they don't churn the grid. `ev` optional (programmatic = plain).
 function selectTile(id, ev) {
   setActive('tiles');
+  const plain = !ev || (!ev.shiftKey && !ev.ctrlKey && !ev.metaKey);
   if (ev && ev.shiftKey) arrangement.selectRange(id);
   else if (ev && (ev.ctrlKey || ev.metaKey)) arrangement.toggleSelect(id);
   else arrangement.select(id);
   const lane = arrangement.laneOfTile(id);
   if (lane) arrangement.activeLaneId = lane.id;
-  tilePlayer.syncSelection();
-  tilePlayer.setActiveLane(arrangement.activeLaneId);
-  updateRollContent(); scrollRollToSelected();
-  updateTileSelectionUI();
-  persist();
+  if (plain) {
+    const tile = arrangement.allTiles().find((t) => t.id === id);
+    const p = tile && library.patterns.get(tile.name);
+    if (p) {
+      clearProposal();
+      grid.clearSelection();
+      library.open(p.name);
+      centerGridOn(p);
+    }
+    refresh(); // covers roll content/scroll, selection visuals, persist
+  } else {
+    tilePlayer.syncSelection();
+    tilePlayer.setActiveLane(arrangement.activeLaneId);
+    updateRollContent(); scrollRollToSelected();
+    updateTileSelectionUI();
+    persist();
+  }
 }
 
 // The selection as tiles, in timeline order (they all live on one lane).
@@ -876,6 +953,7 @@ function resetLane(id) {
   applyLaneMix(0.012);  // gain/pan back to unity/center on the bus
   applyLaneDelayAll();  // delay off → remove the insert
   applyLaneChorusAll(); // chorus off → remove the insert
+  applyLaneReverbAll();  // reverb off → remove the insert
   if (editTarget.laneId === id) editLane(id); // re-point the pane onto the new default patch
   refresh();
 }
@@ -892,6 +970,7 @@ function resetPlayer() {
   applyLaneMix(0);       // initialize the two fresh lanes' buses
   applyLaneDelayAll();
   applyLaneChorusAll();
+  applyLaneReverbAll();
   refresh();
 }
 
@@ -1045,17 +1124,41 @@ function refreshTransformBar() {
 
 // Double-click: load the tile's pattern into the editor (by reference) but keep
 // the tile player active and the tile selected.
-function openTile(name, id) {
-  setActive('tiles');
-  clearProposal();
-  grid.clearSelection();
+// Audition one tile (double-click; the single click already selected it and
+// opened its pattern in the grid): play JUST that tile — its pattern with its
+// transforms, through its lane's instrument, bus and effects (mute/solo and
+// modulators included, and notes keep their true ruler position for the
+// Loop-Mod anchor — it sounds exactly as it does in context). One-shot;
+// double-clicking another tile replaces the audition; Space stops it.
+async function auditionTile(id) {
   const lane = arrangement.laneOfTile(id);
-  if (lane) arrangement.activeLaneId = lane.id;
-  library.open(name);
-  centerGridOn(library.current()); // bring the opened pattern into view
-  arrangement.select(id);
-  refresh();
-  scrollRollToSelected();
+  const tile = lane && lane.tiles.find((t) => t.id === id);
+  const p = tile && library.patterns.get(tile.name);
+  if (!p) return;
+  const s = p.toScore(state.bpm, state.articulation);
+  const src = tile.transforms
+    ? applyTransforms(
+        s.notes.map((n) => ({ pitch: n.pitch, start: n.start, duration: n.duration, velocity: n.velocity, freq: n.freq })),
+        tile.transforms, { lengthBeats: s.lengthBeats, tuningId: p.tuningId, root: p.root })
+    : s.notes;
+  const notes = src.map((n) => {
+    const nn = new Note(n.pitch, n.start, n.duration, n.velocity);
+    nn.freq = n.freq;
+    nn.laneId = lane.id;             // route through the lane's bus + inserts
+    nn.tileStart = 0;
+    nn.rulerBeat = tile.start + n.start; // the in-context modulator anchor
+    return nn;
+  });
+  const score = new Score(notes, state.bpm, state.articulation, s.lengthBeats);
+  const now = await engine.ensureRunning();
+  if (engine.modEpoch == null) engine.modEpoch = now;
+  scheduler.stop();
+  activeSource = 'audit';
+  applyLaneGains(0); // mute/solo bus state before the first note
+  scheduler.start(() => score, now + 0.05, 1, false);
+  tilePlayer.setPlaying(new Set([id])); // the green "playing" badge on the auditioned tile
+  startRender();
+  updateTransportButtons();
 }
 
 // Edit-instrument pane (the Vesperia). An editor panel, not a transport pane:
@@ -1210,9 +1313,10 @@ const rollScroll = document.getElementById('rollScroll');
 // playback scroll cost — an occasional jump is cheap (and easier to watch).
 function ensureRollVisible(x) {
   const el = rollScroll;
-  const margin = 80;
-  if (x > el.scrollLeft + el.clientWidth - margin || x < el.scrollLeft) {
-    el.scrollLeft = Math.max(0, x - margin);
+  const headW = roll.gutter ? roll.gutter.width : 0; // the pinned label gutter overlays the left edge
+  const margin = 60;
+  if (x > el.scrollLeft + el.clientWidth - margin || x < el.scrollLeft + headW) {
+    el.scrollLeft = Math.max(0, x - headW - margin);
   }
 }
 
@@ -1235,7 +1339,8 @@ function ensureTileVisible(beat) {
 function scrollRollToSelected() {
   if (scheduler.isPlaying) return; // playback drives the scroll itself
   if (activePane === 'tiles' && arrangement.selectedId != null) {
-    rollScroll.scrollLeft = Math.max(0, roll.xForBeat(tileStartBeat(arrangement.selectedId)) - 40);
+    const headW = roll.gutter ? roll.gutter.width : 0; // don't park the tile under the pinned gutter
+    rollScroll.scrollLeft = Math.max(0, roll.xForBeat(tileStartBeat(arrangement.selectedId)) - headW - 20);
   } else {
     rollScroll.scrollLeft = 0;
   }
@@ -1244,10 +1349,26 @@ function scrollRollToSelected() {
 // Update the roll's score (e.g. after an active-lane change recolors it). While
 // playing, the roll mirrors the playing source and renderLoop does the drawing;
 // when stopped, it mirrors the active pane and we draw here.
+// The non-12-ET tunings IN USE by what the roll is showing — one gutter label
+// column each. Tiles view: every pattern referenced by a tile; grid view: the
+// current pattern. Distinct by (tuning, root) since the root moves the degrees.
+function tuningsInUse(tilesView) {
+  const found = new Map();
+  const add = (p) => {
+    if (!p || edoOf(p.tuningId) === 12) return;
+    found.set(`${p.tuningId}|${p.root || 0}`, { id: p.tuningId, root: p.root || 0 });
+  };
+  if (tilesView) for (const name of arrangement.referencedNames()) add(library.patterns.get(name));
+  else add(library.current());
+  return [...found.values()];
+}
+
 function updateRollContent() {
+  const tilesView = scheduler.isPlaying ? activeSource === 'tiles' : activePane === 'tiles';
   const score = scheduler.isPlaying
     ? (activeSource === 'tiles' ? arrangementScore() : buildScore())
     : activeScore();
+  roll.tunings = tuningsInUse(tilesView); // before setScore — affects gutter sizing
   roll.setScore(score);
   if (!scheduler.isPlaying) roll.draw();
 }
@@ -1326,6 +1447,7 @@ function arrApply(json, full = false) {
   applyLaneMix(0.012);  // restored pan/gain → push to the (existing) lane buses
   applyLaneDelayAll();  // restored delay → rebuild/update the inserts
   applyLaneChorusAll(); // restored chorus → rebuild the inserts
+  applyLaneReverbAll();  // restored reverb → rebuild the inserts
   // If the editor was on a lane the undo/redo removed, drop back to the grid.
   if (editTarget && editTarget.laneId != null && !arrangement.lane(editTarget.laneId)) editGrid();
 }
@@ -1855,6 +1977,7 @@ function persist() {
     topDegree: state.topDegree, visibleRows: state.visibleRows, activePane: state.activePane,
     tileScaleIdx: state.tileScaleIdx, masterGain: state.masterGain, modLoop: state.modLoop,
     ripple: state.ripple, playheadBeat: state.playheadBeat, tileScrollX: state.tileScrollX,
+    rollVIdx: state.rollVIdx, rollHIdx: state.rollHIdx,
   }));
   recomputeDirty();
 }
@@ -1952,6 +2075,7 @@ function loadContent(env) {
   applyLaneMix(0);     // push the loaded volume/pan onto the lane buses
   applyLaneDelayAll(); // and the loaded delays
   applyLaneChorusAll(); // and the loaded choruses
+  applyLaneReverbAll();  // and the loaded reverbs
   refresh();
 }
 
@@ -2047,7 +2171,7 @@ async function exportAudio() {
   if (!notes.length) return;
   // Release tail: let the longest-releasing lane ring out fully.
   const maxRelease = Math.max(patchRelease(gridPatch), ...arrangement.lanes.map((l) => patchRelease(l.patch)));
-  const tail = Math.max(2.5, maxRelease * 6 + 0.5);
+  const tail = Math.max(2.5, maxRelease * 6 + 0.5) + maxReverbTail(); // reverb rings past the release
   const durSec = score.lengthBeats * spb + tail;
 
   setExporting(true);
@@ -2097,7 +2221,7 @@ async function exportStems(busMode) {
   if (byLane.size === 0) return;
   // One shared duration (mix length + release tail) so all stems are equal-length.
   const maxRelease = Math.max(patchRelease(gridPatch), ...arrangement.lanes.map((l) => patchRelease(l.patch)));
-  const tail = Math.max(2.5, maxRelease * 6 + 0.5);
+  const tail = Math.max(2.5, maxRelease * 6 + 0.5) + maxReverbTail(); // reverb rings past the release
   const durSec = score.lengthBeats * spb + tail;
   const proj = projectName || defaultName();
 
@@ -2218,6 +2342,7 @@ if (savedSnapshot) {
         if (bl.pan == null) { bl.pan = ll.pan; changed = true; }
         if (bl.delay == null) { bl.delay = ll.delay; changed = true; }
         if (bl.chorus == null) { bl.chorus = ll.chorus; changed = true; }
+        if (bl.reverb == null) { bl.reverb = ll.reverb; changed = true; }
       }
       // Region markers (top-level arr fields) added in this version too.
       if (!('playStart' in base.arr)) { base.arr.playStart = arrangement.playStart; base.arr.playEnd = arrangement.playEnd; changed = true; }
@@ -2296,9 +2421,12 @@ document.getElementById('resetPlayer').addEventListener('click', resetPlayer);
 let rafId = null;
 
 function renderLoop() {
-  roll.draw(scheduler.isPlaying ? scheduler.currentBeat : null);
-  if (scheduler.isPlaying) {
-    ensureRollVisible(roll.xForBeat(scheduler.currentBeat));
+  // No roll playhead for a tile audition — the roll shows the arrangement (or
+  // grid pattern), not the one tile being auditioned, so a sweep would lie.
+  const rollBeat = scheduler.isPlaying && activeSource !== 'audit' ? scheduler.currentBeat : null;
+  roll.draw(rollBeat);
+  if (rollBeat != null) {
+    ensureRollVisible(roll.xForBeat(rollBeat));
     if (activeSource === 'tiles') {
       // The scheduler runs in pass-relative beats (the windowed score); the tile
       // timeline is absolute, so add the pass origin back. When the position
@@ -2503,6 +2631,31 @@ function updateScaleStrip() {
 tileScaleEl.addEventListener('input', () => setTileScale(Number(tileScaleEl.value)));
 tileZoomOutBtn.addEventListener('click', () => setTileScale(state.tileScaleIdx - 1));
 tileZoomInBtn.addEventListener('click', () => setTileScale(state.tileScaleIdx + 1));
+
+// --- piano-roll zoom (quantized notches; view-only, persisted) ---------
+
+const rollVEl = document.getElementById('rollVScale');
+const rollHEl = document.getElementById('rollHScale');
+rollVEl.max = String(ROLL_V_SCALES.length - 1);
+rollHEl.max = String(ROLL_H_SCALES.length - 1);
+
+function setRollZoom(vIdx, hIdx) {
+  state.rollVIdx = Math.max(0, Math.min(ROLL_V_SCALES.length - 1, vIdx | 0));
+  state.rollHIdx = Math.max(0, Math.min(ROLL_H_SCALES.length - 1, hIdx | 0));
+  roll.setZoom(ROLL_V_SCALES[state.rollVIdx], ROLL_H_SCALES[state.rollHIdx]);
+  rollVEl.value = String(state.rollVIdx);
+  rollHEl.value = String(state.rollHIdx);
+  if (!scheduler.isPlaying) roll.draw(); // playing: the render loop redraws anyway
+  persist();
+}
+rollVEl.addEventListener('input', () => setRollZoom(Number(rollVEl.value), state.rollHIdx));
+rollHEl.addEventListener('input', () => setRollZoom(state.rollVIdx, Number(rollHEl.value)));
+document.getElementById('rollVOut').addEventListener('click', () => setRollZoom(state.rollVIdx - 1, state.rollHIdx));
+document.getElementById('rollVIn').addEventListener('click', () => setRollZoom(state.rollVIdx + 1, state.rollHIdx));
+document.getElementById('rollHOut').addEventListener('click', () => setRollZoom(state.rollVIdx, state.rollHIdx - 1));
+document.getElementById('rollHIn').addEventListener('click', () => setRollZoom(state.rollVIdx, state.rollHIdx + 1));
+rollVEl.value = String(state.rollVIdx); // reflect the restored zoom in the strip
+rollHEl.value = String(state.rollHIdx);
 
 tb.grabHandle.addEventListener('dragstart', (e) => {
   e.dataTransfer.setData('text/plain', 'pattern');

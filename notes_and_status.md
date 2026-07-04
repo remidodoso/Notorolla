@@ -292,9 +292,20 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   swap carries the selection with the note. Cleared by **Esc**, loading/switching the pattern,
   **Clear**, or leaving the grid pane. Transient (not saved/undone). Exposed as
   `grid.selection` for the selection *tools* (see Permute below; transpose/etc. to come).
+- **Scale-mask library expanded (2026-07-04)** — [src/scales.js](src/scales.js) `SCALES` grew
+  from Chromatic + the two pentatonics to a full 12-ET set: the **seven diatonic modes**
+  (Major/Ionian, Dorian, Phrygian, Lydian, Mixolydian, Minor/Aeolian, Locrian), **harmonic** &
+  **melodic minor**, the **symmetric** scales (**whole-tone**, **octatonic W–H** & **H–W** =
+  diminished, **augmented**), **blues**, and the pentatonics (16-ET Mavila unchanged). Symmetric
+  scales especially were the target — their even spacing makes scale-*step* transposition warp
+  every interval quality at once, the striking-atonal-harmony engine the composer wants to lean
+  on. Pure data; the picker is data-driven (`scalesFor(edo)` → main.js:1916), so they appear
+  automatically under 12-ET. `notch/scales3.mjs` 29/29. First step of the "double down on scale
+  transposition" direction (see [future_directions.md](future_directions.md) §11).
 - **Pitch context (tuning + scale mask) — microtonal Stage 1**: each pattern carries a
-  **tuning** (`12-ET` or `Just (5-limit)`), a **scale mask** (Chromatic / Major- / Minor-
-  pentatonic) and a **root** (toolbar "Pitch" selectors). All Stage 1 tunings stay on the
+  **tuning** (`12-ET` or `Just (5-limit)`), a **scale mask** (Chromatic, the diatonic modes,
+  harmonic/melodic minor, whole-tone/octatonic/augmented, blues, pentatonics) and a **root**
+  (toolbar "Pitch" selectors). All Stage 1 tunings stay on the
   **12-degree grid**, so every tool (incl. the Triadulator) keeps working; the tuning only
   changes how degrees *sound* (`tuningFreq` resolves each note per its pattern — just intervals
   fan out from the root, which stays at its 12-ET pitch). The scale mask **highlights in-scale
@@ -548,8 +559,17 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 - A tile's playable length is the **full sum of its column durations** — note *and* rest, including
   trailing rests. Trailing rests are intentional time, so a tile can carry built-in space before
   the next one.
-- Click = select; double-click = open the pattern in the editor (keeps tiles active +
-  selected); Delete (button or key) removes; each lane has its own drop zone.
+- **Click = select AND open** the tile's pattern in the grid editor (user: "no harm from that";
+  modifier clicks — Ctrl toggle / Shift range — are selection-building and don't churn the grid);
+  **double-click = AUDITION** (2026-07-04): plays JUST that tile — its pattern with its
+  transforms, through its lane's instrument, bus, effects and modulators (mute/solo respected;
+  notes keep their true ruler position for the Loop-Mod anchor — it sounds exactly as in
+  context). One-shot via the shared scheduler (`activeSource = 'audit'`; no roll/tile playhead
+  sweep — the roll shows the arrangement, a sweep would lie; the auditioned tile gets the green
+  badge); double-clicking another tile replaces the audition; **Space stops it**; any transport
+  start replaces it. Double-click is detected MANUALLY in the click path (400 ms window) — the
+  first click's refresh rebuilds the tile element, so the native dblclick event can never fire.
+  Delete (button or key) removes the selection; each lane has its own drop zone.
 - **Drag to position / move / copy** (pointer-based; a small movement threshold distinguishes
   a drag from a click/double-click). Placement semantics are governed by the **Ripple toggle**
   (leftmost in the transform bar, **default OFF**, a workspace pref in `notorolla.ui`; it covers
@@ -639,6 +659,12 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   span), and the browser's **scroll anchoring** was adjusting the page scroll in response — read
   as "the pane scrolls itself back into view." Fixed: `html { overflow-anchor: none; }` + both
   canvases now skip same-value width/height writes (a no-op assignment still invalidates layout).
+  **Second wave (ruler clicks / Space-stop, 2026-07-04)**: with anchoring off the residual jumps
+  were LAYOUT SHIFT — the roll canvas height follows the content's pitch span, and switching its
+  score (pane activation swaps pattern↔arrangement; stop swaps windowed↔full) resized the pane,
+  sliding everything below it. Fixed by giving the roll a **fixed-height viewport (400 px) that
+  scrolls internally** both axes (pairs with the V zoom — tall canvases scroll inside, the page
+  never breathes; `align-items: flex-start` so flex doesn't stretch the canvases).
 - **Horizontal scroll persists across reloads** (`state.tileScrollX` in notorolla.ui — even with
   the playhead off screen you come back to the same view; scroll events land on state, the
   localStorage write is debounced 400 ms; restored after the initial render, browser-clamped).
@@ -732,6 +758,28 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   click-to-scrub on the ruler is intentionally forgone in favor of marker-setting.
 
 ### Transport & roll
+- **Roll zoom — adjustable V + H scale (2026-07-04)**: quantized notches (`ROLL_V_SCALES`
+  4–32 px/semitone, `ROLL_H_SCALES` 16–80 px/beat; defaults = the old fixed constants), a
+  V/H strip under the roll (same styling as the tile-player scale strip), persisted view-only
+  (`rollVIdx`/`rollHIdx` in notorolla.ui). The exported `BEAT_WIDTH` const is unchanged, so the
+  grid's Stretch mode still aligns with the roll's DEFAULT zoom (zooming the roll is a
+  deliberate view divergence). **Labels are graph-ticks (user spec)**: 12-ET pitch names on the
+  left gutter at "musical round number" steps — semitone/whole-tone/m3/M3/tritone/octave/2-oct,
+  the densest step that keeps ≥13 px spacing, always anchored on C (Cs drawn brighter).
+  Refined per user: **constant font size always** (density comes from the step, never a smaller
+  font), and the step ladder is just **[every pitch, octaves, 2-octaves]** — no intermediate
+  "minor tick" labels at reduced scale ("exact pitch isn't super important there; zoom in").
+  **Labels live on a PINNED GUTTER** (user: they mustn't scroll out of sight): a second canvas
+  (`#rollGutter`), `position: sticky; left: 0` with a negative margin equal to its width so it
+  overlays rather than displaces the roll; opaque background + lane stripes so content visibly
+  slides under it; the playback follow + scroll-to-selected account for its width. Column 0 =
+  12-ET names; then **one column per non-12-ET tuning IN USE** (user: "display all of the
+  scales that are in use" — tiles view scans every tile-referenced pattern, grid view the
+  current one; distinct by (tuning, root) since the root moves the degrees), each headed by its
+  EDO, with the tuning's own nomenclature (`degreeToName` — 16-ET hex+octave) and tick marks at
+  true cent heights, thinned by the same rule, degree-0 classes brightened. Closed-form degree
+  placement assumes an equal division (true of all current tunings; an unequal scale would need
+  a scan — noted in the code).
 - Grid transport (top bar) and tile transport (in the pane) are **mutually exclusive**
   (one shared scheduler; `activeSource`).
 - **Output level meter + master fader** (right of the transport bar). The meter is a **stereo peak**
@@ -774,6 +822,30 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   LFO presets — I: 0.513 Hz, II: 0.863 Hz (the measured Juno-60 rates), I+II runs both at once. Built
   lazily per strip / rebuilt on a mode change (`applyLaneChorus`); chorus-modal session is **one undo
   step**, same bracket as the delay. No WASM. ([src/chorus.js](src/chorus.js) owns the config + editor.)
+- **Per-lane INSERT REVERB (2026-07-04)** ([src/reverb.js](src/reverb.js) config+editor;
+  `buildReverbInsert`/`reverbIR` in [src/audio.js](src/audio.js)): character reverbs for a
+  single instrument — canonical case **gated snare**, hence the **default mode = Gated,
+  moderately pronounced** (user; a "proper" gated reverb also runs a compressor/envelope —
+  trying convolution alone first, "we'll see how it sounds"). **"R" chiclet** (chiclets now a
+  2×2 grid, user's layout: `M C / D R`), modal with **Type** (Gated / **Ambience** = a live
+  room's early reflections only / Room / Hall / Plate / Spring) · **PreDelay** (0–80 ms, live
+  param — dry hit first, then the burst) · **Size** (for Gated it IS the gate time, 60–300 ms)
+  · **Wet** (live) · **Damp** (high-frequency decay tilt; plate bites half as hard, spring
+  harder). Engine: a **ConvolverNode over a SYNTHESIZED impulse response** — seeded noise
+  (mulberry32 keyed on the settings, decorrelated per channel for stereo width), envelope per
+  mode (gated = near-flat burst hard-cut with a 2 ms anti-click fade — **the gate lives in the
+  IR**; spring = decay × ~18 Hz flutter; damping = a one-pole lowpass tightening along the
+  tail), `normalize=true` equalizes IR energy so Wet is comparable across modes/sizes — but
+  energy equalization makes a TRANSIENT's reverb (smeared across the IR) read far quieter than
+  the dry hit, so **Wet runs a square law up to ×6** (`reverbWetGain` — user: a full-up gate on
+  a snare must go "Tssst"; unity wet was too subtle; the master limiter backstops the top).
+  **Deterministic**: live ctx and every offline export build the bit-identical IR, so bounces
+  match playback. **Reverb is LAST in the insert chain** (pan → chorus → delay → reverb → gate);
+  a shape change (mode/size/damp) rebuilds the convolver, wet/predelay update live. Save/undo/
+  dirty/reset per the delay/chorus pattern (`lane.reverb`, one-undo-step modal, R lit warm);
+  WAV + stem exports rebuild the insert (dry stems exclude it) and the **export tail extends by
+  the longest enabled IR + predelay** so halls ring out. The shared send-bus reverb ("the
+  communal wash") remains future. reverbcfg.mjs tests config/decay-model/persistence.
 - **Per-lane playback MODULATORS** ([src/mods.js](src/mods.js)) — slow parameter movement à la Cubase
   modulators, for "notes sound different as their patterns repeat" (user's goal). **"M" chiclet** (left
   of the D/C stack, lit violet when active) opens a modal with **two fixed mod slots**, each: **On** ·
@@ -1070,6 +1142,12 @@ fine at the moment"). Decisions reached + open questions, so we can pick it back
 - Cursor "Glyph" mode is shaky for 3/8 and 1/2 (Unicode coverage) — **SMuFL** later.
 
 ## Potential directions
+
+**See [future_directions.md](future_directions.md)** for the big-picture roadmap of the
+*large* features ahead — subsequences (nestable arrangement tiles), PaulStretch drones, a
+beat generator, PadSynth + more voices, the sample player, the Etuderator, and polyphony —
+with dependencies, WASM-or-not analysis, and a recommended sequencing. The list below is the
+older near-term jotting.
 
 - Lane/channel controls; more lanes; mute/solo; per-lane or per-tile attributes.
 - Phasing / independent loop lengths.

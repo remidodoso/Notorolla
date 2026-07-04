@@ -6,18 +6,26 @@
 // notes map exactly as before, pixel-for-pixel. Redrawn every frame.
 
 import { noteName, isBlackKey, noteToFreq } from './model.js';
-import { degreeToFreq } from './tuning.js';
+import { degreeToFreq, tuningFreq, degreeToName, edoOf } from './tuning.js';
 
 // PAD_LEFT and BEAT_WIDTH are exported so the grid's "Stretch" mode can share
-// the roll's horizontal origin and scale, lining the two views up.
+// the roll's horizontal origin and DEFAULT scale (the two views line up at the
+// roll's default zoom; zooming the roll is a view-only divergence).
 export const PAD_LEFT = 44;     // room for pitch labels
 const PAD_TOP = 16;
 const PAD_RIGHT = 24;
 const PAD_BOTTOM = 16;
-export const BEAT_WIDTH = 56;   // px per beat
-const NOTE_HEIGHT = 18;  // px per semitone (100 cents) lane
+const TUNING_COL_W = 38;        // one gutter column per non-12-ET tuning in use
+export const BEAT_WIDTH = 56;   // px per beat (the default H zoom)
+const NOTE_HEIGHT = 18;  // px per semitone (100 cents) lane (the default V zoom)
 const BEATS_PER_BAR = 4;
 const FREF = noteToFreq(0); // cents reference, chosen so 12-ET pitch p == 100*p cents
+
+// Quantized zoom notches (px/semitone and px/beat); the defaults sit inside.
+export const ROLL_V_SCALES = [4, 6, 9, 12, NOTE_HEIGHT, 24, 32];
+export const ROLL_H_SCALES = [16, 24, 36, BEAT_WIDTH, 80];
+export const ROLL_V_DEFAULT = ROLL_V_SCALES.indexOf(NOTE_HEIGHT);
+export const ROLL_H_DEFAULT = ROLL_H_SCALES.indexOf(BEAT_WIDTH);
 
 const COLORS = {
   laneWhite: '#171a22',
@@ -25,17 +33,35 @@ const COLORS = {
   gridBeat: '#22262f',
   gridBar: '#323843',
   label: '#5a6270',
+  labelC: '#8a93a3',      // the Cs (and degree-0 classes) pop for orientation
+  gutterTick: '#3a4150',  // gutter column separators + degree tick marks
+  gutterBg: '#11131a',    // opaque gutter base (matches the page background)
   note: '#5aa9ff',
   noteEdge: '#bcd9ff',
   playhead: '#ff6b6b',
 };
 
 export class PianoRoll {
-  constructor(canvas, score) {
+  // `gutterCanvas` (optional): a second canvas, pinned by CSS to the pane's
+  // left edge, that carries ALL the pitch labels — so they never scroll out of
+  // sight with the content. Without one, labels are skipped entirely.
+  constructor(canvas, score, gutterCanvas = null) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
+    this.gutter = gutterCanvas;
+    this.gctx = gutterCanvas ? gutterCanvas.getContext('2d') : null;
     this._hatchCache = new Map(); // color -> CanvasPattern, for muted/silent notes
+    this.noteH = NOTE_HEIGHT; // px per semitone — the V zoom (setZoom)
+    this.beatW = BEAT_WIDTH;  // px per beat — the H zoom
+    this.tunings = [];        // non-12-ET {id, root} IN USE — one gutter column each
     this.setScore(score);
+  }
+
+  // View-only zoom (quantized notches picked by the host); resizes to fit.
+  setZoom(noteH, beatW) {
+    this.noteH = noteH;
+    this.beatW = beatW;
+    this._resize();
   }
 
   // Adopt a score and size the canvas to it: width follows the tune's length,
@@ -60,23 +86,35 @@ export class PianoRoll {
     this.maxPitch = Math.ceil(maxC / 100) + 2;
     this.maxCents = 100 * this.maxPitch;       // top edge, for yForCents
     this.pitchCount = this.maxPitch - this.minPitch + 1;
+    this._resize();
+  }
 
+  _resize() {
     // Assign only on a real change: a same-value write still invalidates
     // layout, and layout churn invites scroll-anchoring page jumps.
-    const w = PAD_LEFT + score.lengthBeats * BEAT_WIDTH + PAD_RIGHT;
-    const h = PAD_TOP + this.pitchCount * NOTE_HEIGHT + PAD_BOTTOM;
+    const w = PAD_LEFT + this.score.lengthBeats * this.beatW + PAD_RIGHT;
+    const h = PAD_TOP + this.pitchCount * this.noteH + PAD_BOTTOM;
     if (this.canvas.width !== w) this.canvas.width = w;
     if (this.canvas.height !== h) this.canvas.height = h;
+    if (this.gutter) {
+      // 12-ET column (exactly the PAD_LEFT the notes start after) + one column
+      // per in-use tuning. Negative margin = zero net layout width, so the
+      // sticky gutter OVERLAYS the canvas instead of pushing it right.
+      const gw = PAD_LEFT + TUNING_COL_W * this.tunings.length;
+      if (this.gutter.width !== gw) this.gutter.width = gw;
+      if (this.gutter.height !== h) this.gutter.height = h;
+      this.gutter.style.marginRight = `${-gw}px`;
+    }
   }
 
   xForBeat(beat) {
-    return PAD_LEFT + beat * BEAT_WIDTH;
+    return PAD_LEFT + beat * this.beatW;
   }
 
   // Continuous pitch axis. yForPitch (integer 12-ET) is the special case used by
   // the reference lanes; notes use yForCents on their true frequency.
   yForCents(cents) {
-    return PAD_TOP + ((this.maxCents - cents) / 100) * NOTE_HEIGHT;
+    return PAD_TOP + ((this.maxCents - cents) / 100) * this.noteH;
   }
   yForPitch(pitch) {
     return this.yForCents(100 * pitch);
@@ -101,22 +139,98 @@ export class PianoRoll {
     this._drawGrid(ctx, h);
     this._drawNotes(ctx);
     if (playheadBeat !== null) this._drawPlayhead(ctx, playheadBeat, h);
+    this._drawGutter();
+  }
+
+  // Graph-tick label steps: every pitch when the zoom gives each lane room for
+  // the (constant-size) text, otherwise straight to OCTAVES only — the in-
+  // between "minor tick" labels just crowd at reduced scale, and exact pitch
+  // reading is what zooming in is for (user). `octave` = steps per octave
+  // (12 for the lanes, the EDO for the degree gutter).
+  _labelStep(pxPerStep, octave, minPx = 13) {
+    for (const step of [1, octave, 2 * octave, 4 * octave]) {
+      if (step * pxPerStep >= minPx) return step;
+    }
+    return 4 * octave;
   }
 
   _drawLanes(ctx, w) {
     for (let p = this.minPitch; p <= this.maxPitch; p++) {
       const y = this.yForPitch(p);
       ctx.fillStyle = isBlackKey(p) ? COLORS.laneBlack : COLORS.laneWhite;
-      ctx.fillRect(0, y, w, NOTE_HEIGHT);
-
-      // Label each C so you can read the octave.
-      if (p % 12 === 0) {
-        ctx.fillStyle = COLORS.label;
-        ctx.font = '11px system-ui, sans-serif';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(noteName(p), 6, y + NOTE_HEIGHT / 2);
-      }
+      ctx.fillRect(0, y, w, this.noteH);
     }
+  }
+
+  // The pinned label gutter (its own sticky canvas — labels never scroll out of
+  // sight). Column 0 = 12-ET names; then ONE COLUMN PER IN-USE non-12-ET tuning
+  // (its own nomenclature via degreeToName at true cent heights, headed by its
+  // EDO). Constant font size; density via the [every pitch | octaves] step.
+  // Degree placement assumes an equal division (true of every current tuning;
+  // an unequal scale would need a scan instead of the closed form).
+  _drawGutter() {
+    const g = this.gctx;
+    if (!g) return;
+    const gw = this.gutter.width, gh = this.gutter.height;
+    g.clearRect(0, 0, gw, gh);
+    g.fillStyle = COLORS.gutterBg; // opaque — content scrolls UNDER the gutter
+    g.fillRect(0, 0, gw, gh);
+    g.font = '11px system-ui, sans-serif';
+    g.textBaseline = 'middle';
+
+    // Lane stripes so the gutter reads as part of the roll.
+    for (let p = this.minPitch; p <= this.maxPitch; p++) {
+      g.fillStyle = isBlackKey(p) ? COLORS.laneBlack : COLORS.laneWhite;
+      g.fillRect(0, this.yForPitch(p), gw, this.noteH);
+    }
+
+    // Column 0: 12-ET names (every semitone, or Cs only — see _labelStep).
+    const step = this._labelStep(this.noteH, 12);
+    for (let p = this.minPitch; p <= this.maxPitch; p++) {
+      if (((p % step) + step) % step !== 0) continue;
+      g.fillStyle = p % 12 === 0 ? COLORS.labelC : COLORS.label; // Cs pop for orientation
+      g.fillText(noteName(p), 6, this.yForPitch(p) + this.noteH / 2);
+    }
+
+    // One column per in-use tuning: header = its EDO, then degree names.
+    this.tunings.forEach((t, i) => {
+      const x0 = PAD_LEFT + i * TUNING_COL_W;
+      g.strokeStyle = COLORS.gutterTick;
+      g.beginPath();
+      g.moveTo(x0 + 0.5, 0);
+      g.lineTo(x0 + 0.5, gh);
+      g.stroke();
+
+      const edo = edoOf(t.id);
+      g.fillStyle = COLORS.labelC;
+      g.fillText(`${edo}`, x0 + 4, PAD_TOP / 2); // column header: the division
+
+      const stepCents = 1200 / edo;
+      const dStep = this._labelStep((this.noteH * stepCents) / 100, edo);
+      const base = this._cents(tuningFreq(0, t.id, t.root)); // cents of degree 0
+      const dLo = Math.ceil((100 * this.minPitch - base) / stepCents);
+      const dHi = Math.floor((this.maxCents - base) / stepCents);
+      g.textAlign = 'right';
+      for (let d = dLo; d <= dHi; d++) {
+        if (((d % dStep) + dStep) % dStep !== 0) continue;
+        const y = this.yForCents(base + d * stepCents);
+        g.strokeStyle = COLORS.gutterTick;
+        g.beginPath();
+        g.moveTo(x0 + 1, y + 0.5);
+        g.lineTo(x0 + 6, y + 0.5);
+        g.stroke();
+        g.fillStyle = (((d % edo) + edo) % edo) === 0 ? COLORS.labelC : COLORS.label;
+        g.fillText(degreeToName(d, t.id), x0 + TUNING_COL_W - 4, y);
+      }
+      g.textAlign = 'left';
+    });
+
+    // Right border so the pinned edge reads while content slides beneath.
+    g.strokeStyle = COLORS.gutterTick;
+    g.beginPath();
+    g.moveTo(gw - 0.5, 0);
+    g.lineTo(gw - 0.5, gh);
+    g.stroke();
   }
 
   _drawGrid(ctx, h) {
@@ -141,11 +255,11 @@ export class PianoRoll {
     for (const n of this.score.notes) {
       const x = this.xForBeat(n.start);
       const y = this.yForCents(this._noteCents(n)); // true pitch, so mixed tunings don't overlap
-      const wid = n.duration * BEAT_WIDTH;
+      const wid = n.duration * this.beatW;
       const color = n.color || COLORS.note;
       const alpha = n.alpha ?? 1;
 
-      this._roundRect(ctx, x + 1, y + 1, wid - 2, NOTE_HEIGHT - 2, 4);
+      this._roundRect(ctx, x + 1, y + 1, wid - 2, this.noteH - 2, 4);
       if (n.muted) {
         ctx.globalAlpha = alpha * 0.18;       // faint colored body, so the note still reads
         ctx.fillStyle = color;
