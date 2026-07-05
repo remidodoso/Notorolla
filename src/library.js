@@ -78,9 +78,14 @@ export class PatternLibrary {
 
   newPattern() {
     if (!this.canCreate()) return null;
-    const cols = this.current() ? this.current().columns.length : undefined; // inherit the working width
+    // Continue in the current pattern's working context: New keeps its width,
+    // pitch context (tuning/scale/root) AND per-column performance lanes
+    // (duration/accent/articulation) as a groove stencil, clearing only the
+    // pitches (Pattern.stencil). Captured before _leaveCurrent(), which may park
+    // or drop the source. With no source (the seed) fall back to a plain blank.
+    const src = this.current();
     this._leaveCurrent();
-    const p = this._add(Pattern.initial(this._mint(), cols));
+    const p = this._add(src ? src.stencil(this._mint()) : Pattern.initial(this._mint()));
     this.currentName = p.name;
     return p;
   }

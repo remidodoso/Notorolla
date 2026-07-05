@@ -72,7 +72,7 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 | [src/panes.js](src/panes.js) | reorderable vertical panes, order persisted |
 | [src/project.js](src/project.js) | versioned file envelope (`format`/`version`), migrate, save (download) / load (file read) helpers |
 | [src/triads.js](src/triads.js) | Triadulator engine (pure): partition a pitch-class set into chords — families `trad` (maj/min/dim/aug) + `sus` (12-ET), `septimal` (16-ET: 4:5:7 `[0,5,13]`, supermajor `[0,6,13]`); `enumerateTriadulations(pcs, {families, edo})` / `classifyTriad(pcs, edo)`. Templates tagged by **EDO**, pools per-edo; `familiesFor(edo)`/`familyLabel` drive the per-tuning family toggles |
-| [src/random.js](src/random.js) | New Random generator (pure): a contiguous in-scale degree window around the viewport centroid → random degrees, bent by Unique / Run / Triad settings; injectable rng |
+| [src/random.js](src/random.js) | New Random generator (pure): a contiguous in-scale degree window around the viewport centroid → random degrees, bent by Unique / Run / Triad settings; plus **Duration Bias & Accent Bias** (pitch pulled by each column's length / accent loudness) each with a **Steer** (in-generation `biasTargets`/`biasedPick`, preserves Run/Triad contour) or **Sort** (post-hoc `rankBias` re-pair) mechanism; injectable rng |
 | [src/mods.js](src/mods.js) | per-lane playback modulators: config model (`modsByKind`), waveform evaluation (`modWave` incl. value-noise walk), position-space patch application (`applyMods`), target filtering, and the modal editor |
 | [src/midi.js](src/midi.js) | Standard MIDI File writer (pure): note data → bytes (Format 1, tempo, track names) |
 | [src/wav.js](src/wav.js) | WAV encoder (pure): an `AudioBuffer` → 16-bit PCM RIFF bytes |
@@ -256,15 +256,37 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 - **Patch persistence:**
   - **Lane patches** ride the arrangement (autosave `notorolla.arr` + the project file via
     `Arrangement.toJSON`/`fromJSON`) and **count as musical content** — editing one marks the
-    project dirty. They are *not* part of the tile **undo/redo** stack, though: `arrApply`
-    carries each lane's *live* patch across by id, so undoing a tile move never reverts a sound
-    edit (and a lane reappearing on a redo takes its snapshot patch).
+    project dirty. The whole **sound layer** — patch **plus** the effect inserts (delay / chorus /
+    reverb) and the modulators — is **live-carried** across a normal tile undo/redo (`arrApply` by
+    lane id), so undoing a tile move never reverts a separate sound edit. A `full` entry (lane /
+    player **Reset**) or a lane reappearing on redo restores that layer from the snapshot instead
+    (so a reset is undoable). *(2026-07-05 fix — previously only the patch live-carried; reverb was
+    dropped entirely and delay/chorus/mods were snapshot-restored, so any undo wiped/reverted the
+    effects. See Known limitations.)* Mixer **gain/pan** stays genuinely undoable.
   - **Grid/neutral patch**: `notorolla.gridpatch` (localStorage only, a workspace preference —
     not in the project, not dirty-tracked).
   - **Migration**: the old single global patch (`notorolla.patch`) seeds any patch-less lane on
     first load, so existing projects reload sounding identical; the saved dirty baseline absorbs
     the auto-added patches so the silent upgrade doesn't flag the project dirty. The
     `notorolla.patch` key is vestigial afterward.
+
+- **"Lite Instruments" — a live-only CPU relief (2026-07-05).** A single **global** checkbox in the
+  tile-player toolbar (between Delete and Export MIDI). When on, the two heavy voices — **Wendelhorn**
+  (3 mono saws, no ensemble LFOs, no panners: ~3 osc vs ~10) and **Nayumi** (drops the breath/noise
+  path + the bit-crush; keeps the 3 formants + vibrato) — build a cheaper live graph that keeps their
+  character (two of either could already cause dropouts). A **workspace preference** (`state.lite` in
+  `notorolla.ui`, not in the project, never dirties). The seam: `buildVoice(…, lite)` — the LIVE path
+  passes `engine.lite`, both **offline** paths pass `false`, so a **bounce is always the full voice**
+  (structural — the export has no wire to the flag). Level-matched so toggling doesn't jump loudness.
+  `lite.mjs` (incl. an offline-forces-full assertion).
+- **The grid BORROWS a loaded tile's instrument (2026-07-05).** The grid's active instrument is a
+  descriptor — its own neutral `gridPatch`, or `{ source:'lane', laneId }` borrowed from the selected
+  tile — resolved by `patchFor(null)` for **all** grid audition/playback. **Select a tile** → borrow
+  that tile's lane instrument (and the pane edits it, so editing the grid's instrument edits the LANE,
+  hence every tile on it); **New** → back to the grid's own; **Clone** → promote the borrowed one to
+  be the grid's own; **Restore** → best-effort re-apply the parked pattern's instrument. Persisted
+  (`state.gridInstr`/`parkedInstr`), so a reload keeps the grid instrument; a project Open/New resets
+  to the grid's own.
 
 ### Grid editor (one pattern at a time)
 - **Per-pattern column count** (time) × resizable pitch rows (one octave by default, C4 at
@@ -431,6 +453,14 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
     decisions; once the **ratio-based triad definer** exists, "harmonize" composes naturally with it.
 - Two views: **Grid** (uniform columns) and **Stretch** (width ∝ duration, aligned to the
   roll). Active rows highlight; **octave-mates highlight softly**.
+- **Keyboard-tracking pivot band (Boshwick) (2026-07-05).** When the grid's active instrument is
+  **Boshwick**, a soothing faded-pink band marks the **pivot row** — the note where Pitch Track has no
+  effect (the drum sits at its nominal pitch, `(f0/FREF)^pitchTrack = 1`), so it's the reference pitch
+  that stays put as you drag the tracking slider. `FREF` (exported from audio.js) is the fixed
+  reference frequency **middle C**; the row is `nearestDegreeToFreq(FREF, tuning, root)` — degree 60
+  in 12-ET and 16-ET (both anchored at middle C), nearest degree elsewhere. Shown **always** (for
+  Boshwick), not gated on the slider. No DSP change — the pivot is a fixed 261.63 Hz. The same
+  reference is the filter "key center" for Vesperia/Wendelhorn (a future band could show it too).
 - **Triad labels** ("Show triads" toggle, default on): every run of **three adjacent notes**
   (no rest between) is classified via `classifyTriad` (reuses the Triadulator templates, **12-ET
   only**) and, if it's a recognized chord, labeled (`C Maj` / `A min` / `G dim` / `E aug` / `C sus`
@@ -475,7 +505,8 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   stay intact), **Triad** (chance each note completes a harmonic triad with the previous two — EDO-aware
   `classifyTriad` pc-set keys from the **Triadulator's enabled family toggles**, so 16-ET gets septimal
   bias), and **Duration Bias** (−1…+1, 0 = off; **Low** puts the lowest pitches on the longest notes,
-  **High** the highest — e.g. Low all the way = a bass feel). It's a pure post-generation **re-pairing**
+  **High** the highest — e.g. Low all the way = a bass feel). By default it **steers generation** (see the
+  STEER vs SORT note below); its **Sort** mechanism is a pure post-generation **re-pairing**
   (`applyDurationBias`): the same generated pitches are re-assigned to positions by a duration↔pitch rank
   correlation of strength |bias|. **Duration TIES break by the GENERATED pitch order** (not position) — so
   within a duration group the band's pitches follow the generator's random / Run- / Triad-shaped order
@@ -525,6 +556,13 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   one floating (unsaved) pattern at a time; New/Clone disabled unless the current pattern
   is referenced or empty and nothing is parked. The antidote to setting one aside is the
   future **Save**, not invisible parking.
+- **New = a GROOVE STENCIL, not a bare blank (2026-07-05).** New continues the current pattern's
+  **working context** instead of snapping to a default 12-ET-chromatic blank: it carries the width,
+  the **pitch context** (tuning / scale / root) **and** the per-column **performance lanes**
+  (duration / accent / articulation) — only the **pitches clear** (rests on the diagonal). The seam
+  is `Pattern.stencil(name)` in grid.js (next to `clone()`, which by contrast copies the notes too);
+  `newPattern` calls it when there's a source, else `Pattern.initial` (the seed / New Project blank
+  stays at defaults). The grid's **instrument** is NOT changed by New (see the borrow model). `newctx.mjs`.
 - **Clear** is destructive (empties the current pattern in place → empties referencing
   tiles); tucked away, confirms when referenced.
 - **Undo/redo is per-pattern**; the tile lane has its own append/delete undo.
@@ -573,6 +611,15 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   - **Transpose**: SETs each tile's transpose to the bar's **Amount/Scale** (always-visible
     controls now — they're the action's parameters); a second application replaces; 0 clears;
     Scale Auto = each tile's own mask; the tuning is never changed (walks `stepInScale`).
+    - **Scale menu = the live library + the key is shown (2026-07-05).** The dropdown was a frozen
+      4-item list; it's now filled from `scalesFor(edo)` for the **selected tile's** tuning (rebuilt
+      on selection change; a pick invalid for the new selection resets to Auto; a **mixed-tuning**
+      selection offers only the universal Auto + Chromatic). A read-only **key readout** shows the
+      key the steps are rooted at — and, in Auto, the tile's scale name — ("varies" when a
+      multi-select disagrees). Root stays read-only for now (not yet a picker).
+    - **Root-clamp fix (2026-07-05):** `transposeTransform` clamped the snapshotted root with `% 12`,
+      corrupting roots ≥ 12 in non-12 tunings (16-ET). It now stores the raw integer and lets
+      `inScale` reduce it by the right EDO. `edo.mjs`.
   - **Reverse**: **unify** — if every selected tile is reversed, un-reverse all; else reverse all
     (exactly clone-and-reverse: retrograde within the tile's full length, trailing rests incl.).
   - **Clone**: each selected tile repoints to a fresh deep copy (`library.cloneOf`), **deduped
@@ -953,6 +1000,12 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   WAV + stem exports rebuild the insert (dry stems exclude it) and the **export tail extends by
   the longest enabled IR + predelay** so halls ring out. The shared send-bus reverb ("the
   communal wash") remains future. reverbcfg.mjs tests config/decay-model/persistence.
+- **Effect editors have Copy / Paste (2026-07-05).** A standardized Copy/Paste bar atop the **delay,
+  chorus and reverb** modals (shared `openFxModal`/`fxCopyBar`). Copy snapshots the config into a
+  **per-type** clipboard (a delay can't paste onto a reverb); it persists across modal opens, so you
+  can copy one lane's effect and paste it onto another. Paste overwrites the config in place, applies
+  it live, and rebuilds the controls; Paste is disabled until that type has been copied. Rides the
+  same one-undo-step mix bracket.
 - **Per-lane playback MODULATORS** ([src/mods.js](src/mods.js)) — slow parameter movement à la Cubase
   modulators, for "notes sound different as their patterns repeat" (user's goal). **"M" chiclet** (left
   of the D/C stack, lit violet when active) opens a modal with **two fixed mod slots**, each: **On** ·
@@ -1028,6 +1081,15 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 ### Layout
 - Four reorderable panes (Grid, Tile player, Piano roll, Edit instrument); order persists.
   Default order Grid → Tile player → Roll → Edit instrument.
+- **Unwanted-scroll fixes (2026-07-05):** (a) **Pane-drag stale reference** — `panes.js` kept its
+  `dragged` pane in a module var never cleared on `dragend`, so a later NON-pane drag (the pattern
+  grab-handle) reordered panes off it; now cleared. (b) **Instrument pane yank** — `editLane`'s
+  `scrollIntoView` fired on every re-point (kind change / borrow), and, since the pane is often taller
+  than the viewport, `block:'nearest'` could never be a no-op; it now scrolls **only** on the explicit
+  Edit button **and** only when the pane's top isn't already on-screen. (c) **End-of-play jump to top**
+  — canvas resizes on re-render let the browser's scroll anchoring jump the window; `* { overflow-anchor:
+  none }` (was `html` only) plus a scroll-position guard in `refresh()` (a re-render must never move the
+  page) hold it put.
 
 ### Keyboard shortcuts
 - Act on the **active pane** (grid or tiles); ignored while a form field (input/textarea/select)
@@ -1215,15 +1277,16 @@ fine at the moment"). Decisions reached + open questions, so we can pick it back
 
 ## Known limitations / deferred
 
-- **BUG (diagnosed 2026-07-03, fix deferred — user: "another time, low priority"): arrangement
-  Undo overwrites live modulator settings.** The mods themselves serialize/restore fine (round-trip
-  verified headlessly); the loss is the undo path: the mod modal brackets an *undoable* arrangement
-  entry, and `arrApply` restores `modsByKind` **from the snapshot** on every undo/redo — so the
-  first Undo after mod tweaking (or any undo past the point mods were set up) silently reverts
-  them ("my mod settings just go away"). Lane *patches* were exempted from exactly this
-  ("undoing a tile move never reverts a later sound edit" — live-carried in `arrApply`); the
-  intended fix is the same treatment for mods: live-carry on normal entries (snapshot-restore only
-  on `full` resets) + the mod modal persists without minting an undo entry (like `persistPatch`).
+- ~~**BUG (diagnosed 2026-07-03): arrangement Undo overwrites live modulator/effect settings.**~~
+  **FIXED (2026-07-05).** `arrApply` snapshot-restored `modsByKind`/`delay`/`chorus` (so any undo
+  past the point they were set reverted them) and **dropped `reverb` entirely** (it was missing from
+  the rebuilt lane → every undo wiped reverb). Fix applies the lane-*patch* live-carry treatment to
+  the whole **sound layer** — patch, delay, chorus, reverb, modsByKind are now live-carried on a
+  normal undo/redo and snapshot-restored only on a `full` entry (lane/player reset) or when a lane
+  reappears on redo. So undoing a tile move no longer touches the sound. (The effect/mod modals still
+  bracket an undo entry via the mix bracket; with live-carry that entry is a harmless no-op for the
+  sound settings — mixer gain/pan stays genuinely undoable. Minting-free modal persistence, like
+  `persistPatch`, is a further cleanup, not required for the fix.)
 - **BUG (found same hunt, deferred): `loadContent` doesn't restore `playStart`/`playEnd`** — opening
   a project file keeps the *previous* session's region markers (`Arrangement.fromJSON` parses them
   but the in-place copy skips them). One-line fix when touched next.

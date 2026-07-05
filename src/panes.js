@@ -25,6 +25,8 @@ export function setupPanes(container, storageKey) {
     });
     header.addEventListener('dragend', () => {
       pane.classList.remove('dragging');
+      dragged = null; // clear it, or a later NON-pane drag (e.g. the pattern
+                      // grab-handle) would reorder panes off this stale reference
       save();
     });
     // Insert the dragged pane before/after this one based on cursor halves.

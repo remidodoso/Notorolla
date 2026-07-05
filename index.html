@@ -6,11 +6,13 @@
   <title>Notorolla — grid</title>
   <style>
     :root { color-scheme: dark; }
-    /* No scroll anchoring: canvases above the viewport resize on edits (grid
-       triad band, roll pitch span) and the browser's "helpful" scroll
-       adjustment read as the page scrolling itself back into view. The user
-       scrolls; the page stays put. */
-    html { overflow-anchor: none; }
+    /* No scroll anchoring: content above the viewport resizes/rebuilds on edits
+       and playback (grid/roll canvases, the tile lane, the instrument pane) and
+       the browser's "helpful" scroll adjustment reads as the page scrolling
+       itself. Setting it on `html` alone proved insufficient (a shift inside a
+       descendant could still be chosen as the anchor), so opt EVERY element out
+       — overflow-anchor is a cheap, purely-behavioral property. Page stays put. */
+    * { overflow-anchor: none; }
     body {
       margin: 0;
       font-family: system-ui, sans-serif;
@@ -190,6 +192,8 @@
     /* tile player */
     .tile-controls { display: flex; gap: 0.4rem; align-items: center; padding-bottom: 0.6rem; }
     .tile-controls button { font-size: 0.82rem; padding: 0.28rem 0.6rem; }
+    .lite-toggle { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.82rem; cursor: pointer; user-select: none; white-space: nowrap; }
+    .lite-toggle input { margin: 0; cursor: pointer; }
     .tile-controls button.danger { border-color: #5a2f33; color: #d6a3a8; }
     .tile-controls button.danger:hover { background: #3a2326; }
     /* per-lane reset/clear (red "R") at the far left of the lane head */
@@ -285,6 +289,8 @@
     .modal-x { width: 24px; height: 24px; padding: 0; font-size: 1.1rem; line-height: 1; border-radius: 4px;
       background: #20242e; color: #9aa1ad; border: 1px solid #313747; }
     .modal-x:hover { background: #3a2326; color: #d6a3a8; border-color: #5a2f33; }
+    .fx-modal { display: flex; flex-direction: column; }
+    .fx-copybar { display: flex; gap: 0.4rem; justify-content: flex-end; padding: 0.6rem 0.8rem 0; }
     .delay-editor { padding: 0.8rem; display: flex; flex-direction: column; gap: 0.7rem; }
     .delay-row { display: flex; align-items: center; gap: 0.6rem; }
     .delay-label { width: 72px; color: #9aa1ad; font-size: 0.82rem; }
@@ -465,6 +471,7 @@
     .xb-armed { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.1rem 0.5rem; border: 1px solid #3a3350; border-radius: 4px; background: rgba(150,110,220,0.08); }
     .xb-amt-val { min-width: 2.4rem; text-align: center; font-variant-numeric: tabular-nums; color: #cbd2e0; font-weight: 700; }
     .xb-scale { background: #11141c; color: #cbd2e0; border: 1px solid #2a3040; border-radius: 4px; padding: 0.18rem 0.35rem; }
+    .xb-key { color: #8b93a6; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .xb-sel { display: inline-flex; align-items: center; gap: 0.4rem; }
     .xb-chip { display: inline-flex; align-items: center; gap: 0.35rem; border-radius: 4px; padding: 0.12rem 0.45rem; }
     .xb-chip.xf-transpose { background: rgba(150,110,220,0.18); border: 1px solid #4a3d66; color: #d7cdf0; }
@@ -536,6 +543,8 @@
           <button id="arrUndo">Undo</button>
           <button id="arrRedo">Redo</button>
           <button id="tileDelete">Delete</button>
+          <span class="tsep"></span>
+          <label id="liteWrap" class="lite-toggle" title="Lite Instruments — simplify the CPU-heavy voices (Wendelhorn, Nayumi) for live playback to prevent dropouts. Offline exports always use the full voice."><input type="checkbox" id="liteInstruments"> Lite Instruments</label>
           <span class="tsep"></span>
           <button id="midiExport" title="Export the arrangement as a Standard MIDI file">Export MIDI</button>
           <button id="audioExport" title="Render the arrangement to a WAV audio file">Export Audio</button>

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node notch/newctx.mjs)",
+      "Bash(node notch/run.mjs)",
+      "Bash(node notch/edo.mjs)",
+      "Bash(node notch/tuning2.mjs)"
+    ]
+  }
+}

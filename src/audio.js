@@ -30,9 +30,11 @@ const INHARMONICITY = 0.0006;
 // from its peak to the base. Fixed (not a knob), as the old sound had it.
 const FILTER_ENV_TAU = 0.10;
 
-// Reference pitch for filter key tracking: middle C in the default seam. At
-// keyTrack = 1 the cutoff is patch.cutoff × (f0 / FREF), i.e. fully relative.
-const FREF = degreeToFreq(60);
+// The keyboard-tracking reference pitch (middle C in the default seam): the note
+// where a tracking control has no effect — filter tracking gives cutoff exactly
+// patch.cutoff (× (f0/FREF)^keyTrack = 1), and Boshwick's pitch tracking leaves
+// the drum at its nominal pitch. Exported so the grid can mark this pivot row.
+export const FREF = degreeToFreq(60);
 
 // Spectral tilt: partial k's amplitude is scaled by k^e, where e runs from
 // −SPREAD (dark) through 0 (neutral, timbre 0.5) to +SPREAD (bright).
@@ -179,6 +181,11 @@ export class AudioEngine {
     this.meterL = null;       // per-channel AnalyserNodes tapping the final output (stereo meter)
     this.meterR = null;
     this.masterLevel = 0.9;   // master fader value (applied live and to the export)
+    // "Lite Instruments" — a live-only CPU relief. When true, the heavy voices
+    // (Wendelhorn, Nayumi) build a cheaper graph that keeps their character. It is
+    // a workspace preference, NOT part of the document; the offline export paths
+    // always pass lite=false, so a bounce is always the full-fidelity voice.
+    this.lite = false;
     // Per-lane mixer strips: laneId -> { volume, gate, panner } nodes in series,
     //   voices -> volume (user Gain knob) -> gate (Mute/Solo 0/1) -> panner (Pan
     //   knob, mono->stereo) -> master.
@@ -456,7 +463,7 @@ export class AudioEngine {
     // ruler anchor = its position on the timeline (caller supplies; falls back
     // to elapsed for un-laned sound, which has no mods anyway).
     const elSec = this.modEpoch != null ? time - this.modEpoch : 0;
-    buildVoice(this.ctx, this.laneBus(laneId), this.moddedPatch(laneId, elSec, rulerSec != null ? rulerSec : elSec), pitch, time, duration, velocity, freq);
+    buildVoice(this.ctx, this.laneBus(laneId), this.moddedPatch(laneId, elSec, rulerSec != null ? rulerSec : elSec), pitch, time, duration, velocity, freq, this.lite);
   }
 
   /**
@@ -577,12 +584,15 @@ export class AudioEngine {
 // the same synths serve the live AudioContext and an OfflineAudioContext
 // (export). Unknown/missing kind falls back to Vesperia. See playNote /
 // renderToBuffer; the patch shapes live in instrument.js.
-function buildVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
+// `lite` (live only; the offline export paths omit it → false) asks the heavy
+// voices for a cheaper graph. Only Wendelhorn and Nayumi honour it; the rest
+// ignore it (their graphs are already light).
+function buildVoice(ctx, dest, p, pitch, time, duration, velocity, freq, lite = false) {
   switch (p && p.kind) {
     case 'zindel': return buildZindelVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
-    case 'wendelhorn': return buildWendelhornVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
+    case 'wendelhorn': return buildWendelhornVoice(ctx, dest, p, pitch, time, duration, velocity, freq, lite);
     case 'tervik': return buildTervikVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
-    case 'nayumi': return buildNayumiVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
+    case 'nayumi': return buildNayumiVoice(ctx, dest, p, pitch, time, duration, velocity, freq, lite);
     case 'boshwick': return buildBoshwickVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
     default: return buildVesperiaVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
   }
@@ -873,7 +883,7 @@ function nayumiCrushCurve(ctx, grit) {
 // lowpass) and aspiration noise both feed a parallel 3-formant bandpass bank for
 // the vowel; a little air noise bypasses it; the sum runs through an optional
 // bit-crush (Grit) and one ADSR amp envelope. A vibrato LFO sways the carrier.
-function buildNayumiVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
+function buildNayumiVoice(ctx, dest, p, pitch, time, duration, velocity, freq, lite = false) {
   const f0 = freq != null ? freq : degreeToFreq(pitch);
   const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
   const releaseTime = time + duration;
@@ -897,7 +907,7 @@ function buildNayumiVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
   // bandwidth ceiling that turns raw quantization fizz into warm lo-fi (the CMI
   // low-sample-rate character). Mix bus = where the formants + air sum.
   const mix = collect(ctx.createGain());
-  if (p.grit > 0.02) {
+  if (!lite && p.grit > 0.02) {
     const shaper = collect(ctx.createWaveShaper());
     shaper.curve = nayumiCrushCurve(ctx, p.grit);
     shaper.oversample = 'none';
@@ -955,32 +965,38 @@ function buildNayumiVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
   bright.frequency.value = clamp(800 * Math.pow(2, p.bright * 4) * (1 - NAYUMI_SOP_DARK * t), 300, nyq);
   bright.Q.value = 0.7;
   const carrierGain = collect(ctx.createGain());
-  carrierGain.gain.value = 1 - 0.6 * p.breath;   // tone recedes a touch as breath rises
+  // Breath is dropped in Lite, so the tone doesn't recede (stays at full level).
+  carrierGain.gain.value = lite ? 1 : 1 - 0.6 * p.breath;   // tone recedes a touch as breath rises
   carrier.connect(bright); bright.connect(carrierGain);
   for (const bp of bands) carrierGain.connect(bp);
 
   // Noise: aspiration through the formants (breathy vowel) + a little air on top
   // (high-passed, bypassing the formants). One looping source feeds both. Rounding
   // fades the breath out up high (folded into t, so Soprano 0 leaves breath alone).
-  const breathScale = p.breath * (1 - NAYUMI_SOP_BREATH * t);
-  const noise = collect(ctx.createBufferSource());
-  noise.buffer = nayumiNoiseBuffer(ctx);
-  noise.loop = true;
-  const aspGain = collect(ctx.createGain());
-  aspGain.gain.value = 0.6 * breathScale;
-  noise.connect(aspGain);
-  for (const bp of bands) aspGain.connect(bp);
+  // Lite drops the whole breath path (a looping BufferSource + a biquad per note);
+  // the vibrato + formant vowel stay, so it keeps its voice.
+  let noise = null;
+  if (!lite) {
+    const breathScale = p.breath * (1 - NAYUMI_SOP_BREATH * t);
+    noise = collect(ctx.createBufferSource());
+    noise.buffer = nayumiNoiseBuffer(ctx);
+    noise.loop = true;
+    const aspGain = collect(ctx.createGain());
+    aspGain.gain.value = 0.6 * breathScale;
+    noise.connect(aspGain);
+    for (const bp of bands) aspGain.connect(bp);
 
-  const airHP = collect(ctx.createBiquadFilter());
-  airHP.type = 'highpass';
-  airHP.frequency.value = 2000;
-  const airGain = collect(ctx.createGain());
-  airGain.gain.value = 0.12 * breathScale;
-  noise.connect(airHP); airHP.connect(airGain); airGain.connect(mix);
+    const airHP = collect(ctx.createBiquadFilter());
+    airHP.type = 'highpass';
+    airHP.frequency.value = 2000;
+    const airGain = collect(ctx.createGain());
+    airGain.gain.value = 0.12 * breathScale;
+    noise.connect(airHP); airHP.connect(airGain); airGain.connect(mix);
+  }
 
   carrier.start(time); carrier.stop(stop);
   vib.start(time); vib.stop(stop);
-  noise.start(time); noise.stop(stop);
+  if (noise) { noise.start(time); noise.stop(stop); }
   carrier.onended = () => { for (const n of nodes) { try { n.disconnect(); } catch (e) { /* gone */ } } };
 }
 
@@ -1238,7 +1254,7 @@ function wendelLFO(ctx, rate, phase) {
 // swell), each with an uneven slow pitch LFO (Ensemble/Speed) and a pan by
 // detune (Stereo), summed through one ADSR amp envelope and a resonant lowpass
 // with envelope (the brass swell — same shape as Vesperia).
-function buildWendelhornVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
+function buildWendelhornVoice(ctx, dest, p, pitch, time, duration, velocity, freq, lite = false) {
   const f0 = freq != null ? freq : degreeToFreq(pitch);
   const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
   const releaseTime = time + duration;
@@ -1289,7 +1305,7 @@ function buildWendelhornVoice(ctx, dest, p, pitch, time, duration, velocity, fre
   // each saw taps one, so the ensemble shimmer stays lively without an oscillator
   // per saw (7 saws + 3 LFOs/voice, not 7 + 7).
   let shared = null;
-  if (ensembleOn) {
+  if (!lite && ensembleOn) {
     shared = [];
     for (let j = 0; j < WENDEL_ENS_LFOS; j++) {
       const rate = p.speed * (1 + (j - (WENDEL_ENS_LFOS - 1) / 2) * WENDEL_ENS_JITTER);
@@ -1297,6 +1313,42 @@ function buildWendelhornVoice(ctx, dest, p, pitch, time, duration, velocity, fre
       lfo.start(time); lfo.stop(stop);
       shared.push(lfo); stopOscs.push(lfo); extra.push(lfo);
     }
+  }
+
+  // Lite (live CPU relief): 3 mono saws (center + the two widest), no ensemble
+  // LFOs, no per-saw panners — ~3 oscillators instead of ~10. The pitch-attack
+  // blip, filter envelope and amp envelope stay, so it still reads as the brass.
+  // Gains are renormalized to the full 7-saw summed level so toggling Lite
+  // doesn't jump the volume. (The offline export never passes lite, so a bounce
+  // is always the full voice.)
+  if (lite) {
+    const liteOffsets = [WENDEL_OFFSETS[0], 0, WENDEL_OFFSETS[lastIdx]];
+    const fullSum = cGainWide + sGain * lastIdx;          // full graph's summed gain
+    const liteSum = cGain + sGain * 2;                    // this graph's, pre-scale
+    const liteScale = liteSum > 1e-6 ? fullSum / liteSum : 1;
+    liteOffsets.forEach((off) => {
+      const isCenter = off === 0;
+      const osc = ctx.createOscillator();
+      osc.setPeriodicWave(waves[Math.floor(Math.random() * waves.length)]); // random phase
+      osc.frequency.value = f0;
+      const staticDetune = off * WENDEL_MAX_DETUNE_CENTS * p.detune;
+      if (p.pitchAtk > 0.01 && p.pitchAtkTime > 0) {
+        osc.detune.setValueAtTime(staticDetune + p.pitchAtk, time);
+        osc.detune.setTargetAtTime(staticDetune, time, p.pitchAtkTime / 4);
+      } else {
+        osc.detune.value = staticDetune;
+      }
+      const cg = ctx.createGain();
+      cg.gain.value = (isCenter ? cGain : sGain) * liteScale / WENDEL_NORM;
+      osc.connect(cg);
+      cg.connect(env);          // mono: straight into the amp env (no panner)
+      osc.start(time);
+      osc.stop(stop);
+      stopOscs.push(osc);
+      extra.push(cg);
+    });
+    stopOscs[stopOscs.length - 1].onended = () => { for (const n of extra) n.disconnect(); };
+    return;
   }
 
   WENDEL_OFFSETS.forEach((off, i) => {

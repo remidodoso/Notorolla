@@ -59,6 +59,21 @@ export function tuningFreq(degree, tuningId = '12-et', root = 0) {
   return (TUNINGS[tuningId] || TUNINGS['12-et']).freq(degree, root);
 }
 
+// The degree whose pitch is nearest a fixed reference FREQUENCY in a tuning —
+// used to mark an absolute reference (e.g. the keyboard-tracking pivot, middle C)
+// on the degree grid. Nearest in log-frequency; scans a generous degree range
+// (well past A0..C8). For 12-ET and 16-ET (both anchored at middle C) the middle-C
+// reference returns degree 60 exactly; sparser/just tunings land on the closest.
+export function nearestDegreeToFreq(hz, tuningId = '12-et', root = 0) {
+  const target = Math.log(hz);
+  let best = 60, bestErr = Infinity;
+  for (let d = -30; d <= 150; d++) {
+    const err = Math.abs(Math.log(tuningFreq(d, tuningId, root)) - target);
+    if (err < bestErr) { bestErr = err; best = d; }
+  }
+  return best;
+}
+
 // Degrees per octave for a tuning (the EDO / equave division). The modulus the
 // pitch-class logic uses; defaults to 12 for an unknown tuning.
 export function edoOf(tuningId = '12-et') {

@@ -83,6 +83,7 @@ export class GridView {
     this._pendingClick = null;    // { col, lane, before, t, timer } — a chit single-click held DBL_MS to see if it's a double
     this._cursorZone = null;      // 'body' | 'footer' — so the hover cursor only re-sets on a zone change
     this.resize = null;
+    this.referenceDegree = null;  // degree to mark as the keyboard-tracking pivot (Boshwick), or null
     this.prospective = new Map(); // col -> { degree, durIndex } : un-set proposal notes
     this.selection = new Set();   // selected note-column indices (transient; Ctrl-click)
     this.selDrag = null;          // in-progress Ctrl gesture (toggle vs marquee)
@@ -568,6 +569,12 @@ export class GridView {
       // In-scale rows get a faint cool wash (only when a non-chromatic mask is on).
       if (this.pattern.scaleId !== 'chromatic' && inScale(this.pattern.scaleId, this.pattern.root, d, edo)) {
         ctx.fillStyle = 'rgba(90, 169, 255, 0.06)';
+        ctx.fillRect(0, y, W, ROW_H);
+      }
+      // The keyboard-tracking pivot row (Boshwick): a soothing faded-pink band so
+      // you can see the reference pitch that's unaffected by the Pitch Track knob.
+      if (d === this.referenceDegree) {
+        ctx.fillStyle = 'rgba(240, 140, 175, 0.13)';
         ctx.fillRect(0, y, W, ROW_H);
       }
       if (isActive) {

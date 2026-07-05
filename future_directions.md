@@ -31,6 +31,8 @@ a shared enabler. Rough read before the details:
 | **9. Convolution cross-synthesis** | native `ConvolverNode` + offline bounce | **no** — reuses the reverb core | reverb + `renderToBuffer`; sample-IR waits on 5 |
 | **10. Analog synths** (mono+glide, poly Prophet/OB) | native subtractive engine (shared) | **no** | glide pairs with 7's legato/gate |
 | **11. Scale-space tools** | scale-mask library (data) + transpose features | **no** | harmonization waits on 7 |
+| **12. Tile inspector** (per-tile modifiers) | pure model + UI | no | composes with 1 & 7 |
+| **13. Instrument cleanup pass** (levels, weak controls, shared labels) | audio metering + DSP tuning | no | — |
 
 Two corrections to flag up front, because they change sequencing:
 
@@ -579,14 +581,14 @@ steps are unequal, so scale-step transposition **warps interval qualities** inst
 translating them — in asymmetric/exotic scales that produces surprising-but-coherent material,
 exactly the app's north star.)
 
-**The cheap enabler: a real scale-mask library.** In [src/scales.js](src/scales.js) a mask is
-**just data** (`scalesFor(edo)`), and today the set is thin (Chromatic + two pentatonics +
-Mavila). Adding a generous 12-ET palette is pure data and an immediate multiplier: the **seven
-modes**, melodic/harmonic minor + modes, and especially the **symmetric** scales — **whole-tone,
-octatonic (diminished), augmented** — which give scale-transposition its most disorienting even
-shifts. Then exotic/world scales, Messiaen modes. Microtonal masks are just as data-cheap *per
-EDO*, but new EDOs are tuning-seam work and **non-octave** scales (Bohlen-Pierce, Carlos) need
-the deferred equave/viewport rework. Endgame: **Scala `.scl` import** (thousands of scales).
+**The cheap enabler: a real scale-mask library — BUILT (2026-07).** In [src/scales.js](src/scales.js)
+a mask is **just data** (`scalesFor(edo)`), and the generous 12-ET palette is now in: the **seven
+modes**, harmonic/melodic minor, blues, and especially the **symmetric** scales — **whole-tone,
+octatonic (diminished) ×2, augmented** — which give scale-transposition its most disorienting even
+shifts (data-driven picker; `scales3.mjs`). Still ahead: exotic/world scales, Messiaen modes.
+Microtonal masks are just as data-cheap *per EDO*, but new EDOs are tuning-seam work and
+**non-octave** scales (Bohlen-Pierce, Carlos) need the deferred equave/viewport rework. Endgame:
+**Scala `.scl` import** (thousands of scales).
 
 **Features that turn transposition into a harmony *generator*** (roughly by payoff):
 
@@ -599,7 +601,10 @@ the deferred equave/viewport rework. Endgame: **Scala `.scl` import** (thousands
 - **Evolving / per-repeat scale transposition** *(the loop aesthetic).* Step the pattern by
   scale degrees each loop pass — the scale-space cousin of the per-lane modulators (`mods.js`).
 - **Scale sequence & random offsets** *(generators).* A Hanon-style spinner (emit copies, each
-  +k scale steps) and bounded-random scale offsets — the étude / New-Random philosophy.
+  +k scale steps) and bounded-random scale offsets — the étude / New-Random philosophy. **Reuse New
+  Random's proven pattern:** bias generation *in place* by weighting the pick within the
+  harmonic/melodic constraints (its **Steer** mode, `biasTargets`/`biasedPick`) rather than
+  re-sorting the result — steering preserves Run/Triad/arpeggio contour, sorting destroys it.
 - **Scale-space inversion / rotation** — invert a melody *within* the scale around a pivot
   (modal inversion); also the clean answer to the long-open "Invert needs a pivot" question.
 
@@ -608,6 +613,142 @@ Triadulator (scale-diatonic chords), the mods system (evolving transposition), t
 work (inversion + sequences). Clean split for sequencing: **scale library + projection +
 evolving transposition ship now (monophonic); harmonization lands right after 7.** All native,
 no WASM.
+
+---
+
+## 12. Tile inspector — the per-tile modifier stack
+
+**The idea (yours):** individual tiles in the player can already be changed without touching the
+pattern they reference — today that's transpose and reverse. Add more per-tile modifiers, and give
+them a proper home: a **tile inspector** panel for the selected tile. The first real new use:
+**change instrument settings per tile** — e.g. a different **Nayumi vowel** on different tiles that
+all reference the same pattern on the same lane.
+
+**What's already here.** This extends machinery we have:
+
+- **Per-tile transforms** ([src/transforms.js](src/transforms.js)) live on the tile *instance*, are
+  applied when the score is built ([src/main.js](src/main.js) `arrangementScore`), never change the
+  referenced pattern, are honored in the offline bounce, and are saved with the tile. Two tiles
+  sharing one pattern already sound different.
+- **Instrument patches live on the lane** (`lane.patch`, resolved per note by `patchFor(laneId)`),
+  and **mods** ([src/mods.js](src/mods.js)) are a per-lane, per-instrument thing that stays there.
+
+**The one real change.** The instrument is chosen per *lane*, but a tile is a group of notes *within*
+a lane — several tiles on one lane share one instrument. So to vary a setting per tile, each note has
+to carry its tile's override down to where the voice is built. That's the only new plumbing;
+everything else is placement.
+
+**How the instrument override works:**
+
+- Stored on the tile as **just the settings that differ** (a small delta), not a full copy — so
+  editing the lane's instrument still flows through to every other setting. Same reason transforms are
+  stored as instructions, not baked notes.
+- Stored **keyed by instrument kind** (mirroring `lane.modsByKind`), so switching the lane's
+  instrument away and back leaves the override intact, and an override for an instrument the lane
+  isn't currently using is simply ignored.
+- **Applied when each note's voice is built, and included in the offline export** — a per-tile
+  setting is real musical content, so the bounce must reflect it (the opposite of the Lite switch,
+  which is a live-only preference).
+- **First cut is an absolute set** ("vowel = ee"), which also makes menu-style settings like the vowel
+  work directly. **Relative offsets** ("a bit brighter") are the early follow-on, reusing the mod
+  system's even-feeling slider math.
+- **Scope is settings within the lane's current instrument** — not swapping the instrument itself. But
+  build the resolution so a tile *layers on top of* the lane's instrument, leaving room to grow toward
+  the future where **"the lane has a default instrument"** and tiles (or notes) can override more
+  deeply. Don't hard-wire "one lane = one fixed instrument" at the point where the voice is chosen.
+
+**The inspector UI.** Select a tile → a panel shows its modifiers: the existing transforms, plus an
+instrument-override section that renders the lane instrument's own controls (reusing the instrument
+pane, [src/instrumentpane.js](src/instrumentpane.js)) with an inherit-or-override choice per setting.
+For a Nayumi lane that's a vowel menu; for Wendelhorn, detune/cutoff/etc. The panel is also the home
+for the modifiers below. Even where a setting isn't editable yet, the inspector should **show the
+relevant facts** — e.g. the transpose control lists the *current* scale library (not a frozen subset)
+and shows the tile's **key**, read-only if need be, so nothing important is hidden.
+
+**A floating, non-modal, scroll-resistant pane (decided shape).** Unlike today's editors (delay,
+reverb, random), which are modal dialogs that block everything until closed, the inspector **stays
+open and follows the selection** — click from tile to tile and it updates. It's a **draggable,
+position-remembered floating pane**, and it must **resist scrolling**: `position: fixed` so it doesn't
+ride the page scroll, any overflow scrolls *inside* the pane (never the page), scroll-chaining
+contained so a control or the pane's end doesn't start scrolling the page behind it, and no auto-scroll
+of the document when dragging near an edge. The same no-scroll discipline holds in the popped-out
+window below.
+
+**Pop out into its own window (decided; with a Firefox caveat).** Build the inspector so it **renders
+into a container element without caring which document that container lives in** — then docked →
+floating → popped-out is just *moving the container* (a DOM node can be adopted into another window's
+document), not a second implementation. The pop-out itself uses plain `window.open` (same-origin, so
+the main window's code drives the popped-out document and the audio engine stays in the main window —
+no dependencies, no build step); the cost is copying the app's styles into the new window, handling it
+being closed (re-dock), and that a popup needs a real click, so it **can't auto-reopen on reload** (it
+returns as a floating pane, re-pop with a click). The nicer always-on-top "document picture-in-picture"
+API is **Chromium-only**, so it's ruled out on the same Firefox-first grounds as the File System Access
+API. Make the pop-out mechanism **generic to any pane**, not inspector-only — that's the same "panes in
+separate windows" capability flagged in subsequences (1), so a subsequence window reuses it later.
+
+**Fixed order (decided).** Modifiers apply in **one built-in order** — there is no per-tile "drag to
+reorder." When we add order-dependent transforms (rotate especially), you get the result you want by
+choosing the rotate direction, not by rearranging. (An arbitrary, user-ordered insert stack is a
+separate, later **mixer pane** — audio effects — not this.)
+
+**Other modifiers the inspector will hold (later):**
+
+- **A timing nudge** — shift the whole tile a little early/late, separate from its placed start. Units
+  left open (milliseconds / beats / MIDI ticks).
+- **"MIDI effects" — note doublers**, e.g. play a second copy of the tile ~50 ms offset. This
+  **re-triggers the voice** (a fresh attack, honoring each copy's pitch and tuning), which is
+  musically different from the lane's existing **audio** delay insert (that copies the sound already
+  produced). It pairs with the pre-beat scheduling trick already banked for grace notes/flams in 7.
+
+**How it composes.**
+
+- With **subsequences (1)**: the same modifiers apply to a whole nested block (a brighter, echoed,
+  reversed *nest*), with a small decision to make about how a nest's override reaches the tiles inside
+  it.
+- With **polyphony/expression (7)**: a per-tile timbre change is the tile-level sibling of per-note
+  articulation.
+- The "**change 'timbre' regardless of which instrument**" idea waits on the instrument pass (13),
+  which adds the shared labels that make it possible.
+
+**Cost.** Pure model + UI — no WASM, no new sound-generating code. One small override on the note, one
+merge where the voice is built, matching behavior in the export, and the inspector panel.
+**Watch-outs:** note doublers and late nudges push notes past the tile's nominal end, so the export
+tail length has to include them (the reverb/delay code already does this kind of accounting). Deciding
+what wins when a tile setting and a lane mod touch the same thing is left for later.
+
+---
+
+## 13. Instrument cleanup pass — levels, weak controls, shared labels
+
+**The idea (yours):** a real pass over the existing instruments. Several have **volume mismatches**,
+and a number of sliders **don't do much when they should**. Fix that, and while in there, add the
+shared control labels described below.
+
+**What the pass covers:**
+
+- **Match levels across instruments** so switching kinds doesn't jump the loudness. There's already a
+  metering rig for this — the `wasim.mjs` simulator referenced in 7 — so re-metering every kind to a
+  common reference is testable, not by-ear guesswork.
+- **Make weak sliders earn their place** — widen ranges, re-curve where a knob's useful action is
+  bunched at one end, and fix or drop settings that barely change the sound.
+- **Add shared labels ("roles") to settings.** Each instrument tags some of its controls with a
+  common name — a **timbre** control, a **filter sweep** control, a **brightness** control, and so on.
+  Once those exist, a mod, a per-tile override (12), or a per-note articulation (7) can ask for
+  "brighter" without knowing which instrument it's talking to, and each instrument does something
+  sensible — or nothing, gracefully, where the role doesn't apply (an organ with no filter just
+  ignores "filter sweep").
+
+**Why it's its own entry.** It's partly overdue maintenance that makes *everything* sound better, and
+partly an enabler: the shared labels let **lane mods survive an instrument change**, let **tile
+overrides ignore which instrument is loaded**, and give **7's articulation** the vocabulary it already
+assumes — 7 describes articulations as bundles of offsets that "the voice interprets in its own DSP
+terms," which is exactly this. So this pass unblocks the "change the sound in instrument-agnostic
+terms" idea that runs through mods, tiles, and expression.
+
+**Cost.** Audio tuning + metering, no WASM. Mostly careful adjustment of the existing voice code plus
+the small amount of metadata for the shared labels. **Tie-ins:** 7 (articulation is the per-note user
+of the labels), 12 (tile overrides start with concrete settings and gain the shared labels once this
+lands).
 
 ---
 
@@ -644,14 +785,16 @@ offline WAV bounce) is the same seam self-bounce drones (2) and any offline rend
 
 ## Sequencing (a recommended path)
 
-**Near-term (settled this session — the actual next work):** (0a) **octatonic + whole-tone +
-augmented masks** into `scales.js` right now — pure data, and the immediate multiplier for
-scale-step transposition (11). (0b) then the rest of the **scale-mask library + monophonic
-scale-space features** (projection, evolving transposition — 11), which ship without polyphony.
-(0c) the **grid-editor overhaul (7)** — starting with the **notes-list refactor**, then the four
-"basic improvements" (chord entry · note-length drag incl. gate>1 · velocity/expression editing ·
-selection ergonomics), the named-articulation seam, and the instrument responsiveness pass.
-Scale-step **harmonization** (11) and the multi-sound drum track (3b) fall in right after 7.
+**Near-term progress (as of 2026-07):** (0a) **octatonic + whole-tone + augmented masks** — **DONE**,
+part of (0b). (0b) the **scale-mask library is BUILT** (full 12-ET palette); the **monophonic
+scale-space features** (projection, evolving transposition — 11) remain and ship without polyphony.
+(0c) the **grid-editor overhaul (7)** — the **performance lanes are BUILT** (Phases 1–2: the
+duration/accent/articulation groove lanes + the **notes lane + arm-then-drag selective swap**), and
+New Random grew groove-aware **Duration/Accent bias** (steer-vs-sort). The remaining big piece is the
+**notes-list refactor** (Phase 3) → the four "basic improvements" (chord entry · note-length drag
+incl. gate>1 · velocity/expression editing · selection ergonomics), then the named-articulation seam
+and the instrument responsiveness pass. Scale-step **harmonization** (11) and the multi-sound drum
+track (3b) fall in right after 7.
 
 Then, ordered by *leverage per unit cost*, respecting the dependency edges above:
 

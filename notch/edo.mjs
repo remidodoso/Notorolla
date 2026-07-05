@@ -97,5 +97,13 @@ ok((((20 % 16) + 16) % 16) === 4, 'sanity: 20 mod 16 = 4');
   ok(typeof out[0].freq === 'number' && isFinite(out[0].freq) && out[0].freq > 0, 'transposed note got a finite freq');
 }
 
+// --- transpose root is stored raw (no % 12), so non-12 tunings (16-ET) keep a
+// root ≥ 12 instead of being corrupted by the old clamp ---
+{
+  ok(transposeTransform(1, 'chromatic', 13).root === 13, 'root 13 preserved (16-ET), not clamped to 1');
+  ok(transposeTransform(1, 'chromatic', 5).root === 5, 'in-range root unchanged');
+  ok(transposeTransform(1, 'chromatic', NaN).root === 0, 'non-finite root → 0');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

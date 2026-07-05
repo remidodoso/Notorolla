@@ -1,4 +1,5 @@
-import { edoOf, tuningFreq, degreeToName, pitchClassName, TUNING_LIST } from '../src/tuning.js';
+import { edoOf, tuningFreq, degreeToName, pitchClassName, TUNING_LIST, nearestDegreeToFreq } from '../src/tuning.js';
+import { FREF } from '../src/audio.js';
 let pass=0, fail=0;
 const ok=(c,m)=>{ if(c){pass++;}else{fail++;console.log('FAIL:',m);} };
 const near=(a,b,e=0.01)=>Math.abs(a-b)<=e;
@@ -18,6 +19,13 @@ ok(near(tuningFreq(61,'16-et')/C, Math.pow(2,1/16)), 'one step = 2^(1/16) (75¢)
 ok(near(tuningFreq(69,'16-et')/C, Math.pow(2,9/16)), '9 steps = the flat fifth');
 // 12-ET unchanged
 ok(near(tuningFreq(60,'12-et'), 261.6256), '12-ET deg60 still middle C');
+
+// nearestDegreeToFreq: the keyboard-tracking pivot (FREF = middle C) lands on
+// degree 60 in both 12-ET and 16-ET (both are anchored at middle C).
+ok(FREF > 261 && FREF < 262, `FREF is middle C (got ${FREF.toFixed(3)})`);
+ok(nearestDegreeToFreq(FREF, '12-et', 0) === 60, '12-ET pivot row = degree 60');
+ok(nearestDegreeToFreq(FREF, '16-et', 0) === 60, '16-ET pivot row = degree 60 (anchored at middle C)');
+ok(nearestDegreeToFreq(tuningFreq(72, '12-et'), '12-et', 0) === 72, 'nearest picks the exact degree when one matches');
 ok(near(tuningFreq(69,'12-et'), 440), '12-ET deg69 = A440');
 
 // Naming: 16-ET hex classes + octave; 12-ET letters unchanged

@@ -1,6 +1,6 @@
 // main.js — wire model, audio, scheduler, grid, roll, tiles, toolbar, panes.
 
-import { AudioEngine } from './audio.js';
+import { AudioEngine, FREF } from './audio.js';
 import { Scheduler } from './scheduler.js';
 import { PianoRoll, ROLL_V_SCALES, ROLL_H_SCALES, ROLL_V_DEFAULT, ROLL_H_DEFAULT } from './pianoroll.js';
 import { Note, Score } from './model.js';
@@ -8,8 +8,8 @@ import { Pattern, BASE_PITCH, DURATIONS, DEFAULT_ARTIC } from './grid.js';
 import { PatternLibrary, Arrangement, laneColor, insertPoint, deletePoint } from './library.js';
 import { enumerateTriadulations, familiesFor, familyLabel, chordsFor } from './triads.js';
 import { generateRandom, applyDurationBias, applyAccentBias, RANDOM_DEFAULTS } from './random.js';
-import { edoOf, tuningFreq, pitchClassName, degreeBounds } from './tuning.js';
-import { scalesFor, scaleValidForEdo } from './scales.js';
+import { edoOf, tuningFreq, pitchClassName, degreeBounds, nearestDegreeToFreq } from './tuning.js';
+import { scalesFor, scaleValidForEdo, scaleById } from './scales.js';
 import { notesToMidi } from './midi.js';
 import { encodeWav, encodeBwf } from './wav.js';
 import { zipStore } from './zip.js';
@@ -58,6 +58,9 @@ const state = {
   tileScaleIdx: DEFAULT_SCALE_IDX, // tile-player horizontal scale (view-only)
   masterGain: 0.9,    // master fader (0..1.4); applied live and to the export
   modLoop: false,     // global "Loop Mod": modulators on ruler time (reset each loop) vs elapsed
+  lite: false,        // "Lite Instruments": cheaper live graph for the heavy voices (offline is always full)
+  gridInstr: null,    // grid's active instrument: null = its own gridPatch, or { source:'lane', laneId } borrowed from a loaded tile
+  parkedInstr: null,  // the instrument descriptor the parked pattern was using (restored with it)
   ripple: false,      // tile insert/delete ripple (off = exact placement, overwrite on overlap)
   playheadBeat: 0,    // where the tile transport is parked when stopped (beats, absolute)
   tileScrollX: 0,     // tile player's horizontal scroll (px; restored on reload as-is)
@@ -98,6 +101,7 @@ const library = savedLib
 
 const engine = new AudioEngine();
 engine.masterLevel = state.masterGain; // ensureRunning will apply it to the master node
+engine.lite = state.lite;              // Lite Instruments (live only); read at every note-on
 
 // Instrument patches now live per lane (lane.patch, saved with the project). The
 // grid's click-to-hear / Test uses a separate neutral patch — a workspace
@@ -118,12 +122,72 @@ const gridPatch = normalizePatch(readJSON(GRIDPATCH_KEY));
   });
 })();
 
-// Resolve the patch for a voice: a lane's own patch, or the grid/neutral patch
-// for un-laned sound (grid playback/audition). Read fresh per note, so edits in
-// the instrument pane are heard on the next note.
+// The grid's active instrument. Normally the grid's own neutral gridPatch, but
+// while a tile is loaded the grid BORROWS that tile's lane instrument (so the
+// pattern plays through the sound it belongs to). A descriptor, not a patch, so
+// borrowing stays a live reference to the lane; persisted so a reload keeps it.
+let gridInstr = state.gridInstr && state.gridInstr.source === 'lane' && arrangement.lane(state.gridInstr.laneId)
+  ? { source: 'lane', laneId: state.gridInstr.laneId }
+  : { source: 'grid' };
+// The instrument the parked pattern was using, restored when it's restored
+// (best-effort — a lane that's since gone falls back to the grid's own).
+let parkedInstr = state.parkedInstr || null;
+
+// The patch the grid plays/edits with: the borrowed lane's patch when a tile is
+// loaded (falling back if that lane is gone), else the grid's own gridPatch.
+function resolveGridInstrPatch() {
+  if (gridInstr.source === 'lane') {
+    const lane = arrangement.lane(gridInstr.laneId);
+    if (lane) return lane.patch;
+  }
+  return gridPatch;
+}
+
+// Set which instrument the grid plays/edits with (validated: a missing lane falls
+// back to the grid's own). Re-points the pane when the grid is focused, and
+// records it for persistence so a reload keeps the same grid instrument.
+function setGridInstr(desc) {
+  gridInstr = desc && desc.source === 'lane' && arrangement.lane(desc.laneId)
+    ? { source: 'lane', laneId: desc.laneId }
+    : { source: 'grid' };
+  state.gridInstr = gridInstr.source === 'lane' ? { source: 'lane', laneId: gridInstr.laneId } : null;
+  if (activePane === 'grid') editGrid(); // re-point the pane at the new instrument
+}
+
+function setParkedInstr(desc) { parkedInstr = desc || null; state.parkedInstr = parkedInstr; }
+
+// Overwrite the grid's own neutral patch in place with a copy of `src` (keeping
+// the gridPatch object identity so editTarget/patchFor references stay valid).
+// Used when Clone promotes a borrowed tile instrument to be the grid's own.
+function replaceGridPatch(src) {
+  const copy = clonePatch(src);
+  for (const k of Object.keys(gridPatch)) delete gridPatch[k];
+  Object.assign(gridPatch, copy);
+  safeSet(GRIDPATCH_KEY, JSON.stringify(gridPatch));
+}
+
+// The keyboard-tracking pivot row to mark on the grid — the degree nearest the
+// fixed reference frequency (middle C) in the pattern's tuning — but only for
+// Boshwick, whose Pitch Track pivots there. null = no band (other instruments).
+function referenceDegreeFor(pattern) {
+  return resolveGridInstrPatch().kind === 'boshwick'
+    ? nearestDegreeToFreq(FREF, pattern.tuningId, pattern.root || 0)
+    : null;
+}
+
+// Recompute + redraw the grid's pivot band (for changes that don't run a full
+// refresh — e.g. switching the edited instrument's kind).
+function syncGridReference() {
+  grid.referenceDegree = referenceDegreeFor(library.current());
+  grid.draw();
+}
+
+// Resolve the patch for a voice: a lane's own patch, or the grid's ACTIVE
+// instrument for un-laned sound (grid playback/audition) — the grid's own patch,
+// or a borrowed tile instrument. Read fresh per note, so edits are heard next note.
 engine.patch = gridPatch; // fallback default
 engine.patchFor = (laneId) => {
-  if (laneId == null) return gridPatch;
+  if (laneId == null) return resolveGridInstrPatch();
   const lane = arrangement.lane(laneId);
   return lane ? lane.patch : gridPatch;
 };
@@ -459,7 +523,7 @@ const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, 
   onSolo: (laneId) => toggleLaneFlag('solo', laneId),
   onAddLane: () => addLane(),
   onResetLane: (laneId) => resetLane(laneId),
-  onEdit: (laneId) => editLane(laneId),
+  onEdit: (laneId) => editLane(laneId, true), // explicit Edit → scroll the pane into view
   onMixStart: () => onMixStart(),
   onMixChange: (laneId, key, value) => onMixChange(laneId, key, value),
   onMixEnd: () => onMixEnd(),
@@ -478,62 +542,85 @@ const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, 
 });
 tilePlayer.rippleMode = state.ripple; // restore the Ripple toggle (workspace pref)
 
-// Open the per-lane delay editor in a modal. The whole editing session is ONE
-// undo step: snapshot on open (the shared arrangement-edit bracket), apply each
-// change to the audio live, and commit on close. No undo while the modal is open.
+// In-memory Copy/Paste clipboards for the effect editors — one per effect type
+// (a delay can't paste onto a reverb). Cleared on reload; persists across modal
+// opens so you can copy one lane's effect and paste it onto another.
+const fxClip = { delay: null, chorus: null, reverb: null };
+
+// A standardized Copy/Paste bar for the effect modals. Copy snapshots the config
+// into the per-type clipboard; Paste overwrites the config IN PLACE (so the lane's
+// object identity holds), applies it to the audio, and rebuilds the controls.
+function fxCopyBar(kind, cfg, normalize, apply, rebuild) {
+  const bar = document.createElement('div');
+  bar.className = 'fx-copybar';
+  const copy = document.createElement('button');
+  copy.className = 'tbtn'; copy.textContent = 'Copy'; copy.title = 'Copy these settings';
+  const paste = document.createElement('button');
+  paste.className = 'tbtn'; paste.textContent = 'Paste'; paste.title = 'Paste copied settings';
+  paste.disabled = !fxClip[kind];
+  copy.addEventListener('click', () => { fxClip[kind] = normalize(cfg); paste.disabled = false; });
+  paste.addEventListener('click', () => {
+    if (!fxClip[kind]) return;
+    const next = normalize(fxClip[kind]);
+    for (const k of Object.keys(cfg)) delete cfg[k];
+    Object.assign(cfg, next);
+    apply();
+    rebuild(); // re-read the pasted values into the controls
+  });
+  bar.append(copy, paste);
+  return bar;
+}
+
+// Open one of the per-lane effect editors (delay / chorus / reverb) in a modal.
+// The whole session is ONE undo step: snapshot on open (the shared arrangement-
+// edit bracket), apply each change live, commit on close. A standardized Copy/
+// Paste bar sits atop the editor; Paste rebuilds the body to show the new values.
+function openFxModal({ title, kind, cfg, normalize, buildBody, apply, onClose }) {
+  onMixStart(); // capture the pre-edit snapshot
+  const wrap = document.createElement('div');
+  wrap.className = 'fx-modal';
+  const rebuild = () => {
+    wrap.textContent = '';
+    wrap.append(fxCopyBar(kind, cfg, normalize, apply, rebuild), buildBody());
+  };
+  rebuild();
+  openModal({ title, body: wrap, onClose });
+}
+
 function openDelayModal(laneId) {
   const lane = arrangement.lane(laneId);
   if (!lane) return;
   const idx = arrangement.lanes.indexOf(lane);
-  onMixStart(); // capture the pre-edit snapshot
-  const body = buildDelayEditor(lane.delay, { onChange: () => engine.applyLaneDelay(laneId) });
-  openModal({
-    title: `Delay — Lane ${idx + 1}`,
-    body,
-    onClose: () => {
-      engine.applyLaneDelay(laneId);
-      onMixEnd();          // commit one undo step if changed + persist + dirty
-      tilePlayer.render(); // reflect the D-button lit state
-    },
+  const apply = () => engine.applyLaneDelay(laneId);
+  openFxModal({
+    title: `Delay — Lane ${idx + 1}`, kind: 'delay', cfg: lane.delay, normalize: normalizeDelay, apply,
+    buildBody: () => buildDelayEditor(lane.delay, { onChange: apply }),
+    onClose: () => { apply(); onMixEnd(); tilePlayer.render(); /* reflect the D-button lit state */ },
   });
 }
 
-// Open the per-lane chorus editor in a modal — same one-undo-step bracket as the
-// delay modal (snapshot on open, apply live on each change, commit on close).
 function openChorusModal(laneId) {
   const lane = arrangement.lane(laneId);
   if (!lane) return;
   const idx = arrangement.lanes.indexOf(lane);
-  onMixStart(); // capture the pre-edit snapshot
-  const body = buildChorusEditor(lane.chorus, { onChange: () => engine.applyLaneChorus(laneId) });
-  openModal({
-    title: `Chorus — Lane ${idx + 1}`,
-    body,
-    onClose: () => {
-      engine.applyLaneChorus(laneId);
-      onMixEnd();          // commit one undo step if changed + persist + dirty
-      tilePlayer.render(); // reflect the C-button lit state
-    },
+  const apply = () => engine.applyLaneChorus(laneId);
+  openFxModal({
+    title: `Chorus — Lane ${idx + 1}`, kind: 'chorus', cfg: lane.chorus, normalize: normalizeChorus, apply,
+    buildBody: () => buildChorusEditor(lane.chorus, { onChange: apply }),
+    onClose: () => { apply(); onMixEnd(); tilePlayer.render(); /* reflect the C-button lit state */ },
   });
 }
 
-// Open the per-lane insert-reverb editor in a modal — same one-undo-step
-// bracket (snapshot on open, apply live on each change, commit on close).
 function openReverbModal(laneId) {
   const lane = arrangement.lane(laneId);
   if (!lane) return;
   const idx = arrangement.lanes.indexOf(lane);
   if (!lane.reverb) lane.reverb = normalizeReverb(null); // older autosaves lack the field
-  onMixStart(); // capture the pre-edit snapshot
-  const body = buildReverbEditor(lane.reverb, { onChange: () => engine.applyLaneReverb(laneId) });
-  openModal({
-    title: `Reverb — Lane ${idx + 1}`,
-    body,
-    onClose: () => {
-      engine.applyLaneReverb(laneId);
-      onMixEnd();          // commit one undo step if changed + persist + dirty
-      tilePlayer.render(); // reflect the R-button lit state
-    },
+  const apply = () => engine.applyLaneReverb(laneId);
+  openFxModal({
+    title: `Reverb — Lane ${idx + 1}`, kind: 'reverb', cfg: lane.reverb, normalize: normalizeReverb, apply,
+    buildBody: () => buildReverbEditor(lane.reverb, { onChange: apply }),
+    onClose: () => { apply(); onMixEnd(); tilePlayer.render(); /* reflect the R-button lit state */ },
   });
 }
 
@@ -790,6 +877,7 @@ function selectTile(id, ev) {
       clearProposal();
       grid.clearSelection();
       library.open(p.name);
+      setGridInstr(lane ? { source: 'lane', laneId: lane.id } : { source: 'grid' }); // borrow the tile's instrument
       centerGridOn(p);
     }
     refresh(); // covers roll content/scroll, selection visuals, persist
@@ -980,7 +1068,7 @@ function resetPlayer() {
 // transform chips (each clearable). One bar, two roles (tool palette + per-tile
 // readout). Built once; refreshTransformBar syncs state.
 const transformBarEl = document.getElementById('transformBar');
-let xbRippleBtn, xbTransBtn, xbRevBtn, xbCloneBtn, xbArmedEl, xbAmountEl, xbScaleSel, xbSelEl;
+let xbRippleBtn, xbTransBtn, xbRevBtn, xbCloneBtn, xbArmedEl, xbAmountEl, xbScaleSel, xbKeyEl, xbSelEl;
 let xbInsBtn, xbClrBtn, xbDelBtn; // Range tools (draw a range on the ruler)
 
 function buildTransformBar() {
@@ -1018,12 +1106,16 @@ function buildTransformBar() {
   xbAmountEl.className = 'xb-amt-val';
   xbScaleSel = document.createElement('select');
   xbScaleSel.className = 'xb-scale';
-  xbScaleSel.title = 'The scale the steps walk (Auto = each tile’s own mask)';
-  for (const [val, label] of [['auto', 'Auto (from tile)'], ['major-pent', 'Major pentatonic'], ['minor-pent', 'Minor pentatonic'], ['chromatic', 'Chromatic']]) {
-    const o = document.createElement('option'); o.value = val; o.textContent = label; xbScaleSel.append(o);
-  }
-  xbScaleSel.onchange = () => { transposeOpts.scaleId = xbScaleSel.value; };
-  xbArmedEl.append(mkBtn('−', 'Down one step', () => bumpTranspose(-1)), xbAmountEl, mkBtn('+', 'Up one step', () => bumpTranspose(1)), xbScaleSel);
+  xbScaleSel.title = 'The scale the steps walk (Auto = each tile’s own mask). The list is the scales valid for the selected tile’s tuning.';
+  // Options depend on the selection's tuning, so they're (re)filled per selection
+  // in refreshTransformBar; 'auto' is always first.
+  xbScaleSel.onchange = () => { transposeOpts.scaleId = xbScaleSel.value; refreshTransformBar(); };
+  // Read-only readout of the key (and, in Auto, the scale) the transpose will
+  // actually use, resolved from the selected tile(s).
+  xbKeyEl = document.createElement('span');
+  xbKeyEl.className = 'xb-key';
+  xbKeyEl.title = 'The key the steps are rooted at (from the selected tile). In Auto, also the tile’s own scale.';
+  xbArmedEl.append(mkBtn('−', 'Down one step', () => bumpTranspose(-1)), xbAmountEl, mkBtn('+', 'Up one step', () => bumpTranspose(1)), xbScaleSel, xbKeyEl);
 
   xbRevBtn = document.createElement('button');
   xbRevBtn.className = 'xb-brush xf-reverse';
@@ -1069,6 +1161,38 @@ function buildTransformBar() {
   refreshTransformBar();
 }
 
+// Fill the transpose scale menu for the current selection's tuning, repair a pick
+// that's no longer offered, and show the resolved key. The menu depends on the
+// selected tile(s): a single tuning → that tuning's full scale library; a
+// mixed-tuning selection → only the universal choices (Auto + Chromatic).
+function syncTransposeControls() {
+  const infos = selectedTiles().map((t) => library.patterns.get(t.name)).filter(Boolean);
+  const edos = [...new Set(infos.map((p) => edoOf(p.tuningId)))];
+  const edo = edos.length === 1 ? edos[0] : (edos.length === 0 ? 12 : null); // null = mixed tunings
+  const scales = edo == null ? [{ id: 'chromatic', name: 'Chromatic' }] : scalesFor(edo);
+  const opts = [{ id: 'auto', name: 'Auto (from tile)' }, ...scales];
+  if (!opts.some((o) => o.id === transposeOpts.scaleId)) transposeOpts.scaleId = 'auto'; // pick invalid for this selection
+  xbScaleSel.innerHTML = '';
+  for (const o of opts) {
+    const el = document.createElement('option'); el.value = o.id; el.textContent = o.name; xbScaleSel.append(el);
+  }
+  xbScaleSel.value = transposeOpts.scaleId;
+  xbKeyEl.textContent = transposeKeyReadout(infos);
+}
+
+// The key the transpose is rooted at, read from the selected tile(s) — 'varies'
+// when they disagree. In Auto also name the tile's scale (the menu doesn't).
+function transposeKeyReadout(infos) {
+  if (!infos.length) return '';
+  const keys = new Set(infos.map((p) => pitchClassName(p.root, p.tuningId)));
+  const key = keys.size === 1 ? [...keys][0] : 'varies';
+  if (transposeOpts.scaleId === 'auto') {
+    const names = new Set(infos.map((p) => scaleById(p.scaleId).name));
+    return `${key} · ${names.size === 1 ? [...names][0] : 'varies'}`;
+  }
+  return key;
+}
+
 function refreshTransformBar() {
   if (!xbTransBtn) return;
   xbRippleBtn.classList.toggle('active', !!state.ripple);
@@ -1078,7 +1202,7 @@ function refreshTransformBar() {
   xbClrBtn.classList.toggle('active', rangeMode === 'clear');
   xbDelBtn.classList.toggle('active', rangeMode === 'delete');
   xbAmountEl.textContent = (transposeOpts.amount > 0 ? '+' : '') + transposeOpts.amount;
-  xbScaleSel.value = transposeOpts.scaleId;
+  syncTransposeControls();
 
   // The selection's transforms as chips ("the transform inspector").
   // One tile: its ordered chips, each removable. Several: the INTERSECTION
@@ -1198,6 +1322,7 @@ function swapTargetPatch(next) {
   Object.assign(cur, next);
   if (editTarget.laneId == null) editGrid(); else editLane(editTarget.laneId);
   persistPatch();
+  syncGridReference(); // a kind change (e.g. to/from Boshwick) moves the pivot band
 }
 
 // Switch the edited target to a different instrument kind, stashing the patch
@@ -1212,17 +1337,29 @@ function changeKind(kind) {
   swapTargetPatch(stash[kind] ? clonePatch(stash[kind]) : defaultPatch(kind));
 }
 
-// Point the editor at the grid's neutral patch (when the grid pane has focus).
+// Point the editor at the grid's active instrument (when the grid pane has focus):
+// the grid's own neutral patch, or — while a tile is loaded — that tile's LANE
+// patch, so editing the grid's instrument edits the lane (and every tile on it).
 function editGrid() {
+  const lane = gridInstr.source === 'lane' ? arrangement.lane(gridInstr.laneId) : null;
+  if (lane) {
+    const idx = arrangement.lanes.indexOf(lane);
+    editTarget = { patch: lane.patch, laneId: lane.id };
+    tilePlayer.editLaneId = lane.id;
+    instrPane.setTarget(lane.patch, `Lane ${idx + 1}`, laneColor(idx));
+    tilePlayer.render();
+    return;
+  }
   editTarget = { patch: gridPatch, laneId: null };
   tilePlayer.editLaneId = null;
   instrPane.setTarget(gridPatch, 'Grid', '#8a8f98');
   tilePlayer.render();
 }
 
-// Point the editor at a lane's own patch (its Edit button), scrolling the pane
-// into view if it's off-screen so the sliders are actually visible.
-function editLane(laneId) {
+// Point the editor at a lane's own patch. `scroll` brings the pane into view —
+// used ONLY by the explicit Edit button, so that re-points (a kind change, a
+// default-patch swap, a borrow) never yank the page under the user.
+function editLane(laneId, scroll = false) {
   const lane = arrangement.lane(laneId);
   if (!lane) return;
   const idx = arrangement.lanes.indexOf(lane);
@@ -1230,7 +1367,15 @@ function editLane(laneId) {
   tilePlayer.editLaneId = laneId;
   instrPane.setTarget(lane.patch, `Lane ${idx + 1}`, laneColor(idx));
   tilePlayer.render();
-  document.getElementById('instr').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  // Reveal the pane only when its TOP isn't already on-screen. The pane is often
+  // taller than the viewport, so an unconditional scrollIntoView('nearest') can
+  // never be a no-op (it aligns an edge) and yanks the page even when the pane is
+  // already in view — the "pointless scroll in nearly all cases".
+  if (scroll) {
+    const el = document.getElementById('instr');
+    const top = el.getBoundingClientRect().top;
+    if (top < 0 || top > window.innerHeight) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }
 }
 
 // Persist a patch edit: the grid patch is a workspace preference (its own key);
@@ -1424,23 +1569,31 @@ function arrCommit(before, full = false) {
 function arrRecord() { arrPast.push({ snap: arrSnap(), full: false }); if (arrPast.length > HISTORY_LIMIT) arrPast.shift(); arrFuture.length = 0; }
 function arrApply(json, full = false) {
   const o = JSON.parse(json);
-  // Instrument tweaks aren't part of tile undo/redo (the editor is a live panel,
-  // as the global patch was). Normally carry each lane's CURRENT patch across by
-  // id, so undoing a tile move never reverts a later sound edit (a lane reappearing
-  // on redo takes its snapshot patch). A `full` entry — a lane/player reset, which
-  // changes the patch on purpose — restores the snapshot patch so it's undoable.
-  const livePatch = new Map(arrangement.lanes.map((l) => [l.id, l.patch]));
-  arrangement.lanes = o.lanes.map((l) => ({
-    id: l.id,
-    tiles: l.tiles.map((t) => ({ id: t.id, name: t.name, start: t.start, transforms: normalizeTransforms(t.transforms) })),
-    mute: !!l.mute, solo: !!l.solo,
-    gain: l.gain == null ? 1 : l.gain, pan: l.pan == null ? 0 : l.pan, // mixer IS undoable
-    delay: normalizeDelay(l.delay), // delay edits are undoable too
-    chorus: normalizeChorus(l.chorus), // chorus edits are undoable too
-    modsByKind: normalizeModsByKind(l.modsByKind), // modulators restore too (modal edits are bracketed)
-    patch: full ? normalizePatch(l.patch) : (livePatch.get(l.id) || normalizePatch(l.patch)),
-    fresh: !!l.fresh,
-  }));
+  // Sound settings — the instrument PATCH, the effect inserts (delay/chorus/
+  // reverb) and the MODULATORS — are LIVE-CARRIED across a normal tile undo/redo,
+  // not snapshot-restored: they're the "live panel" layer, so undoing a tile move
+  // must never revert a separate sound edit. (Previously reverb was dropped
+  // entirely here and delay/chorus/mods were snapshot-restored, so any undo wiped
+  // or reverted the effects — the documented bug.) A `full` entry (a lane / player
+  // RESET, which changes the sound on purpose) restores them from the snapshot so
+  // the reset is undoable; a lane reappearing on redo also takes its snapshot.
+  const live = new Map(arrangement.lanes.map((l) => [l.id, l]));
+  arrangement.lanes = o.lanes.map((l) => {
+    const cur = live.get(l.id);
+    const carry = !full && cur; // live-carry the sound layer on normal entries
+    return {
+      id: l.id,
+      tiles: l.tiles.map((t) => ({ id: t.id, name: t.name, start: t.start, transforms: normalizeTransforms(t.transforms) })),
+      mute: !!l.mute, solo: !!l.solo,
+      gain: l.gain == null ? 1 : l.gain, pan: l.pan == null ? 0 : l.pan, // mixer IS undoable
+      delay: carry ? cur.delay : normalizeDelay(l.delay),
+      chorus: carry ? cur.chorus : normalizeChorus(l.chorus),
+      reverb: carry ? cur.reverb : normalizeReverb(l.reverb),
+      modsByKind: carry ? cur.modsByKind : normalizeModsByKind(l.modsByKind),
+      patch: carry ? cur.patch : normalizePatch(l.patch),
+      fresh: !!l.fresh,
+    };
+  });
   arrangement.seq = o.seq || 0;
   if (o.activeLaneId != null) arrangement.activeLaneId = o.activeLaneId;
   arrangement.playStart = o.playStart == null ? 0 : o.playStart; // region markers are undoable
@@ -1534,8 +1687,16 @@ function centerGridOn(pattern) {
 function newOrRestore() {
   clearProposal();
   grid.clearSelection();
-  if (library.parkedName) library.restore();
-  else library.newPattern();
+  if (library.parkedName) {
+    library.restore();
+    setGridInstr(parkedInstr || { source: 'grid' }); // bring back the parked pattern's instrument
+    setParkedInstr(null);
+  } else {
+    const prev = gridInstr;
+    library.newPattern();
+    if (library.parkedName) setParkedInstr(prev); // the leaving pattern got parked — remember its instrument
+    setGridInstr({ source: 'grid' });             // New reverts to the grid's own instrument
+  }
   arrangement.clearSelection();
   centerGridOn(library.current()); // no-op for the blank New pattern
   refresh();
@@ -1544,6 +1705,13 @@ function clonePattern() {
   clearProposal();
   grid.clearSelection();
   library.clone();
+  // Keep whatever's playing: a borrowed tile instrument is promoted to the grid's
+  // own (the clone is a fresh floating pattern), so it stays after the borrow ends.
+  if (gridInstr.source === 'lane') {
+    const lane = arrangement.lane(gridInstr.laneId);
+    if (lane) replaceGridPatch(lane.patch);
+  }
+  setGridInstr({ source: 'grid' });
   arrangement.clearSelection();
   refresh();
 }
@@ -1983,7 +2151,14 @@ function onToolbarChange(what) {
 }
 
 function refresh() {
+  // A re-render must never move the PAGE. Redrawing the canvases resizes them
+  // (roll pitch-span, grid), and the browser's scroll adjustment can jump the
+  // window to the top — most visibly when playback ends and refresh runs. Snapshot
+  // the window scroll and put it back if anything nudged it. (overflow-anchor:none
+  // is the belt; this is the suspenders — it's robust to any cause.)
+  const sx = window.scrollX, sy = window.scrollY;
   grid.pattern = library.current();
+  grid.referenceDegree = referenceDegreeFor(grid.pattern); // Boshwick keyboard-tracking pivot band
   grid.draw();
   updateRollContent(); scrollRollToSelected();
   tilePlayer.render();
@@ -2000,6 +2175,7 @@ function refresh() {
   updateTransportButtons();
   refreshTransformBar();
   persist();
+  if (window.scrollX !== sx || window.scrollY !== sy) window.scrollTo(sx, sy);
 }
 
 // Tooltips for the chord-family toggles (the buttons themselves are rebuilt per
@@ -2078,7 +2254,8 @@ function persist() {
     bpm: state.bpm, brush: state.brush, mode: state.mode, audition: state.audition,
     cursor: state.cursor, highlightRows: state.highlightRows, showTriads: state.showTriads, proper: state.proper, families: state.families,
     topDegree: state.topDegree, visibleRows: state.visibleRows, activePane: state.activePane,
-    tileScaleIdx: state.tileScaleIdx, masterGain: state.masterGain, modLoop: state.modLoop,
+    tileScaleIdx: state.tileScaleIdx, masterGain: state.masterGain, modLoop: state.modLoop, lite: state.lite,
+    gridInstr: state.gridInstr, parkedInstr: state.parkedInstr,
     ripple: state.ripple, playheadBeat: state.playheadBeat, tileScrollX: state.tileScrollX,
     rollVIdx: state.rollVIdx, rollHIdx: state.rollHIdx,
   }));
@@ -2173,6 +2350,7 @@ function loadContent(env) {
   state.playheadBeat = 0; // fresh document — park the playhead at the top
   tilePlayer.setPlayhead(0);
   applyActiveHighlight();
+  gridInstr = { source: 'grid' }; state.gridInstr = null; setParkedInstr(null); // fresh document → grid's own instrument
   editGrid(); // the loaded lanes have fresh patch objects; re-point the editor
   engine.resetLanes(); // drop stale strips (old delay tails / orphaned lanes) — rebuild fresh
   applyLaneMix(0);     // push the loaded volume/pan onto the lane buses
@@ -2488,6 +2666,18 @@ modLoopBtn.className = 'tbtn' + (state.modLoop ? ' active' : '');
 modLoopBtn.addEventListener('click', () => {
   state.modLoop = !state.modLoop;
   modLoopBtn.classList.toggle('active', state.modLoop);
+  persist();
+});
+
+// "Lite Instruments" — a workspace preference (not part of the document): the
+// heavy voices (Wendelhorn, Nayumi) build a cheaper live graph to avoid dropouts.
+// Read fresh at every note-on, so toggling takes effect on the next note; offline
+// exports never see it, so a bounce is always the full voice.
+const liteBox = document.getElementById('liteInstruments');
+liteBox.checked = state.lite;
+liteBox.addEventListener('change', () => {
+  state.lite = liteBox.checked;
+  engine.lite = state.lite;
   persist();
 });
 

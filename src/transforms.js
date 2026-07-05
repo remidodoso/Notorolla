@@ -22,8 +22,12 @@ import { tuningFreq, edoOf } from './tuning.js';
 
 // A transpose transform. steps = signed scale-step count (− = down); scaleId/root
 // = the mask the steps walk, snapshotted when painted ('chromatic' ⇒ semitones).
+// `root` is a pitch class in the TILE's tuning — stored as a plain integer (no
+// mod), since the tuning's EDO isn't known here and `inScale` already reduces it
+// modulo the right EDO at apply time. (The old `% 12` clamp corrupted roots ≥ 12
+// in non-12 tunings, e.g. 16-ET.)
 export function transposeTransform(steps, scaleId, root) {
-  return { type: 'transpose', steps, scaleId: scaleById(scaleId).id, root: ((Math.round(root) % 12) + 12) % 12 };
+  return { type: 'transpose', steps, scaleId: scaleById(scaleId).id, root: Number.isFinite(root) ? Math.round(root) : 0 };
 }
 
 // A reverse (retrograde) transform — no params; it's its own inverse.

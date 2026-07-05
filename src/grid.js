@@ -190,6 +190,27 @@ export class Pattern {
     return p;
   }
 
+  // A fresh blank that KEEPS this pattern's working context (the New action):
+  // the pitch context (tuning/scale/root) AND the per-column performance lanes
+  // (duration/accent/articulation) carry over as a groove stencil, but the
+  // pitches are cleared to rests on the default diagonal. So New continues in the
+  // same key/tuning and groove with an empty pitch canvas. (Contrast clone(),
+  // which copies the notes too.)
+  stencil(name) {
+    const cols = this.columns.map((c, i) => ({
+      durIndex: c.durIndex,
+      isRest: true,
+      degree: BASE_PITCH + i, // diagonal — the standard "empty" look
+      accent: c.accent,
+      artic: c.artic == null ? DEFAULT_ARTIC : c.artic,
+    }));
+    const p = new Pattern(cols, name);
+    p.tuningId = this.tuningId;
+    p.scaleId = this.scaleId;
+    p.root = this.root;
+    return p;
+  }
+
   // Walk the columns left to right, accumulating time; notes emit events, rests
   // only advance the clock. The returned Score's length includes trailing rests.
   toScore(bpm, articulation) {
