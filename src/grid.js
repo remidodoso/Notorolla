@@ -35,6 +35,53 @@ export function nextDurIndex(durIndex) {
   const pos = DUR_ORDER.indexOf(durIndex);
   return DUR_ORDER[(pos + 1) % DUR_ORDER.length];
 }
+// Display label for a stored durIndex (the footer's numeric backup to color).
+export function durationLabel(durIndex) {
+  const d = DURATIONS[durIndex];
+  return d ? d.name : '';
+}
+
+// The two grid-editor drag surfaces, as pure in-place ops on a columns array.
+// The column SLOT owns the groove attributes (duration, accent, …); the note is
+// just its PITCH. So the two drags differ in what rides along:
+//   swapNotePayload — exchange only the pitch (degree + isRest); duration and accent
+//     STAY with each slot (dragging a note in the grid body — the groove holds still).
+//   swapColumn      — exchange the whole column, groove included (dragging a footer
+//     chit = the "grab the whole column" handle).
+export function swapNotePayload(cols, a, b) {
+  if (a === b) return;
+  const ca = cols[a], cb = cols[b];
+  const d = ca.degree, r = ca.isRest;
+  ca.degree = cb.degree; ca.isRest = cb.isRest;
+  cb.degree = d; cb.isRest = r;
+}
+export function swapColumn(cols, a, b) {
+  if (a === b) return;
+  const t = cols[a]; cols[a] = cols[b]; cols[b] = t;
+}
+
+// The performance lanes as sets of column fields — the "attribute rack". Each lane
+// owns one facet of a column; `notes` is the pitch content (degree + rest-ness).
+// swapLanes exchanges only the chosen lanes between two columns, so it spans the
+// whole range from a single-attribute swap up to the full-column swap:
+//   swapLanes(cols,a,b,['notes'])                    === swapNotePayload
+//   swapLanes(cols,a,b,['notes','duration','accent','articulation']) === swapColumn
+// The armed-lane footer drag passes whichever subset the user armed.
+export const LANE_FIELDS = {
+  notes: ['degree', 'isRest'],
+  duration: ['durIndex'],
+  accent: ['accent'],
+  articulation: ['artic'],
+};
+export function swapLanes(cols, a, b, laneIds) {
+  if (a === b) return;
+  const ca = cols[a], cb = cols[b];
+  for (const lane of laneIds) {
+    for (const f of LANE_FIELDS[lane] || []) {
+      const t = ca[f]; ca[f] = cb[f]; cb[f] = t;
+    }
+  }
+}
 
 // Duration -> color: a chilled (slightly desaturated) spectrum, red 1/16 →
 // yellow 1/8 → green 1/4 → blue 1/2 → violet whole, interpolated in log-duration
@@ -56,11 +103,55 @@ export function durationColor(beats) {
 }
 export const PALETTE = DURATIONS.map((d) => durationColor(d.beats));
 
+// Stretch-view column width: a LOG-compressed map of a duration into [minW, maxW]
+// — like music engraving, where horizontal space grows with the note value but
+// *gently*, not linearly. Decoupled from the piano roll (that alignment no longer
+// matters). Shortest duration → minW, longest → maxW, the rest log-spaced.
+const STRETCH_LOG_MIN = Math.log2(Math.min(...DURATIONS.map((d) => d.beats)));
+const STRETCH_LOG_MAX = Math.log2(Math.max(...DURATIONS.map((d) => d.beats)));
+export function stretchWidth(durIndex, minW, maxW) {
+  const d = DURATIONS[durIndex];
+  const b = d ? d.beats : 1;
+  const t = STRETCH_LOG_MAX > STRETCH_LOG_MIN
+    ? (Math.log2(b) - STRETCH_LOG_MIN) / (STRETCH_LOG_MAX - STRETCH_LOG_MIN)
+    : 0.5;
+  return minW + (maxW - minW) * t;
+}
+
+// Accent LEVEL per column (a groove attribute): 0 = normal, 1 = accent, 2 = ghost.
+// Each maps to a play velocity (ghost is softer than normal). Click cycles them.
 const NORMAL_VELOCITY = 0.78;
 const ACCENT_VELOCITY = 1.0;
+const GHOST_VELOCITY = 0.45;
+export const ACCENT_LEVELS = 3;
+export function accentVelocity(level) {
+  return level === 1 ? ACCENT_VELOCITY : level === 2 ? GHOST_VELOCITY : NORMAL_VELOCITY;
+}
+export function nextAccent(level) { return (((level | 0) + 1) % ACCENT_LEVELS); }
 
-// A column: { durIndex, isRest, degree, accent }. `degree` is the note's pitch
-// when it's a note, or the (cosmetic) circle position when it's a rest.
+// Articulation preset per column (a groove attribute): how long the note SOUNDS
+// relative to its slot. Most are a fraction of the column duration; SPICCATO is an
+// absolute short gate (~55 ms) independent of tempo/duration. Ordered short→long;
+// click cycles them. Stored as an index; `normal` is the current non-legato default.
+export const ARTICULATIONS = [
+  { id: 'spiccato', label: 'spic', abs: 0.055 },  // ~55 ms, not tied to duration
+  { id: 'staccato', label: 'stac', gate: 0.5 },
+  { id: 'normal',   label: 'norm', gate: 0.88 },
+  { id: 'legato',   label: 'leg',  gate: 1.0 },
+  { id: 'tenuto',   label: 'ten',  gate: 1.15 },  // > 1 → rings slightly into the next slot
+];
+export const DEFAULT_ARTIC = 2; // 'normal'
+export function nextArtic(i) { return (((i | 0) + 1) % ARTICULATIONS.length); }
+// Sounded length in BEATS: beats × gate, or spiccato's absolute gate converted to
+// beats (via `spb` = seconds/beat) and capped at the slot so it never over-runs.
+export function articBeats(articIdx, beats, spb) {
+  const a = ARTICULATIONS[articIdx] || ARTICULATIONS[DEFAULT_ARTIC];
+  return a.abs != null ? Math.min(a.abs / spb, beats) : beats * a.gate;
+}
+
+// A column: { durIndex, isRest, degree, accent }. `accent` is the level above.
+// `degree` is the note's pitch when it's a note, or the (cosmetic) circle position
+// when it's a rest.
 // A pattern also carries a stable `name` (its key in the registry).
 export class Pattern {
   constructor(columns, name = 'A') {
@@ -78,7 +169,7 @@ export class Pattern {
   static initial(name = 'A', cols = DEFAULT_COLS) {
     const out = [];
     for (let i = 0; i < cols; i++) {
-      out.push({ durIndex: DEFAULT_DUR, isRest: true, degree: BASE_PITCH + i, accent: false });
+      out.push({ durIndex: DEFAULT_DUR, isRest: true, degree: BASE_PITCH + i, accent: 0, artic: DEFAULT_ARTIC });
     }
     return new Pattern(out, name);
   }
@@ -103,13 +194,15 @@ export class Pattern {
   // only advance the clock. The returned Score's length includes trailing rests.
   toScore(bpm, articulation) {
     const notes = [];
+    const spb = 60 / bpm;
     let t = 0;
     for (const c of this.columns) {
       const beats = DURATIONS[c.durIndex].beats;
       if (!c.isRest) {
-        const vel = c.accent ? ACCENT_VELOCITY : NORMAL_VELOCITY;
+        const vel = accentVelocity(c.accent);
         const n = new Note(c.degree, t, beats, vel);
         n.freq = tuningFreq(c.degree, this.tuningId, this.root); // resolve in this pattern's tuning
+        n.artDur = articBeats(c.artic == null ? DEFAULT_ARTIC : c.artic, beats, spb); // sounded length (beats)
         notes.push(n);
       }
       t += beats;
@@ -117,18 +210,19 @@ export class Pattern {
     return new Score(notes, bpm, articulation, t);
   }
 
-  // Compact array form for localStorage: [durIndex, degree, isRest, accent].
+  // Compact array form for localStorage: [durIndex, degree, isRest, accent, artic].
   toJSON() {
-    return this.columns.map((c) => [c.durIndex, c.degree, c.isRest ? 1 : 0, c.accent ? 1 : 0]);
+    return this.columns.map((c) => [c.durIndex, c.degree, c.isRest ? 1 : 0, c.accent | 0, c.artic == null ? DEFAULT_ARTIC : c.artic]);
   }
 
   static fromJSON(arr, name = 'A') {
     return new Pattern(
-      arr.map(([durIndex, degree, isRest, accent]) => ({
+      arr.map(([durIndex, degree, isRest, accent, artic]) => ({
         durIndex,
         degree,
         isRest: !!isRest,
-        accent: !!accent,
+        accent: accent | 0,
+        artic: artic == null ? DEFAULT_ARTIC : (artic | 0), // old 4-field rows → normal
       })),
       name,
     );

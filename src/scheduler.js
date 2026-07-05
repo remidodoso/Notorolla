@@ -128,7 +128,10 @@ export class Scheduler {
         // real time on present tails and future notes alike (no re-snapshot).
         // rulerBeat = the note's absolute timeline position (set by the score
         // builder; survives region windowing) — the "Loop Mod" time anchor.
-        this.engine.playNote(note.pitch, noteTime, note.duration * this.articulation * this.spb, note.velocity, note.freq, note.laneId,
+        // Gate = the note's articulated length (artDur, per-column) if present, else
+        // the global articulation applied to its value.
+        const gate = (note.artDur != null ? note.artDur : note.duration * this.articulation) * this.spb;
+        this.engine.playNote(note.pitch, noteTime, gate, note.velocity, note.freq, note.laneId,
           (note.rulerBeat != null ? note.rulerBeat : note.start) * this.spb);
         this.nextIndex++;
       }

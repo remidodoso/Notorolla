@@ -393,17 +393,32 @@ a grace hit just before the main one — pre-beat scheduling makes flams/drags/r
 per-note **ornament** attribute; orthogonal to the column/duration model (an ornament never gets
 its own column), so it layers on after the notes-list + articulation work.
 
-**Build phasing (settled — the plan).** **Phase 1 (next):** the footer *duration* lane + the
-gesture split — body-click = pitch only (drop the duration adopt/rotate branch), footer-click =
-rotate that column's duration, **body h-drag swaps the note payload only** (durations stay put),
-**footer h-drag swaps the whole column**. **Zero model change** (`durIndex`/`accent` are already
-column fields); pure swap/rotate helpers extracted to `grid.js` and headless-tested. Two column-drag
-models the user named map cleanly: *grab-and-go* = the footer whole-column drag (phase 1);
-*select-attributes-then-drag* = the arming model (phase 2). **Phase 2:** accent + articulation
-groove lanes + **selective attribute swap** (arm lanes, then drag) + the combine rule.
-**Phase 3:** note-length / gate>1 + **polyphony** (notes-list, per-pattern mono/poly mode) +
-per-note attributes as modifiers. **Phase 4:** named-rhythm generators + named-articulation
-palette + the instrument responsiveness pass. **Phase 5:** grace notes / ornaments / rudiments.
+**Build phasing (settled — the plan).** **Phase 1 — BUILT (2026-07-04):** the footer *duration*
+lane + the gesture split — body-click = pitch only (dropped the duration adopt/rotate branch),
+footer-click = rotate that column's duration, **body h-drag swaps the note payload only**
+(durations stay put), **footer h-drag swaps the whole column**. Zero model change (`durIndex`/
+`accent` were already column fields); pure `swapNotePayload`/`swapColumn`/`durationLabel` in
+`grid.js`, `notch/footer.mjs` 13/13. Two column-drag models the user named map cleanly: *grab-and-go*
+= the footer whole-column drag (done); *select-attributes-then-drag* = the arming model (phase 2).
+**Nomenclature (user, 2026-07-04):** the footer lanes are the **performance lanes** (aka **X-axis
+lanes**); the current one is the **duration lane**; the small rectangle where a column meets a lane
+is a **lane chit** (here, the **duration chit**). **Phase 2 opened with three duration-lane fixes —
+BUILT (2026-07-04):** (a) **chit drag = pick up the WHOLE column** with drag-and-drop feedback —
+source column lifts (full-height band + a ghosted chit tracking the cursor, swap on release) +
+target-column highlight; (b) **cursor over the performance lanes = finger/`pointer`** (`grabbing`
+while dragging a chit), not the note-placement dot; (c) **click a duration chit = SET it to the
+current duration brush** (the brush is now the duration selector — replaced click-to-rotate). Clean
+split: **click sets, drag picks-up-&-swaps** — no adopt-then-rotate blend. **Phase 2 — BUILT
+(2026-07-04):** the **accent + articulation** groove lanes (see notes_and_status.md), then the
+**NOTES lane + selective attribute swap** — a 4th gray "notes" handle lane on top completes the
+**attribute rack** (notes/dur/accent/artic), and `swapLanes` swaps any **armed** subset. Arming
+resolved to **double-click arms / single-click still edits**, per-column, transient; an unarmed
+chit drag swaps just that lane. The "combine rule" stayed simple (a swap, no blend) — evolve if a
+real need appears. **Phase 3 (next):** note-length / gate>1 + **polyphony** (notes-list, per-pattern
+mono/poly mode) + per-note attributes as modifiers — this is where the body note-drag becomes
+**"move, don't swap"** and `tenuto` gate>1 gets a real UI. **Phase 4:** named-rhythm generators +
+named-articulation palette + the instrument responsiveness pass. **Phase 5:** grace notes /
+ornaments / rudiments.
 
 ---
 

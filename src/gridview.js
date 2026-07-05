@@ -5,29 +5,57 @@
 // absolute degree, so notes above/below the window are kept (just hidden, with
 // an edge hint). Wheel scrolls the window; a bottom handle resizes it.
 //
+// Rhythm ⊥ pitch: a column's facets live in the per-column FOOTER "performance lanes"
+// below the canvas — notes (a neutral handle), duration (color = value), accent,
+// articulation — the "attribute rack". The grid body only ever sets pitch.
+//
 // Gestures (mono mode):
-//   click (no move) ....... place note (on a rest) / rotate duration (same row)
-//                           / repitch (different row in a note's column)
-//   click-drag ............ axis-locked on first movement: VERTICAL repitches
-//                           the column's note; HORIZONTAL swaps this column with
-//                           the column dragged onto. Never diagonal.
+//   body click (no move) .. place note (on a rest) / repitch (different row) /
+//                           re-audition (clicking a note's own cell — no duration
+//                           change; duration is set in the footer)
+//   body click-drag ....... axis-locked on first movement: VERTICAL repitches the
+//                           column's note; HORIZONTAL swaps the NOTE payload with
+//                           the column dragged onto (durations stay put). Never diagonal.
+//   chit click ............ EDIT that lane: duration→brush, accent/artic cycle;
+//                           notes chit → select (arm the notes)
+//   chit double-click ..... ARM / disarm that lane for a swap (notes chit → arm all
+//                           four); armed lanes show a blue frame
+//   chit drag ............. swap the ARMED lanes between this column and the drop
+//                           column (just the grabbed lane if nothing is armed)
+//   ESC ................... cancel any in-progress gesture / disarm (commits nothing)
 //   shift-click ........... toggle accent (notes only)
 //   right-click ........... toggle note <-> rest
 
-import { DURATIONS, PALETTE, DEFAULT_DUR, MIN_COLS, MAX_COLS, BASE_PITCH, nextDurIndex } from './grid.js';
+import { Pattern, PALETTE, DEFAULT_DUR, MIN_COLS, MAX_COLS, BASE_PITCH, durationLabel, swapNotePayload, swapLanes, stretchWidth, nextAccent, nextArtic, ARTICULATIONS, DEFAULT_ARTIC } from './grid.js';
 import { isBlackKey } from './model.js';
 import { degreeToName, pitchClassName, edoOf, degreeBounds } from './tuning.js';
 import { inScale, nearestInScale, stepInScale } from './scales.js';
 import { classifyTriad } from './triads.js';
-import { PAD_LEFT as ROLL_PAD_LEFT, BEAT_WIDTH as ROLL_BEAT_WIDTH } from './pianoroll.js';
+import { PAD_LEFT as ROLL_PAD_LEFT } from './pianoroll.js';
 
 const PAD_LEFT = ROLL_PAD_LEFT;  // share the roll's gutter so Stretch lines up
 const PAD_TOP = 10;
 const PAD_RIGHT = 16;
 const PAD_BOTTOM = 10;
-const ROW_H = 24;
-const UNIFORM_COL_W = 40;        // Grid mode: every column the same width
-const DOT_R = 7;
+const ROW_H = 29;                // pitch-row height (grid scaled ~120% from 24)
+// Performance (X-axis) lanes stacked below the grid, top→bottom. One chit per
+// column per lane — the column "attribute rack". `notes` sits on top (nearest the
+// grid): a neutral gray handle for the column's pitch content. FOOTER_H is the
+// whole band's height. Chit heights are ~1.5× (deliberately taller than the grid
+// scale-up, so the groove lanes read as chunky, hittable controls).
+const PERF_LANES = [
+  { id: 'notes',        h: 27, label: 'note' },
+  { id: 'duration',     h: 30, label: 'dur' },
+  { id: 'accent',       h: 24, label: 'acc' },
+  { id: 'articulation', h: 24, label: 'art' },
+];
+const ALL_LANES = PERF_LANES.map((l) => l.id);
+const FOOTER_H = PERF_LANES.reduce((s, l) => s + l.h, 0);
+const DBL_MS = 260;              // window for a double-click (arm) vs a single-click (edit)
+const UNIFORM_COL_W = 48;        // Grid mode: every column the same width (~120%)
+const STRETCH_MIN_W = 31;        // Stretch mode: log-compressed width band (by-eye tunable, ~120%)
+const STRETCH_MAX_W = 72;
+const DOT_R = 8;
 const DRAG_THRESHOLD = 4;        // px of movement that turns a click into a drag
 const TRIAD_BAND = 30;           // px reserved above the lanes for two label rows
 const QUALITY = { maj: 'Maj', min: 'min', dim: 'dim', aug: 'aug', sus: 'sus', sept: '4:5:7', sup: 'sup' };
@@ -50,6 +78,10 @@ export class GridView {
     this.pattern = pattern;
     this.opts = opts;
     this.drag = null;
+    this.footerDrag = null;       // in-progress performance-lane (chit) gesture
+    this.armed = null;            // { col, lanes:Set } — lanes armed (double-clicked) within ONE column; a drag swaps them
+    this._pendingClick = null;    // { col, lane, before, t, timer } — a chit single-click held DBL_MS to see if it's a double
+    this._cursorZone = null;      // 'body' | 'footer' — so the hover cursor only re-sets on a zone change
     this.resize = null;
     this.prospective = new Map(); // col -> { degree, durIndex } : un-set proposal notes
     this.selection = new Set();   // selected note-column indices (transient; Ctrl-click)
@@ -59,6 +91,15 @@ export class GridView {
     this._antsOffset = 0;
     this._bind();
     this.updateCursor();
+  }
+
+  // The pattern is swapped in by the host (main.refresh) via `grid.pattern = …`.
+  // Intercept it so a held single-click edit settles against the OLD pattern before
+  // the switch, and the transient arm doesn't bleed across patterns.
+  get pattern() { return this._pattern; }
+  set pattern(p) {
+    if (this._pattern && this._pattern !== p) { this._flushPendingClick(); this._clearArm(); }
+    this._pattern = p;
   }
 
   // Set the prospective (Triadulator) notes overlaid on empty columns. They're
@@ -91,7 +132,7 @@ export class GridView {
     for (const i of this.selection) {
       const c = this.pattern.columns[i];
       c.isRest = true;
-      c.accent = false;
+      c.accent = 0;
     }
     this.selection.clear();
     this._commit(before);
@@ -354,26 +395,96 @@ export class GridView {
 
   // --- column geometry (time axis) -------------------------------------
 
+  _stretchW(durIndex) { return stretchWidth(durIndex, STRETCH_MIN_W, STRETCH_MAX_W); }
+
   _colGeom(i) {
     if (this.mode === 'stretch') {
       let x = PAD_LEFT;
-      for (let k = 0; k < i; k++) x += DURATIONS[this.pattern.columns[k].durIndex].beats * ROLL_BEAT_WIDTH;
-      return { x, w: DURATIONS[this.pattern.columns[i].durIndex].beats * ROLL_BEAT_WIDTH };
+      for (let k = 0; k < i; k++) x += this._stretchW(this.pattern.columns[k].durIndex);
+      return { x, w: this._stretchW(this.pattern.columns[i].durIndex) };
     }
     return { x: PAD_LEFT + i * UNIFORM_COL_W, w: UNIFORM_COL_W };
   }
-  _columnAt(px) {
-    const cols = this.pattern.columns.length;
+  // Which column a screen x falls in. During a width-changing drag pass `cols` =
+  // the PRISTINE pre-drag layout so the target stays a stable function of the
+  // cursor (a live-swapped layout shifts widths and makes the target oscillate).
+  _columnAt(px, cols = this.pattern.columns) {
+    const n = cols.length;
     if (this.mode === 'stretch') {
       let x = PAD_LEFT;
-      for (let i = 0; i < cols; i++) {
-        const w = DURATIONS[this.pattern.columns[i].durIndex].beats * ROLL_BEAT_WIDTH;
+      for (let i = 0; i < n; i++) {
+        const w = this._stretchW(cols[i].durIndex);
         if (px < x + w) return i;
         x += w;
       }
-      return cols - 1;
+      return n - 1;
     }
-    return clamp(Math.floor((px - PAD_LEFT) / UNIFORM_COL_W), 0, cols - 1);
+    return clamp(Math.floor((px - PAD_LEFT) / UNIFORM_COL_W), 0, n - 1);
+  }
+
+  // Which performance lane a screen y falls in (only valid when _inFooter).
+  _laneAt(y) {
+    let top = this.canvas.height - FOOTER_H;
+    for (const lane of PERF_LANES) {
+      if (y < top + lane.h) return lane.id;
+      top += lane.h;
+    }
+    return PERF_LANES[PERF_LANES.length - 1].id;
+  }
+
+  // Draw one lane's chit for `col` in the box (x, y, w, h). Shared by the footer
+  // render and the drag ghost, so the carried chit matches the lane it came from.
+  _drawChit(laneId, col, x, y, w, h) {
+    const ctx = this.ctx;
+    if (laneId === 'notes') {
+      // A neutral handle for the column's pitch content — no text; solid whether the
+      // column has notes or is empty (it represents "the notes", of which there may be none).
+      ctx.fillStyle = '#5a616d';
+      ctx.fillRect(x + 1, y + 3, w - 2, h - 5);
+      return;
+    }
+    if (laneId === 'articulation') {
+      const a = ARTICULATIONS[col.artic == null ? DEFAULT_ARTIC : col.artic] || ARTICULATIONS[DEFAULT_ARTIC];
+      ctx.fillStyle = '#20242e';                         // slot background
+      ctx.fillRect(x + 1, y + 3, w - 2, h - 5);
+      // A bar whose length ∝ how long the note sounds (spiccato tiny, tenuto over-full).
+      const frac = a.abs != null ? 0.14 : Math.min(1.12, a.gate);
+      const barW = Math.max(2, (w - 4) * Math.min(1, frac));
+      ctx.fillStyle = a.abs != null ? '#8a6fae' : (a.gate > 1 ? '#c98a5a' : '#5aa0a0'); // spiccato violet · tenuto warm · else teal
+      ctx.fillRect(x + 2, y + 4, barW, h - 7);
+      if (w > 24) {
+        ctx.fillStyle = '#cdd6df';
+        ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
+        ctx.font = '11px system-ui, sans-serif';
+        ctx.fillText(a.label, x + w / 2, y + h / 2 + 1);
+      }
+      return;
+    }
+    if (laneId === 'accent') {
+      const lvl = col.accent | 0;                        // 0 normal · 1 accent · 2 ghost — soothing pale colors
+      ctx.fillStyle = lvl === 1 ? '#e6dc93' : lvl === 2 ? '#a2c1de' : '#a6cbab';
+      ctx.fillRect(x + 1, y + 3, w - 2, h - 5);
+      if (w > 14) {
+        ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
+        if (lvl === 1) {                                 // accent: a marcato
+          ctx.fillStyle = '#4a4212'; ctx.font = 'bold 13px system-ui, sans-serif';
+          ctx.fillText('>', x + w / 2, y + h / 2 + 1);
+        } else if (lvl === 2) {                          // ghost: a parenthesised dot
+          ctx.fillStyle = '#2c4358'; ctx.font = '12px system-ui, sans-serif';
+          ctx.fillText('( )', x + w / 2, y + h / 2 + 1);
+        }
+      }
+      return;
+    }
+    // duration: color = value, small numeric backup
+    ctx.fillStyle = PALETTE[col.durIndex];
+    ctx.fillRect(x + 1, y + 3, w - 2, h - 5);
+    if (w > 22) {
+      ctx.fillStyle = '#20242c';
+      ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
+      ctx.font = '12px system-ui, sans-serif';
+      ctx.fillText(durationLabel(col.durIndex), x + w / 2, y + h / 2 + 1);
+    }
   }
 
   // The current pattern's column count, and a resize (grow = append rests
@@ -388,7 +499,7 @@ export class GridView {
     if (target > cur) {
       let deg = cur ? this.pattern.columns[cur - 1].degree + 1 : BASE_PITCH;
       for (let i = cur; i < target; i++) {
-        this.pattern.columns.push({ durIndex: DEFAULT_DUR, isRest: true, degree: clamp(deg, this._loDeg, this._hiDeg), accent: false });
+        this.pattern.columns.push({ durIndex: DEFAULT_DUR, isRest: true, degree: clamp(deg, this._loDeg, this._hiDeg), accent: 0, artic: DEFAULT_ARTIC });
         deg++;
       }
     } else {
@@ -400,12 +511,10 @@ export class GridView {
   // --- drawing ----------------------------------------------------------
 
   _resizeCanvas() {
-    const totalBeats = this.pattern.columns.reduce(
-      (s, c) => s + DURATIONS[c.durIndex].beats, 0);
     const w = this.mode === 'stretch'
-      ? PAD_LEFT + totalBeats * ROLL_BEAT_WIDTH + PAD_RIGHT
+      ? PAD_LEFT + this.pattern.columns.reduce((s, c) => s + this._stretchW(c.durIndex), 0) + PAD_RIGHT
       : PAD_LEFT + this.pattern.columns.length * UNIFORM_COL_W + PAD_RIGHT;
-    const h = this._topPad() + this._rows * ROW_H + PAD_BOTTOM;
+    const h = this._topPad() + this._rows * ROW_H + PAD_BOTTOM + FOOTER_H;
     // Assign only on a real change: a same-value write still invalidates layout,
     // and layout churn above the viewport invites scroll-anchoring page jumps.
     if (this.canvas.width !== w) this.canvas.width = w;
@@ -473,7 +582,7 @@ export class GridView {
         ctx.fillRect(0, y, 3, ROW_H);
       }
       ctx.fillStyle = isRoot ? '#e6c45c' : isActive ? '#d9c3a0' : isOctave ? '#9a9486' : '#7a8290';
-      ctx.font = `${isRoot ? 'bold ' : ''}11px system-ui, sans-serif`;
+      ctx.font = `${isRoot ? 'bold ' : ''}13px system-ui, sans-serif`;
       ctx.textBaseline = 'middle';
       ctx.textAlign = 'left';
       ctx.fillText(degreeToName(d, tuningId), 6, y + ROW_H / 2);
@@ -488,7 +597,8 @@ export class GridView {
     this._vline(last.x + last.w, H);
 
     // Dots: filled = note, open circle = rest; off-window notes get an edge hint.
-    const hideSelForDrag = this.drag && this.drag.moved && this.drag.axis === 'h';
+    const hideSelForDrag = (this.drag && this.drag.moved && this.drag.axis === 'h')
+      || (this.footerDrag && this.footerDrag.moved);
     this.pattern.columns.forEach((c, i) => {
       const { x, w } = this._colGeom(i);
       const cx = x + w / 2;
@@ -529,18 +639,18 @@ export class GridView {
       } else if (c.degree > top) {
         this._edgeHint(cx, this._topPad(), -1, color);   // hidden above
       } else if (c.degree < bottom) {
-        this._edgeHint(cx, H - PAD_BOTTOM, 1, color);     // hidden below
+        this._edgeHint(cx, this._topPad() + this._rows * ROW_H, 1, color); // hidden below
       } else {
         const cy = this._yForDegree(c.degree) + ROW_H / 2;
         ctx.beginPath();
         ctx.arc(cx, cy, DOT_R, 0, Math.PI * 2);
         ctx.fillStyle = color;
         ctx.fill();
-        if (c.accent) {
+        if (c.accent) {                                  // ring reflects the accent level (accent warm, ghost cool)
           ctx.beginPath();
           ctx.arc(cx, cy, DOT_R + 3, 0, Math.PI * 2);
           ctx.lineWidth = 2;
-          ctx.strokeStyle = '#7a4a2a';
+          ctx.strokeStyle = c.accent === 2 ? '#4f7391' : '#7a4a2a';
           ctx.stroke();
         }
         // Selection halo (hidden mid horizontal-swap; resolved on release).
@@ -553,6 +663,68 @@ export class GridView {
         }
       }
     });
+
+    // Performance (X-axis) lanes at the canvas bottom (duration, accent, …): one
+    // chit per column per lane, same column geometry as the body so they line up in
+    // Grid and Stretch. Click a chit to edit its attribute; drag any chit to swap the
+    // whole column.
+    const fyTop = H - FOOTER_H;
+    ctx.fillStyle = '#12141a';
+    ctx.fillRect(0, fyTop, W, FOOTER_H);
+    let laneY = fyTop;
+    for (const lane of PERF_LANES) {
+      ctx.strokeStyle = '#2b303c';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, laneY + 0.5); ctx.lineTo(W, laneY + 0.5); ctx.stroke();
+      this.pattern.columns.forEach((c, i) => {
+        const { x, w } = this._colGeom(i);
+        this._drawChit(lane.id, c, x, laneY, w, lane.h);
+        if (this._isArmed(i, lane.id)) {                  // armed for the next swap: bright blue frame
+          ctx.strokeStyle = '#5aa9ff';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(x + 1.5, laneY + 3.5, w - 3, lane.h - 6);
+        }
+      });
+      ctx.fillStyle = '#aeb8c6';                          // lane label in the gutter (left of the columns)
+      ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+      ctx.font = 'bold 12px system-ui, sans-serif';
+      ctx.fillText(lane.label, 5, laneY + lane.h / 2 + 1);
+      laneY += lane.h;
+    }
+
+    // Chit-drag swap feedback: highlight the two exchanging columns full-height
+    // (grabbed slot = blue, current target = amber outline) — the swap itself previews
+    // live in the notes / durations / triad labels above — plus a ghost of the grabbed
+    // chit floating above the lanes at the cursor (the "chit in your hand").
+    if (this.footerDrag && this.footerDrag.moved) {
+      const fd = this.footerDrag;
+      const src = this._colGeom(fd.col);
+      ctx.fillStyle = 'rgba(90, 169, 255, 0.12)';
+      ctx.fillRect(src.x, 0, src.w, H);
+      if (fd.target !== fd.col) {
+        const tgt = this._colGeom(fd.target);
+        ctx.fillStyle = 'rgba(222, 184, 135, 0.12)';
+        ctx.fillRect(tgt.x, 0, tgt.w, H);
+        ctx.strokeStyle = '#d9b24a';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(tgt.x + 0.75, 0.75, tgt.w - 1.5, H - 1.5);
+      }
+      // The carried chit(s): a stack of the armed lanes' chits from the pristine base,
+      // lifted clear of the lanes with a shadow so they read as held, not a copy.
+      if (fd.cursorX != null && fd.base && fd.lanes) {
+        const laneH = (id) => (PERF_LANES.find((l) => l.id === id) || PERF_LANES[0]).h;
+        const stackH = fd.lanes.reduce((s, id) => s + laneH(id), 0);
+        const gw = this.mode === 'stretch' ? this._stretchW(fd.base[fd.col].durIndex) : UNIFORM_COL_W;
+        const gx = clamp(fd.cursorX, PAD_LEFT + gw / 2, W - gw / 2) - gw / 2;
+        let gy = fyTop - stackH - 6;
+        ctx.save();
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+        ctx.shadowBlur = 8;
+        ctx.shadowOffsetY = 3;
+        for (const id of fd.lanes) { this._drawChit(id, fd.base[fd.col], gx, gy, gw, laneH(id)); gy += laneH(id); }
+        ctx.restore();
+      }
+    }
 
     // Marching-ants marquee on top (animated dash offset, faint blue fill).
     if (this.marquee) {
@@ -646,9 +818,78 @@ export class GridView {
   // --- cursor experiment ------------------------------------------------
 
   updateCursor() {
+    if (this._cursorZone === 'footer') { this.canvas.style.cursor = 'pointer'; return; }
     const { durIndex } = this.opts.getBrush();
     this.canvas.style.cursor = makeCursor(this.opts.getCursorStyle(), durIndex);
   }
+
+  // Hover cursor: a plain finger over the performance lanes (they're UI controls,
+  // not a note canvas), the note/brush cursor over the grid body. Only re-sets when
+  // the zone changes so we don't rebuild the brush cursor image on every move.
+  _hoverCursor(inFooter) {
+    const zone = inFooter ? 'footer' : 'body';
+    if (this._cursorZone === zone) return;
+    this._cursorZone = zone;
+    if (inFooter) this.canvas.style.cursor = 'pointer';
+    else this.updateCursor();
+  }
+
+  // --- arming (which lanes a footer drag swaps) ------------------------
+  // Arming is transient (like the selection): not persisted, not undoable. It lives
+  // in ONE column at a time — double-click chits to toggle lanes into the set (or
+  // double-click the notes chit to arm all four), then drag any chit in that column
+  // to swap exactly the armed lanes. An unarmed drag swaps just the grabbed lane.
+
+  _ensureArmCol(col) {
+    if (!this.armed || this.armed.col !== col) this.armed = { col, lanes: new Set() };
+  }
+  _toggleArm(col, lane) {
+    this._ensureArmCol(col);
+    const s = this.armed.lanes;
+    if (s.has(lane)) s.delete(lane); else s.add(lane);
+    if (!s.size) this.armed = null;
+  }
+  _armAll(col) { this.armed = { col, lanes: new Set(ALL_LANES) }; }
+  _clearArm() { if (this.armed) { this.armed = null; return true; } return false; }
+  _isArmed(col, lane) { return !!(this.armed && this.armed.col === col && this.armed.lanes.has(lane)); }
+  // The lanes a drag on (col, lane) should swap: the armed set if this is the armed
+  // column, else just the grabbed lane. Ordered by PERF_LANES for a stable ghost stack.
+  _dragLanes(col, lane) {
+    if (this.armed && this.armed.col === col && this.armed.lanes.size) {
+      return ALL_LANES.filter((id) => this.armed.lanes.has(id));
+    }
+    return [lane];
+  }
+
+  // --- chit single-click, deferred so a second click can promote it to a double ---
+  // A single-click EDITS its lane (duration→brush, accent/artic cycle, notes→arm the
+  // notes). We apply that optimistically for instant feedback but hold the undo entry
+  // for DBL_MS: if a matching second click lands, we roll the edit back and ARM instead.
+
+  // Apply a chit's single-click edit in place (no history yet — deferred).
+  _applyChitEdit(col, laneId) {
+    const c = this.pattern.columns[col];
+    if (laneId === 'notes') { this._toggleArm(col, 'notes'); return; } // notes: nothing to edit → select/arm
+    if (laneId === 'accent') c.accent = nextAccent(c.accent);
+    else if (laneId === 'articulation') c.artic = nextArtic(c.artic == null ? DEFAULT_ARTIC : c.artic);
+    else c.durIndex = this.opts.getBrush().durIndex;
+  }
+  // The armed edit a double-click makes: notes chit → arm all four; any other chit →
+  // toggle that lane in the armed set.
+  _applyChitArm(col, laneId) {
+    if (laneId === 'notes') this._armAll(col);
+    else this._toggleArm(col, laneId);
+  }
+  // Commit a held single-click (its undo entry) and clear the pending slot.
+  _commitPendingClick() {
+    const pc = this._pendingClick;
+    if (!pc) return;
+    clearTimeout(pc.timer);
+    this._pendingClick = null;
+    this._commit(pc.before); // pushes history iff the edit changed anything (notes-arm doesn't)
+  }
+  // Flush any pending click immediately (e.g. a new, unrelated gesture starts).
+  _flushPendingClick() { if (this._pendingClick) this._commitPendingClick(); }
 
   // --- editing interaction ---------------------------------------------
 
@@ -668,6 +909,13 @@ export class GridView {
     window.addEventListener('keydown', modKey);
     window.addEventListener('keyup', modKey);
     window.addEventListener('blur', () => this.updateCursor());
+    // ESC owns cancellation of an in-progress gesture (capture phase, so the global
+    // Esc handler doesn't also clear the selection).
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && (this.footerDrag || this.drag || this.selDrag || this.armed)) {
+        if (this.cancelGesture()) { e.stopPropagation(); e.preventDefault(); }
+      }
+    }, true);
     if (this.opts.handle) this._bindResize();
   }
 
@@ -677,6 +925,7 @@ export class GridView {
   }
 
   _snap() { return JSON.stringify(this.pattern.toJSON()); }
+  _restore(before) { this.pattern.columns = Pattern.fromJSON(JSON.parse(before), this.pattern.name).columns; }
 
   // Push one undo entry (the pre-edit snapshot) iff the edit actually changed
   // something, then redraw. A whole drag collapses into a single entry.
@@ -686,20 +935,92 @@ export class GridView {
     this.opts.onChange();
   }
 
+  // ESC cancels ANY in-progress gesture, restoring the pre-gesture state and
+  // committing NOTHING. Returns whether a gesture was actually cancelled.
+  cancelGesture() {
+    if (this.footerDrag) {
+      const fd = this.footerDrag; this.footerDrag = null;
+      if (fd.moved) this._restore(fd.before);
+      this._cursorZone = null; this.updateCursor();
+      this.opts.onChange();
+      return true;
+    }
+    if (this.drag) {
+      const d = this.drag; this.drag = null;
+      if (d.moved) this._restore(d.before);
+      this.opts.onChange();
+      return true;
+    }
+    if (this.selDrag) {
+      if (this._marqueeRAF) { cancelAnimationFrame(this._marqueeRAF); this._marqueeRAF = null; }
+      this.selDrag = null; this.marquee = null; // drop the marquee without toggling — prior selection stands
+      this.draw();
+      return true;
+    }
+    // Nothing dragging: ESC disarms the armed lanes (a completed edit stays committed).
+    this._flushPendingClick();
+    if (this._clearArm()) { this.opts.onChange(); return true; }
+    return false;
+  }
+
   _down(e) {
     if (e.button === 2) return; // right-click handled by contextmenu
     const { x, y } = this._pos(e);
+    const willFooterDrag = this._inFooter(y) && x >= PAD_LEFT && !(e.ctrlKey || e.metaKey);
+    // Anything that isn't a footer-chit press dismisses a held arm and flushes a
+    // pending single-click edit (its undo entry settles now).
+    if (!willFooterDrag) { this._flushPendingClick(); this._clearArm(); }
     if (e.ctrlKey || e.metaKey) {
       // Select gesture: on a note → toggle it; on empty/rest → drag a marquee.
       this.canvas.setPointerCapture(e.pointerId);
       this.selDrag = { startX: x, startY: y, hitCol: this._noteAt(x, y), moved: false };
       return;
     }
+    // Performance lanes: a single-click edits that lane (duration→brush, accent/artic
+    // cycle, notes→select); a double-click arms/disarms lanes; a drag swaps the armed
+    // lanes (or just the grabbed lane if none are armed). Editing/arming resolve in _up.
+    if (willFooterDrag) {
+      this.canvas.setPointerCapture(e.pointerId);
+      const col = this._columnAt(x);
+      this.footerDrag = { col, target: col, startX: x, cursorX: x, moved: false, before: this._snap(), lane: this._laneAt(y) };
+      return;
+    }
     this.canvas.setPointerCapture(e.pointerId);
     this.drag = { col: this._columnAt(x), startX: x, startY: y, moved: false, shift: e.shiftKey, lastD: null, before: this._snap() };
   }
 
+  _inFooter(y) { return y >= this.canvas.height - FOOTER_H; }
+
   _move(e) {
+    // Duration-chit drag: pick up the whole column and PREVIEW the swap live — the
+    // two columns exchange (notes + duration), recomputed from the pristine layout
+    // so it's a clean two-cell exchange, and onChange redraws so the notes AND the
+    // triad labels update from the swapped columns. Commits on release (preview == commit).
+    if (this.footerDrag) {
+      const { x } = this._pos(e);
+      const fd = this.footerDrag;
+      if (!fd.moved) {
+        if (Math.abs(x - fd.startX) <= DRAG_THRESHOLD) return;
+        fd.moved = true;
+        this._flushPendingClick();      // a queued single-click edit settles before the drag
+        fd.lanes = this._dragLanes(fd.col, fd.lane); // the armed set (or just this lane)
+        fd.base = this.pattern.columns.map((c) => ({ ...c }));
+        this.canvas.style.cursor = 'grabbing';
+      }
+      fd.cursorX = x;
+      const target = this._columnAt(x, fd.base); // stable target (pristine widths)
+      if (target !== fd.target) {
+        const cols = this.pattern.columns;
+        for (let i = 0; i < cols.length; i++) cols[i] = { ...fd.base[i] };
+        swapLanes(cols, fd.col, target, fd.lanes); // swap only the armed lanes
+        fd.target = target;
+        this.opts.onChange();
+      } else {
+        this.draw(); // keep the floating ghost tracking the cursor between target changes
+      }
+      return;
+    }
+
     // Ctrl select-gesture: decide toggle-vs-marquee on first movement, then size
     // the marquee. (Only an empty/rest start becomes a marquee.)
     if (this.selDrag) {
@@ -713,7 +1034,7 @@ export class GridView {
       return;
     }
 
-    if (!this.drag) return;
+    if (!this.drag) { this._hoverCursor(this._inFooter(this._pos(e).y)); return; }
     const { x, y } = this._pos(e);
 
     // Lock the axis on the first movement past the threshold: whichever of the
@@ -742,7 +1063,7 @@ export class GridView {
         this.opts.onChange();
       }
     } else {
-      const target = this._columnAt(x);
+      const target = this._columnAt(x, this.drag.base); // stable target (pristine widths)
       if (target !== this.drag.target) {
         this._applyHSwap(target);
         const held = this.pattern.columns[target]; // the dragged cell now sits here
@@ -752,22 +1073,56 @@ export class GridView {
     }
   }
 
-  // Horizontal drag: show the dragged column swapped with `target`, always
-  // computed against the pristine layout so passing over middle columns never
-  // accumulates — it's a clean two-cell exchange between origin and target.
+  // Horizontal body drag: swap only the NOTE payload (pitch/rest/accent) with
+  // `target`, leaving each column's DURATION in place (duration is a footer/slot
+  // property now). Always computed against the pristine layout so passing over
+  // middle columns never accumulates — a clean two-cell exchange.
   _applyHSwap(target) {
     const cols = this.pattern.columns;
     const base = this.drag.base;
     for (let i = 0; i < cols.length; i++) cols[i] = { ...base[i] };
-    if (target !== this.drag.col) {
-      const tmp = cols[this.drag.col];
-      cols[this.drag.col] = cols[target];
-      cols[target] = tmp;
-    }
+    swapNotePayload(cols, this.drag.col, target);
     this.drag.target = target;
   }
 
   _up(e) {
+    // Chit release. A DRAG swapped the armed lanes live (preview == commit) — carry
+    // the selection only if the notes moved, then disarm. A CLICK is held DBL_MS: a
+    // matching second click ARMS (rolling back the first click's optimistic edit);
+    // otherwise the single-click edit settles on its own.
+    if (this.footerDrag) {
+      const fd = this.footerDrag;
+      this.footerDrag = null;
+      try { this.canvas.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+      this._cursorZone = null;
+      this._hoverCursor(this._inFooter(this._pos(e).y));
+      if (fd.moved) {
+        if (fd.lanes.includes('notes') && fd.target !== fd.col) this._swapSelection(fd.col, fd.target);
+        this._clearArm();               // a completed swap disarms
+        this._commit(fd.before);
+        return;
+      }
+      const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      const pc = this._pendingClick;
+      if (pc && pc.col === fd.col && pc.lane === fd.lane && now - pc.t < DBL_MS) {
+        // Double-click: undo the first click's optimistic edit, then arm instead.
+        clearTimeout(pc.timer);
+        this._pendingClick = null;
+        this._restore(pc.before);
+        this._applyChitArm(fd.col, fd.lane);
+        this.opts.onChange();           // arm is transient — no history
+        return;
+      }
+      // First click: settle any unrelated pending edit, apply this one optimistically,
+      // and hold its undo entry for DBL_MS in case a second click promotes it to a double.
+      this._flushPendingClick();
+      this._applyChitEdit(fd.col, fd.lane);
+      this.opts.onChange();
+      const timer = setTimeout(() => this._commitPendingClick(), DBL_MS);
+      this._pendingClick = { col: fd.col, lane: fd.lane, before: fd.before, t: now, timer };
+      return;
+    }
+
     // Finish a Ctrl select-gesture: marquee toggles enclosed notes; otherwise a
     // press on a note (no marquee) toggles that note; empty click does nothing.
     if (this.selDrag) {
@@ -791,26 +1146,20 @@ export class GridView {
 
     const col = this.pattern.columns[d.col];
     const degree = this._snapToScale(this._degreeAt(this._pos(e).y));
-    const brush = this.opts.getBrush();
 
     if (d.shift) {
       if (!col.isRest) {
-        col.accent = !col.accent;
+        col.accent = nextAccent(col.accent);   // cycle normal → accent → ghost
         this.opts.onAudition(col.degree);
       }
     } else if (col.isRest) {
       col.isRest = false;
-      col.degree = degree;
-      col.durIndex = brush.durIndex;
-      col.accent = brush.accent;
+      col.degree = degree;                                  // keeps the column's footer duration
       this.opts.onAudition(degree);
     } else if (degree === col.degree) {
-      // If the brush duration differs from the note's, adopt the brush first;
-      // otherwise rotate to the next duration (in beats order).
-      col.durIndex = col.durIndex !== brush.durIndex ? brush.durIndex : nextDurIndex(col.durIndex);
-      this.opts.onAudition(col.degree);
+      this.opts.onAudition(col.degree);                     // a note's own cell = re-hear it (no duration change)
     } else {
-      col.degree = degree;                                  // move the note
+      col.degree = degree;                                  // move the note to another pitch
       this.opts.onAudition(degree);
     }
     this._commit(d.before);
@@ -824,11 +1173,9 @@ export class GridView {
     if (col.isRest) {
       col.isRest = false;
       col.degree = this._snapToScale(this._degreeAt(y));
-      col.accent = false;
-      this.opts.onAudition(col.degree);
+      this.opts.onAudition(col.degree); // accent (the slot's groove) is left as-is
     } else {
       col.isRest = true; // degree kept as the cosmetic rest position
-      col.accent = false;
     }
     this._commit(before);
   }

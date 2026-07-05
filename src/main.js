@@ -4,10 +4,10 @@ import { AudioEngine } from './audio.js';
 import { Scheduler } from './scheduler.js';
 import { PianoRoll, ROLL_V_SCALES, ROLL_H_SCALES, ROLL_V_DEFAULT, ROLL_H_DEFAULT } from './pianoroll.js';
 import { Note, Score } from './model.js';
-import { Pattern, BASE_PITCH } from './grid.js';
+import { Pattern, BASE_PITCH, DURATIONS, DEFAULT_ARTIC } from './grid.js';
 import { PatternLibrary, Arrangement, laneColor, insertPoint, deletePoint } from './library.js';
 import { enumerateTriadulations, familiesFor, familyLabel, chordsFor } from './triads.js';
-import { generateRandom, RANDOM_DEFAULTS } from './random.js';
+import { generateRandom, applyDurationBias, applyAccentBias, RANDOM_DEFAULTS } from './random.js';
 import { edoOf, tuningFreq, pitchClassName, degreeBounds } from './tuning.js';
 import { scalesFor, scaleValidForEdo } from './scales.js';
 import { notesToMidi } from './midi.js';
@@ -239,7 +239,7 @@ function buildScore() {
   const cur = library.current();
   if (!proposal.length) return cur.toScore(state.bpm, state.articulation);
   const cols = cur.columns.map((c) => ({ ...c }));
-  for (const p of proposal) cols[p.col] = { durIndex: p.durIndex, isRest: false, degree: p.degree, accent: false };
+  for (const p of proposal) cols[p.col] = { durIndex: p.durIndex, isRest: false, degree: p.degree, accent: 0, artic: DEFAULT_ARTIC };
   const tmp = new Pattern(cols, cur.name);
   tmp.tuningId = cur.tuningId; tmp.scaleId = cur.scaleId; tmp.root = cur.root; // resolve in the same tuning
   return tmp.toScore(state.bpm, state.articulation);
@@ -283,12 +283,13 @@ function arrangementScore() {
       // tile.start.
       const src = tile.transforms
         ? applyTransforms(
-            s.notes.map((n) => ({ pitch: n.pitch, start: n.start, duration: n.duration, velocity: n.velocity, freq: n.freq })),
+            s.notes.map((n) => ({ pitch: n.pitch, start: n.start, duration: n.duration, velocity: n.velocity, freq: n.freq, artDur: n.artDur })),
             tile.transforms, { lengthBeats: s.lengthBeats, tuningId: p.tuningId, root: p.root })
         : s.notes;
       for (const n of src) {
         const nn = new Note(n.pitch, n.start + tile.start, n.duration, n.velocity);
         nn.freq = n.freq;         // carry each pattern's tuning-resolved frequency
+        nn.artDur = n.artDur;     // articulated (sounded) length in beats
         nn.color = color;
         nn.alpha = alpha;
         nn.laneId = lane.id;      // routes the voice through this lane's gain bus
@@ -1138,12 +1139,13 @@ async function auditionTile(id) {
   const s = p.toScore(state.bpm, state.articulation);
   const src = tile.transforms
     ? applyTransforms(
-        s.notes.map((n) => ({ pitch: n.pitch, start: n.start, duration: n.duration, velocity: n.velocity, freq: n.freq })),
+        s.notes.map((n) => ({ pitch: n.pitch, start: n.start, duration: n.duration, velocity: n.velocity, freq: n.freq, artDur: n.artDur })),
         tile.transforms, { lengthBeats: s.lengthBeats, tuningId: p.tuningId, root: p.root })
     : s.notes;
   const notes = src.map((n) => {
     const nn = new Note(n.pitch, n.start, n.duration, n.velocity);
     nn.freq = n.freq;
+    nn.artDur = n.artDur;            // articulated (sounded) length in beats
     nn.laneId = lane.id;             // route through the lane's bus + inserts
     nn.tileStart = 0;
     nn.rulerBeat = tile.start + n.start; // the in-context modulator anchor
@@ -1562,15 +1564,55 @@ function clearPattern() {
 
 // --- New Random ---------------------------------------------------------
 //
-// A dialog that generates a NEW pattern (like New: parks the current one) from
-// random in-scale notes around the viewport's center, live-previewed on the grid.
-// Randomize re-rolls in place; Accept keeps it; Cancel/Esc restores the library
-// exactly as it was. Slider settings persist across uses (Reset = defaults).
+// New Random. Generates random in-scale pitches over the CURRENT grid's rhythm
+// (its per-column durations), live-previewed on the grid. If the current pattern
+// isn't referenced it's rewritten in place; if it IS referenced, a 3-way choice
+// asks Replace-All (rewrite in place → every tile updates) / New Pattern (mint an
+// independent one) / Cancel. Auto-rolls a candidate on open (ready to audition);
+// Randomize re-rolls; Accept keeps it (one undo step for in-place); Cancel restores.
+// Slider settings persist across uses (Reset = defaults).
 
 const RAND_KEY = 'notorolla.randgen';
 
+function tileRefCount(name) {
+  let n = 0;
+  for (const lane of arrangement.lanes) for (const t of lane.tiles) if (t.name === name) n++;
+  return n;
+}
+
 function openRandomModal() {
-  if (!library.canCreate()) return;
+  const src = library.current();
+  if (!src) return;
+  const n = tileRefCount(src.name);
+  if (n > 0) openReplaceChoice(src.name, n, (mode) => { if (mode) runRandomModal(mode); });
+  else runRandomModal('inplace'); // not in use → rewrite in place, no question
+}
+
+// The up-front choice when New Random targets an in-use pattern.
+function openReplaceChoice(name, n, done) {
+  const body = document.createElement('div');
+  body.className = 'delay-editor';
+  const msg = document.createElement('div');
+  msg.className = 'delay-row'; msg.style.display = 'block';
+  msg.textContent = `Pattern ${name} is used in ${n} tile${n === 1 ? '' : 's'}. Replace it in all of them, or generate an independent new pattern?`;
+  const actions = document.createElement('div');
+  actions.className = 'delay-row rand-actions';
+  let choice = null;
+  const mk = (text, cls, val) => {
+    const b = document.createElement('button');
+    b.className = cls; b.textContent = text;
+    b.addEventListener('click', () => { choice = val; modal.close(); });
+    actions.append(b);
+  };
+  mk('Replace All', 'stem-go', 'inplace');
+  mk('New Pattern', 'seg', 'new');
+  const spacer = document.createElement('span'); spacer.style.flex = '1'; actions.append(spacer);
+  mk('Cancel', 'seg', null);
+  body.append(msg, actions);
+  const modal = openModal({ title: 'New Random — pattern in use', body, onClose: () => done(choice) });
+}
+
+function runRandomModal(mode) {
   // Sanitize persisted settings (clamp each to its slider's range).
   const saved = readJSON(RAND_KEY) || {};
   const cl = (v, lo, hi, dflt) => (typeof v === 'number' && isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt);
@@ -1578,34 +1620,73 @@ function openRandomModal() {
     unique: cl(saved.unique, 0, 1, RANDOM_DEFAULTS.unique),
     run: cl(saved.run, -1, 1, RANDOM_DEFAULTS.run),
     triad: cl(saved.triad, 0, 1, RANDOM_DEFAULTS.triad),
+    durBias: cl(saved.durBias, -1, 1, RANDOM_DEFAULTS.durBias),
+    accentBias: cl(saved.accentBias, -1, 1, RANDOM_DEFAULTS.accentBias),
+    durSort: saved.durSort === true,       // false = steer generation (default), true = post-hoc sort
+    accentSort: saved.accentSort === true,
   };
 
-  // Library snapshot for Cancel: names + counter + the current Pattern object
-  // itself (newPattern may evaporate an empty float — we re-add it on revert).
-  const prev = { currentName: library.currentName, parkedName: library.parkedName, counter: library.counter, pattern: library.current() };
-  const src = prev.pattern; // pitch context the generated pattern inherits
+  const src = library.current();
+  const srcDurs = src.columns.map((c) => c.durIndex);   // the grid's groove: rhythm…
+  const srcAccents = src.columns.map((c) => c.accent | 0); // …accents…
+  const srcArtics = src.columns.map((c) => (c.artic == null ? DEFAULT_ARTIC : c.artic)); // …articulations — kept; only pitches randomize
+  const rhythmVaries = new Set(srcDurs).size > 1;     // Duration Bias only matters if durations differ
+  const accentsVary = new Set(srcAccents).size > 1;   // Accent Bias only matters if accents differ
+  const width = src.columns.length;
+  const ctx = { tuningId: src.tuningId, scaleId: src.scaleId, root: src.root };
+
+  // Snapshots. inplace: restore the current pattern's columns on Cancel + push one
+  // undo step on Accept. new: mint a pattern, restore library identity on Cancel.
+  const beforeJSON = JSON.stringify(src.toJSON());
+  const prev = { currentName: library.currentName, parkedName: library.parkedName, counter: library.counter };
   let genPattern = null;
   let accepted = false;
+
+  // The pattern the roll writes into: the current one (in place), or a lazily-minted new one.
+  const target = () => {
+    if (mode !== 'new') return src;
+    if (!genPattern) {
+      genPattern = library.newPattern();
+      if (genPattern) { genPattern.tuningId = ctx.tuningId; genPattern.scaleId = ctx.scaleId; genPattern.root = ctx.root; }
+    }
+    return genPattern;
+  };
 
   const body = document.createElement('div');
   body.className = 'delay-editor rand-editor';
 
-  // Slider rows. Each: label, range input, live value readout.
+  // Slider rows. Each: label, range input, live value readout — plus, for the bias
+  // rows, a "Sort" checkbox choosing the mechanism (off = steer generation so Run/Triad
+  // survive; on = post-hoc re-pair, stronger but scrambles arpeggios). Toggling it re-rolls.
   const sliders = [];
-  const row = (label, min, max, key, fmt, title) => {
+  const checkboxes = [];
+  const row = (label, min, max, key, fmt, title, enabled = true, disabledNote = '(uniform rhythm)', sortKey = null) => {
     const r = document.createElement('div');
-    r.className = 'delay-row';
+    r.className = 'delay-row' + (enabled ? '' : ' rand-disabled');
     const l = document.createElement('span');
     l.className = 'delay-label'; l.textContent = label; if (title) r.title = title;
     const input = document.createElement('input');
     input.type = 'range'; input.min = String(min); input.max = String(max); input.step = '0.01';
     input.value = String(settings[key]);
+    input.disabled = !enabled;
     const val = document.createElement('span');
     val.className = 'delay-val';
-    const show = () => { val.textContent = fmt(settings[key]); };
+    const show = () => { val.textContent = enabled ? fmt(settings[key]) : disabledNote; };
     input.addEventListener('input', () => { settings[key] = +input.value; show(); });
     show();
     r.append(l, input, val);
+    if (sortKey) {
+      const wrap = document.createElement('label');
+      wrap.className = 'rand-sort';
+      wrap.title = 'Sort: re-pair the finished pitches by this bias (stronger, but breaks Run/Triad arpeggios). Off = steer generation so those shapes survive.';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = !!settings[sortKey]; cb.disabled = !enabled;
+      cb.addEventListener('change', () => { settings[sortKey] = cb.checked; doRandomize(); });
+      const t = document.createElement('span'); t.textContent = 'Sort';
+      wrap.append(cb, t);
+      r.append(wrap);
+      checkboxes.push({ key: sortKey, input: cb });
+    }
     body.append(r);
     sliders.push({ key, input, show });
   };
@@ -1615,61 +1696,78 @@ function openRandomModal() {
     'Stepwise-run tendency: 0 = none; toward + ascending runs, toward − descending; at the ends a single unbroken run.');
   row('Triad', 0, 1, 'triad', (v) => (v < 0.005 ? 'no effect' : v > 0.995 ? 'max' : `${Math.round(v * 100)}%`),
     'Harmonic bias: chance each note completes a triad (the Triadulator’s enabled families) with the two before it.');
+  row('Duration Bias', -1, 1, 'durBias',
+    (v) => (Math.abs(v) < 0.005 ? 'off' : `${v < 0 ? 'Low' : 'High'} ${Math.abs(v).toFixed(2)}`),
+    'Bias longer notes toward lower (Low) or higher (High) pitches — e.g. Low puts the lowest pitches on the longest notes (a bass feel). Steers generation, so Run/Triad arpeggios survive; tick "Sort" to re-pair the finished pitches instead (stronger, but scrambles arpeggios). Disabled when every column shares a duration.',
+    rhythmVaries, '(uniform rhythm)', 'durSort');
+  row('Accent Bias', -1, 1, 'accentBias',
+    (v) => (Math.abs(v) < 0.005 ? 'off' : `${v < 0 ? 'Low' : 'High'} ${Math.abs(v).toFixed(2)}`),
+    'Bias the loudest-accented columns toward lower (Low) or higher (High) pitches (accents rank ghost < normal < accent by loudness). Steers generation, so Run/Triad arpeggios survive; tick "Sort" to re-pair the finished pitches instead. The accents themselves never move. Disabled when every column shares an accent level.',
+    accentsVary, '(uniform accents)', 'accentSort');
 
-  // Generate into the preview pattern (created via the New flow on first use).
+  // Roll: random pitches over the SOURCE grid's per-column durations, every position a note.
   function doRandomize() {
-    if (!genPattern) {
-      genPattern = library.newPattern();
-      if (!genPattern) return;
-      // Inherit the source's pitch context (Pattern.initial resets it) so the
-      // random notes live in the tuning/scale you were just looking at.
-      genPattern.tuningId = src.tuningId; genPattern.scaleId = src.scaleId; genPattern.root = src.root;
-    }
-    const width = genPattern.columns.length;
-    const edo = edoOf(src.tuningId);
+    const t = target();
+    if (!t) return;
+    const edo = edoOf(ctx.tuningId);
     const families = familiesFor(edo).filter((id) => state.families[id]);
-    const chordKeys = new Set(chordsFor(edo, families).map((t) => t.pcs.join(',')));
+    const chordKeys = new Set(chordsFor(edo, families).map((x) => x.pcs.join(',')));
     const centroid = Math.round(state.topDegree - (state.visibleRows - 1) / 2);
-    const degrees = generateRandom({
-      count: width, centroid, scaleId: src.scaleId, root: src.root, edo,
-      bounds: degreeBounds(src.tuningId, src.root), chordKeys, settings,
+    const beats = srcDurs.map((di) => DURATIONS[di].beats);
+    // Each bias runs in one of two mechanisms (per its "Sort" checkbox): STEER = bake the
+    // pull into generation (Run/Triad arpeggios survive) — passed to generateRandom as
+    // `bias`; SORT = leave generation alone, re-pair the finished pitches afterward
+    // (stronger, but scrambles contour). Both move only the NOTES; the groove stays put.
+    const gen = generateRandom({
+      count: width, centroid, scaleId: ctx.scaleId, root: ctx.root, edo,
+      bounds: degreeBounds(ctx.tuningId, ctx.root), chordKeys, settings,
+      bias: {
+        durBias: settings.durSort ? 0 : settings.durBias,
+        accentBias: settings.accentSort ? 0 : settings.accentBias,
+        beats, accents: srcAccents,
+      },
     });
-    // Fill every column with a brush-duration note; if the scale+range offered
+    let degrees = settings.durSort ? applyDurationBias(gen, beats, settings.durBias) : gen.slice();
+    if (settings.accentSort) degrees = applyAccentBias(degrees, srcAccents.slice(0, degrees.length), settings.accentBias);
+    // Keep the grid's rhythm (durIndex per position); if the scale+range offered
     // fewer degrees than columns (tiny masks), the remainder stays rests.
-    genPattern.columns = [];
+    t.columns = [];
     for (let i = 0; i < width; i++) {
       const has = i < degrees.length;
-      genPattern.columns.push({
-        durIndex: state.brush.durIndex, isRest: !has,
-        degree: has ? degrees[i] : (degrees[degrees.length - 1] ?? BASE_PITCH), accent: false,
+      t.columns.push({
+        durIndex: srcDurs[i], isRest: !has,
+        degree: has ? degrees[i] : (degrees[degrees.length - 1] ?? BASE_PITCH),
+        accent: srcAccents[i], artic: srcArtics[i], // keep the groove; only pitches change
       });
     }
-    acceptBtn.disabled = false;
-    audBtn.disabled = false;
     refresh();
   }
 
   // Play the previewed pattern once through the grid's audition patch.
   async function doAudition() {
-    if (!genPattern) return;
-    const score = genPattern.toScore(state.bpm, state.articulation);
+    const t = mode === 'new' ? genPattern : src;
+    if (!t) return;
+    const score = t.toScore(state.bpm, state.articulation);
     const t0 = await engine.ensureRunning();
     const spb = 60 / state.bpm;
     for (const n of score.notes) {
-      engine.playNote(n.pitch, t0 + 0.06 + n.start * spb, n.duration * state.articulation * spb, n.velocity, n.freq, null);
+      engine.playNote(n.pitch, t0 + 0.06 + n.start * spb, (n.artDur != null ? n.artDur : n.duration * state.articulation) * spb, n.velocity, n.freq, null);
     }
   }
 
-  // Cancel: put the library back exactly as it was (drop the generated pattern,
-  // restore current/parked/counter, re-add the old current if it evaporated).
+  // Cancel: undo the preview. inplace → restore the current pattern's columns;
+  // new → drop the minted pattern and restore the library identity.
   function revert() {
-    if (!genPattern) return;
-    library.patterns.delete(genPattern.name);
-    library.patterns.set(prev.pattern.name, prev.pattern);
-    library.currentName = prev.currentName;
-    library.parkedName = prev.parkedName;
-    library.counter = prev.counter;
-    genPattern = null;
+    if (mode === 'new') {
+      if (!genPattern) return;
+      library.patterns.delete(genPattern.name);
+      library.currentName = prev.currentName;
+      library.parkedName = prev.parkedName;
+      library.counter = prev.counter;
+      genPattern = null;
+    } else {
+      src.columns = Pattern.fromJSON(JSON.parse(beforeJSON), src.name).columns;
+    }
     refresh();
   }
 
@@ -1683,27 +1781,32 @@ function openRandomModal() {
     return b;
   };
   mkbtn('Randomize', 'seg', 'Generate (or re-generate) a candidate — previewed live on the grid', doRandomize);
-  const audBtn = mkbtn('♪ Audition', 'seg', 'Play the previewed pattern once', doAudition);
-  audBtn.disabled = true;
+  mkbtn('♪ Audition', 'seg', 'Play the previewed pattern once', doAudition);
   mkbtn('Reset', 'seg', 'Restore the sliders to their defaults', () => {
     Object.assign(settings, RANDOM_DEFAULTS);
     for (const s of sliders) { s.input.value = String(settings[s.key]); s.show(); }
+    for (const c of checkboxes) c.input.checked = !!settings[c.key];
   });
   const spacer = document.createElement('span'); spacer.style.flex = '1';
   actions.append(spacer);
-  const acceptBtn = mkbtn('Accept', 'stem-go', 'Keep this pattern', () => { accepted = true; modal.close(); });
-  acceptBtn.disabled = true;
+  mkbtn('Accept', 'stem-go', 'Keep this pattern', () => {
+    accepted = true;
+    if (mode !== 'new') pushHistory(beforeJSON); // in-place = one undo step back to the original
+    modal.close();
+  });
   mkbtn('Cancel', 'seg', 'Discard and restore the previous pattern', () => modal.close());
   body.append(actions);
 
   const modal = openModal({
-    title: 'New Random Pattern',
+    title: mode === 'new' ? 'New Random — New Pattern' : 'New Random Pattern',
     body,
     onClose: () => {
       safeSet(RAND_KEY, JSON.stringify(settings)); // settings persist across uses
       if (!accepted) revert();
     },
   });
+
+  doRandomize(); // auto-roll a candidate on open, ready to audition
 }
 
 // --- Triadulator ------------------------------------------------------
@@ -1803,7 +1906,7 @@ function confirmTriadulation() {
   if (!proposal.length) return;
   const before = curSnap();
   const cols = library.current().columns;
-  for (const p of proposal) cols[p.col] = { durIndex: p.durIndex, isRest: false, degree: p.degree, accent: false };
+  for (const p of proposal) cols[p.col] = { durIndex: p.durIndex, isRest: false, degree: p.degree, accent: 0, artic: DEFAULT_ARTIC };
   pushHistory(before);
   clearProposal();
   arrangement.clearSelection();
@@ -1945,7 +2048,7 @@ function updateEditButtons() {
     tb.newBtn.disabled = !library.canCreate();
   }
   tb.cloneBtn.disabled = !library.canClone(); // independent of the parked slot
-  tb.randomBtn.disabled = !library.canCreate(); // same gating as New (it IS a New)
+  tb.randomBtn.disabled = !library.current(); // always available: it rewrites in place or asks (in-use)
   const h = hist(library.currentName);
   tb.undoBtn.disabled = h.past.length === 0;
   tb.redoBtn.disabled = h.future.length === 0;
@@ -2133,7 +2236,7 @@ function exportMidi() {
           notes.push({
             pitch: n.pitch,
             startBeat: n.start + tile.start,
-            durBeats: n.duration * state.articulation,
+            durBeats: n.artDur != null ? n.artDur : n.duration * state.articulation,
             velocity: n.velocity,
           });
         }
@@ -2162,7 +2265,7 @@ async function exportAudio() {
     notes.push({
       pitch: n.pitch,
       time: n.start * spb,
-      duration: n.duration * state.articulation * spb,
+      duration: (n.artDur != null ? n.artDur : n.duration * state.articulation) * spb,
       velocity: n.velocity,
       freq: n.freq,
       laneId: n.laneId, // render through this lane's instrument patch
@@ -2214,7 +2317,7 @@ async function exportStems(busMode) {
     let arr = byLane.get(n.laneId);
     if (!arr) { arr = []; byLane.set(n.laneId, arr); }
     arr.push({
-      pitch: n.pitch, time: n.start * spb, duration: n.duration * state.articulation * spb,
+      pitch: n.pitch, time: n.start * spb, duration: (n.artDur != null ? n.artDur : n.duration * state.articulation) * spb,
       velocity: n.velocity, freq: n.freq, laneId: n.laneId,
     });
   }

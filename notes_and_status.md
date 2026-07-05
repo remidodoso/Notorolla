@@ -272,12 +272,83 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   a toolbar **"Cols − N +"** stepper resizes the current pattern (grow appends rests on the diagonal,
   shrink drops trailing columns — undoable, persisted with the pattern; New/Clone inherit the width,
   Clear keeps it). Notes stored by **absolute degree**, so resizing/scrolling never loses notes.
-- Mono mode (one note/rest per column). Gestures: click a note = if the brush duration differs,
-  **adopt the brush duration first**, else **rotate** to the next duration (beats order); click a
-  rest = place; click a different row = repitch; **click-drag is axis-locked** (decided on first
-  movement, never diagonal) — **vertical** repitches the column's note, **horizontal** swaps this
-  column with the column dragged onto (a clean two-cell exchange); shift-click = accent;
-  right-click = note↔rest.
+- Mono mode (one note/rest per column). **Rhythm ⊥ pitch (2026-07-04, Phase 1 of the grid
+  overhaul): duration is SET in a per-column FOOTER lane, not by clicking notes.** A **duration
+  footer band** (`FOOTER_H`) at the canvas bottom draws one cell per column — **color = the value**
+  (the `durationColor`/`PALETTE` spectrum), a small **numeric ("1/8") as backup** — using the same
+  column geometry as the body, so it aligns in Grid and Stretch. **Nomenclature (user):** the footer
+  lanes are the **performance lanes** (X-axis lanes); this one is the **duration lane**; the cell
+  where a column meets a lane is a **lane chit** (the **duration chit**). **Phase 2 added the ACCENT and
+  ARTICULATION lanes (2026-07-04)** below the duration lane (`PERF_LANES` stack — dur/acc/art; shared
+  `_drawChit`/`_laneAt`; gutter labels). **Accent is a 3-level column groove attribute** (0 normal / 1
+  accent / 2 ghost → velocities 0.78 / 1.0 / 0.45; pale **green/yellow/blue** chits with `>` / `( )`
+  glyphs) — **accent-chit click cycles** the level (any column, so a groove can be laid over rests then
+  pitched — four-on-the-floor / backbeat). **Articulation is a per-column preset** (`ARTICULATIONS`:
+  spiccato / staccato / normal / legato / tenuto; **art-chit click cycles**; chit = a gate-length bar +
+  label, violet = spiccato, warm = tenuto>1, teal else). Playback resolves it to a **sounded length**
+  `n.artDur` (beats), baked in `toScore` (`articBeats`) and used by the scheduler / auditions / WAV+MIDI+stem
+  exports (`note.artDur ?? note.duration*articulation`): **normal 0.88** (the old global), staccato 0.5,
+  legato 1.0, **tenuto 1.15 (rings past the slot — works in mono)**, **spiccato an absolute ~55 ms**
+  (tempo/duration-independent, capped at the slot). Model: `accent` 0/1/2 + `artic` index are column
+  fields; **backward-safe 5-field `toJSON`** (old 4-field rows → normal); New Random keeps the source's
+  **whole groove** (rhythm + accents + articulations), only pitches randomize. **Duration-chit click = SET
+  the column's duration to the current brush** (the brush is the duration selector; the finger/`pointer`
+  cursor shows over the performance lanes, not the note dot); **any-chit drag = swap the
+  WHOLE column** (duration + note + accent; `swapColumn`) with a **live preview** — the two columns exchange
+  interactively as you drag (notes *and* triad labels re-derive from the swapped columns, preview ==
+  commit), the grabbed slot (blue) and current target (amber) highlight full-height, `grabbing` cursor, plus a
+  **floating ghost of the grabbed chit** lifted above the lane at the cursor (the "chit in your hand");
+  committed on release. **Stretch view (2026-07-04):** column widths are now a **log-compressed** map
+  of duration into a bounded band (`stretchWidth`, ~26–60px, by-eye tunable) — decoupled from the piano
+  roll (that alignment no longer mattered), like music engraving; and width-changing drags no longer
+  **oscillate** because the drop target is computed against the **pristine pre-drag layout** (a
+  live-swapped layout shifted the columns out from under the cursor and made the target flip-flop).
+  **Grid-body clicks are now pitch-only:** click
+  a rest = place a note **at the column's existing footer duration** (no brush adoption); click a
+  note's own cell = **re-audition** (no duration change); click a different row = repitch;
+  shift-click = accent (also a column groove attribute now); right-click = note↔rest. **Body click-drag
+  stays axis-locked** — **vertical** repitches; **horizontal** now swaps only the **pitch** (degree +
+  isRest) and **leaves the slot's groove (duration + accent) in place** (`swapNotePayload`), so a
+  horizontal drag = "reorder pitches over a fixed groove." **ESC cancels any in-progress gesture**
+  (`cancelGesture`, capture-phase listener so the global Esc doesn't also clear the selection) — footer
+  chit drag, body drag, and marquee all restore and commit nothing. Pure UI/gesture refactor — `durIndex`/`accent` were already column fields, so **no
+  model/format change**; the swap/rotate/label helpers are pure in `grid.js` (`swapNotePayload`,
+  `swapColumn`, `durationLabel`; `notch/footer.mjs` 13/13). Later phases add accent/articulation
+  groove lanes + selective attribute swap, polyphony, named rhythms — see
+  [future_directions.md](future_directions.md) §7.
+- **NOTES lane + arm-then-drag selective swap — BUILT (2026-07-04):** a **4th performance lane on
+  top** (nearest the grid), `notes` — a neutral **medium-gray handle, no text**, always solid (it
+  represents the column's pitch content, of which there may be zero). Completes the **"attribute
+  rack"**: the four lanes (notes / duration / accent / articulation) are now the swappable facets of
+  a column, `notes` being the pitch (degree + isRest). **Selective swap:** `swapLanes(cols,a,b,laneIds)`
+  in grid.js exchanges only the chosen lanes — spanning from `swapNotePayload` (`['notes']`) to
+  `swapColumn` (all four) — driven by `LANE_FIELDS`. **Gestures evolved (the swap model from
+  "simple" → arming):** a chit **single-click still EDITS** its lane (dur→brush, accent/artic cycle;
+  **notes-chit click = select/arm the notes**); a chit **double-click ARMS/disarms** that lane
+  (**notes-chit double-click = arm all four**); armed chits show a **blue frame**. A chit **drag now
+  swaps only the ARMED lanes** between the grabbed column and the drop column (**just the grabbed lane
+  if nothing is armed** — so a one-attribute swap needs no arming); the floating ghost is a **stack of
+  the armed chits**. Arming is **transient**, lives in **one column** (per-column, not a global mask —
+  the multi-column case has no use yet), and **disarms** on ESC / a body click / a completed swap.
+  Selection follows a swap **only when `notes` is in the armed set**. Single-click / double-click are
+  disambiguated by holding the single-click edit `DBL_MS` (260 ms) with **optimistic feedback +
+  deferred undo entry**: a matching 2nd click **rolls the edit back and arms instead**, so the value
+  never changes when you meant to arm, and edits still feel instant. (`grid.pattern =` is now an
+  **accessor** that flushes a held click against the OLD pattern before a switch.) In **mono** the
+  notes-chit swap and the body horizontal note-drag do the same column-level pitch exchange; the
+  per-note **"move, don't swap"** behavior arrives with **poly (Phase 3)**. `notch/footer.mjs` 45/45.
+  **User decisions (2026-07-04):** put notes on top, gray, no text; arm within a single column;
+  "click however many you want to arm (or disarm) before dragging" → resolved to **double-click arms,
+  single-click keeps editing** ("double click to arm is fine for now"); moving a note onto an existing
+  note (poly) just moves + dedupes.
+- **Grid + performance-lane scale-up (2026-07-04):** the grid canvas was bumped **~120%** (`ROW_H`
+  24→29, `UNIFORM_COL_W` 40→48, Stretch band 26–60→31–72px, `DOT_R` 7→8, pitch labels 11→13px) — the
+  toolbars are untouched. The **performance chits are taller still, ~1.5×** (`PERF_LANES` heights
+  notes 18→27 / dur 20→30 / acc 16→24 / art 16→24) so the groove lanes read as chunky, hittable
+  controls; chit-content fonts grew to match (dur numeric 12px, accent glyph 13px, artic label 11px).
+  The **gutter lane labels** (note/dur/acc/art) were the weak spot — bumped from a faint 9px `#6a7280`
+  to **bold 12px `#aeb8c6`**. (User: "eyeballing 120% will do"; chit height "50% increase … might or
+  might not be enough"; labels "too subtle … incredibly small".)
 - Duration brushes {1/16, 1/8, 3/16, 1/4, 3/8, 1/2} (shown shortest→longest via `DUR_ORDER`; 1/16
   and 3/16 — a dotted eighth — are stored at the end of `DURATIONS` so old `durIndex` values don't
   shift). Color = a **chilled spectrum** by duration
@@ -384,22 +455,58 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   retiring the duplicated `24`/`108` (the latter had been hardcoded again in main.js). 12-ET stays in
   MIDI 0–127, so plain-MIDI export is unaffected.
 - **New Random** (toolbar, next to New/Clone; [src/random.js](src/random.js) + `openRandomModal` in
-  main.js): generates a **new pattern** (same New semantics — parks the current one; same `canCreate`
-  gating) from random in-scale notes, via a dialog with **live grid preview**. Default = a **generalized
+  main.js). **Reworked 2026-07-04:** it now **regenerates over the CURRENT grid's rhythm** rather than
+  minting a blank at the brush duration — the source pattern's **per-column durations are kept** and only
+  the pitches are randomized (so: set a rhythm in the duration footer, hit New Random, get pitches over
+  it). **Never gated** (the old "Clear first" friction is gone): if the current pattern **isn't in a
+  tile** it's rewritten **in place**; if it **is** referenced, a **3-way dialog on click** — *"Pattern A
+  is used in N tiles — **Replace All** / **New Pattern** / Cancel"* — chooses between rewriting it in
+  place (every tile updates live) or minting an independent new pattern. **Auto-rolls a candidate on
+  open** (ready to audition immediately; the old "Accept disabled until first roll" is gone). Accept on
+  an in-place run is **one undo step** (`pushHistory` of the pre-roll snapshot); Cancel restores the
+  columns (in place) or drops the minted pattern. Split into `openRandomModal`/`openReplaceChoice`/
+  `runRandomModal(mode)` with `tileRefCount`. Default pitch generation = a **generalized
   tone row**: a contiguous window of N in-scale degrees (N = the pattern's column count) approximately
   **centered on the grid viewport's middle**, in random order, **no degree reused** (uniqueness is
-  by-degree, so narrow masks like pentatonic span extra octaves rather than starving); notes take the
-  **brush duration**, no accents. Three persistent sliders bend it — **Unique** (100% = permutation …
+  by-degree, so narrow masks like pentatonic span extra octaves rather than starving); **every position
+  gets a note** (generated rests are a flagged future evolution), no accents. Three persistent sliders bend it — **Unique** (100% = permutation …
   0% = sampling with replacement), **Run** (−1…+1: |v| = chance of stepwise continuation in that
   direction; at the ends a single unbroken run = the sorted window; run outranks triad so full runs
   stay intact), **Triad** (chance each note completes a harmonic triad with the previous two — EDO-aware
   `classifyTriad` pc-set keys from the **Triadulator's enabled family toggles**, so 16-ET gets septimal
-  bias). Dialog: **Randomize** (re-roll in place, repeatable), **♪ Audition** (plays the preview once
-  through the grid patch), **Reset** (defaults), **Accept** (disabled until first roll; keeps it),
-  **Cancel/Esc** (restores the library *exactly* — the generated pattern is dropped and current/parked/
-  counter put back, re-adding an evaporated empty float). Settings persist in `notorolla.randgen`.
-  The new pattern **inherits the source's tuning/scale/root** (Pattern.initial resets them; the
-  generator ran in that context so the pattern must carry it). Pure generator (`generateRandom`,
+  bias), and **Duration Bias** (−1…+1, 0 = off; **Low** puts the lowest pitches on the longest notes,
+  **High** the highest — e.g. Low all the way = a bass feel). It's a pure post-generation **re-pairing**
+  (`applyDurationBias`): the same generated pitches are re-assigned to positions by a duration↔pitch rank
+  correlation of strength |bias|. **Duration TIES break by the GENERATED pitch order** (not position) — so
+  within a duration group the band's pitches follow the generator's random / Run- / Triad-shaped order
+  instead of a sorted ramp (that's where the within-group variety lives, and it's what keeps the other
+  sliders meaningful at full bias; it competes with Run/Triad only *across* duration groups). **Grayed out
+  when the rhythm is uniform** (≤1 distinct duration). **Accent Bias (−1…+1, 0 = off — BUILT 2026-07-04):**
+  the accent parallel of Duration Bias — like it, it **moves the NOTES, not the groove**: the accents stay
+  fixed on their columns and the SAME pitches are re-paired so pitch tracks accent. **Low** puts the lowest
+  pitches on the loudest-accented columns, **High** the highest; accent "loudness" ranks **ghost < normal <
+  accent** (by sounded velocity, not the raw level index). `applyAccentBias(degrees, accents, bias)` reuses
+  the shared `rankBias` helper with the accent-intensity array as the correlate axis. Applied **after**
+  Duration Bias (both re-pair the same pitch multiset, so they compose/compete). **Grayed out when accents
+  are uniform** (≤1 distinct level → "(uniform accents)"; no gradient to correlate against). *(First cut
+  wrongly shuffled the accents around the columns — user: "it's moving columns around … the bias moves the
+  NOTES"; corrected to re-pair pitches.)* **Bias mechanism — STEER vs SORT (BUILT 2026-07-04):** the
+  re-pairing sort above **scrambles arpeggios** — it reorders the whole sequence, wiping the Run/Triad
+  contour that makes arpeggiated-chord ostinatos (a core bass-line character). So each bias now defaults to
+  **STEER**: bake the pull into generation (`generateRandom`'s new `bias` param → `biasTargets`/`biasedPick`)
+  — it only **weights the otherwise-uniform pick** among the candidates run/triad already allow, so **Triad
+  character survives** (bias chooses *among* chord-completions; when a triad forces one pitch, harmony wins)
+  and **Runs stay intact** (run picks are deterministic; bias never touches them). Weighting is
+  `exp(BIAS_SHARP·strength·align)` (BIAS_SHARP≈3.2) — deliberately **stochastic even at max** (unlike Run's
+  determinism; several arrangements stay possible, just unequally likely — user's requirement), and it
+  **subsumes the sort** (Run/Triad 0 → same global correlation, no collateral damage). A per-slider **"Sort"
+  checkbox** (`durSort`/`accentSort`, default off) switches back to the re-pair mechanism for comparison
+  ("if it's not useful we'll get rid of it" — user); toggling it **re-rolls**. Duration & accent pulls
+  **combine** (weighted-average targets; opposing pulls partly cancel). The sort path keeps the shared
+  `rankBias(material, less, axis, bias)` helper. random.mjs 52/52. Dialog: **Randomize** (re-roll, repeatable),
+  **♪ Audition** (plays the preview once through the grid patch), **Reset** (defaults), **Accept** (keeps
+  it — live from the auto-roll), **Cancel/Esc** (restores). Settings persist in `notorolla.randgen`.
+  The result **inherits the source's tuning/scale/root** (and now its rhythm). Pure generator (`generateRandom`,
   injectable rng) — headless-tested incl. run extremes, triad bias, 16-ET Mavila, short-ladder reuse.
   *Deferred (user):* generator **presets**, more controls (e.g. articulation/rhythm randomization).
 - **Opening a pattern auto-centers the pitch viewport** on its notes (`centerGridOn`: midpoint of
