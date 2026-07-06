@@ -47,6 +47,32 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 
 ---
 
+## Scroll discipline (the "Scroll Annoyance")
+
+**Principle (standing rule):** the app **must not scroll unnecessarily**, and **especially not
+during a gesture**. Some scrolling is essential (edge auto-scroll while dragging a tile past the
+viewport, following the playhead); the rest is essential to **avoid**. A gesture that moves the
+page out from under the user — so the thing they just grabbed is suddenly somewhere else — is the
+signature bug. Treat any unbidden scroll as a defect.
+
+**The recurring cause + the fix.** Rebuilding a canvas or a container's `innerHTML` momentarily
+**collapses its size**; the browser then **clamps the scroll offset** (of the container *and*,
+because the document got shorter, of the **page**), and nothing restores it. Two layers of defense:
+
+- **Belt:** `* { overflow-anchor: none; }` (index.html) — cheap, purely behavioral.
+- **Suspenders (robust to any cause):** snapshot the scroll before the rebuild and restore it after
+  if it moved. We do this for the **page** in `refresh()` (`window.scrollX/Y` → `window.scrollTo`)
+  **and inside `TilePlayer.render()`** — the latter also guards its own container's `scrollLeft/Top`.
+  `render()` guards the page too because a **tile drag calls it directly**, bypassing `refresh()`
+  (the fix for "drag a tile after scrolling the window → the page jumps and the tile flies away").
+
+**Rule of thumb for new code:** if you wipe/rebuild DOM or resize a canvas, and it *can* affect a
+scroll offset, bracket it with a save/restore — don't rely on the belt alone. Legit auto-scroll
+(edge-drag, playhead-follow) is the exception, and it targets the *right* scroller (a lane's own
+`scrollLeft`), never the page.
+
+---
+
 ## File map
 
 | File | Responsibility |
@@ -63,6 +89,10 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 | [src/delay.js](src/delay.js) | per-lane delay config (`defaultDelay`/`normalizeDelay`, `DELAY_TIMES`/`DELAY_MODES`) + `buildDelayEditor` (modal form) |
 | [src/chorus.js](src/chorus.js) | per-lane Juno-60 chorus config (`defaultChorus`/`normalizeChorus`, `CHORUS_MODES` = I/II/I+II) + `buildChorusEditor` (modal form; On + Mode only) |
 | [src/modal.js](src/modal.js) | `openModal` — generic centered modal (Esc / backdrop / × to close, `onClose`) |
+| [src/panel.js](src/panel.js) | `createPanel` — the reusable **modeless floating-pane primitive** (fixed, draggable, resizable, geometry-remembered, document-agnostic chrome; header + close + show/hide/onToggle). Shared by the Tile inspector and the coming Patch Catalog (future_directions §14) |
+| [src/patches.js](src/patches.js) | `PatchStore` — the **user-global patch catalog** backing store (future_directions §14): id-keyed named patches, factory `Init` per kind (`factoryInitId`) + user tier (`newPatchId`), `allForKind`/`add`/`update`/`remove`/`uniqueUserName`/`userNames`, toJSON/loadUser. Pure (headless-tested) |
+| [src/catalog.js](src/catalog.js) | `createCatalog` — the **Patch Catalog** window (a panel.js tenant): kind→patch browse, live name search, double-click apply, per-user-patch Rename/Delete; content-only (main.js feeds the list + handles the ops) |
+| [src/inspector.js](src/inspector.js) | `createInspector` — the **Tile inspector** content (a `panel.js` tenant): optional play/stop/loop transport + a `setFacts` data dump with inline-rename heading |
 | [src/scheduler.js](src/scheduler.js) | lookahead scheduler, finite looping, per-cycle re-read (`onCycle`), mid-cycle tile reconciliation (`resync`) |
 | [src/pianoroll.js](src/pianoroll.js) | `PianoRoll` canvas render + playhead; per-note color/alpha |
 | [src/gridview.js](src/gridview.js) | `GridView` — grid editor (render + gestures + viewport + resize) |
@@ -287,6 +317,56 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   be the grid's own; **Restore** → best-effort re-apply the parked pattern's instrument. Persisted
   (`state.gridInstr`/`parkedInstr`), so a reload keeps the grid instrument; a project Open/New resets
   to the grid's own.
+- **Patch catalog — Phase B BUILT (2026-07-06)** ([src/patches.js](src/patches.js) store + Patch bar in
+  the instrument pane + lane-head rework; future_directions §14). **Patches are now first-class, id-keyed,
+  named objects** (the sound analogue of named patterns): a `PatchStore` holds `{id,name,kind,params,
+  factory}` — **names are non-unique display labels, the id is the key** (globally-unique `crypto.randomUUID`
+  for user patches; a **deterministic `f:<kind>`** for the read-only factory **`Init`** per kind, so a
+  project referencing factory Init resolves on any machine). **Everything is always named** off `Init`. The
+  catalog is **user-global** (`notorolla.patches`, cross-project; never in a project file — the resolved
+  params still ride the project, self-contained). **Each lane + the grid patch carry `patchOriginId` /
+  `patchName` / `patchDirty`** (lane fields ride the arrangement; grid's ride `notorolla.gridpatchmeta`).
+  **Display**: `Name` / `Name*` (edited, or a typed-but-unsaved name — "related to this name, not exactly
+  this saved sound") / `Name [I]` (imported — origin id unknown to this catalog). **`*` = "not saved as
+  shown"**, one meaning; set on any edit, cleared only by Load/Save/Save As. **Editor Patch bar**: the name
+  (double-click → inline rename = declaring a fork name), **Save** (overwrite the linked USER entry when the
+  name is unchanged; else — a renamed patch, or a factory/`Init` origin — **fork** a new one; factory Save
+  forces a blank name via `prompt`), **Save As** (always fork), **Load** (a per-kind dropdown; Phase C brings
+  the browser window). A user name colliding with a **factory** name auto-uniquifies (`Init` → `Init1`…).
+  **Save-with-a-changed-name = a NEW patch, never an in-place rename** (true rename + Delete deferred to C).
+  On an overwrite, other lanes holding an **independent copy** of that entry (same id, clean) go `*`
+  (`markSiblingsDirty`) — they don't re-sound (rack sharing, later, would). **Lane head**: the Edit button is
+  **gone**; a two-line **Instrument / Patch(`*`/`[I]`)** block, **double-click anywhere → editor on that
+  lane**. Patch identity **live-carries through tile undo/redo** (`arrApply`, like the rest of the sound
+  layer) and is seeded onto **fresh lanes** with the grid/source patch. **Migration**: legacy lanes (no
+  identity) → their kind's Init marked dirty → **`Init*`**; the project dirty-baseline absorbs the migrated
+  identity so a silent upgrade doesn't flag the project dirty. `notch/patches.mjs` (30). Verified in-browser
+  (Chrome/Playwright): edit→`Init*`, Save→named+clean, edit→`Name*`, Load recalls, per-lane dirty isolation.
+  **Deferred to Phase C**: the catalog **window** (tree/tags/search, drag-to-lane), Delete/true-Rename; and
+  (later) rack instances, patch auditioning, Factory-Save tooling.
+- **Patch catalog — Phase C BUILT (2026-07-06)** ([src/catalog.js](src/catalog.js) window + a "Catalog"
+  button in the instrument pane's Patch bar). The browsable home for saved sounds — a **modeless window**
+  (a `panel.js` tenant) listing **kind → patch** (all instruments, factory + user), with a **live name
+  search**, **double-click = apply to the current edit target** (cross-kind aware — reuses the Phase-B load
+  path, which rebuilds the pane for a new kind), the target's current patch **highlighted**, and per-user-
+  patch **Rename ✎ / Delete ✕** (hover-revealed; factory read-only). Opened from the pane; live-refreshes on
+  every store/target change. **The `imported` flag (`[I]`) is now BUILT and EXPLICIT** — a bool on each
+  identity record, **set on project-file Open** for lanes whose origin isn't in this catalog (so it can
+  drive "add it to your catalog?"), *not* inferred from id-resolution. Display composes
+  `name + (dirty?'*') + (imported?' [I]')` (both can show). A **local Delete** of an in-use patch detaches
+  its linkers to **`Name*`** (dirty, keeps the name, **not** `[I]` — you deleted it deliberately; re-Save
+  to keep it); only a file Open ever mints `[I]` (autosave reload keeps the persisted flags, so a delete's
+  `Name*` survives a normal reload). **True in-place Rename** (`renamePatchEntry`) keeps the entry id, and a
+  clean linker's display **derives from the entry's current name** (so a rename propagates to every lane
+  automatically; dirty linkers keep their snapshot). **Name collisions are discouraged** (user: don't
+  silently duplicate): a fork/Save/Save-As whose name matches an existing **user** patch opens a **Save /
+  Rename / Cancel** dialog (`openNameCollision`); **factory** names still auto-uniquify (`Init`→`Init1`).
+  **Add-to-catalog for an imported patch** = just Save it (its origin doesn't resolve → forks a new user
+  entry, runs the collision check, clears `imported`). `notch/patches.mjs` (35). Verified in-browser
+  (Chrome/Playwright): catalog lists 6 factory Inits, search filters, Save adds a patch, cross-kind
+  double-click apply, the collision dialog fires on a duplicate name, Delete → `Pad1*`. **Deferred to
+  Phase D**: groups (one path) + tags (facets) on the patch model + the tree/tag-facet UI. **Phase E**:
+  drag a patch onto a lane head. (Rack instances, patch auditioning, Factory-Save tooling still later.)
 
 ### Grid editor (one pattern at a time)
 - **Per-pattern column count** (time) × resizable pitch rows (one octave by default, C4 at
@@ -315,12 +395,16 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   fields; **backward-safe 5-field `toJSON`** (old 4-field rows → normal); New Random keeps the source's
   **whole groove** (rhythm + accents + articulations), only pitches randomize. **Duration-chit click = SET
   the column's duration to the current brush** (the brush is the duration selector; the finger/`pointer`
-  cursor shows over the performance lanes, not the note dot); **any-chit drag = swap the
+  cursor shows over the performance lanes, not the note dot); **double-clicking a toolbar duration brush
+  button = set the WHOLE pattern to that duration** (2026-07-05, `applyDurationAll` — a quick undoable
+  convenience, likely temporary); **any-chit drag = swap the
   WHOLE column** (duration + note + accent; `swapColumn`) with a **live preview** — the two columns exchange
   interactively as you drag (notes *and* triad labels re-derive from the swapped columns, preview ==
   commit), the grabbed slot (blue) and current target (amber) highlight full-height, `grabbing` cursor, plus a
   **floating ghost of the grabbed chit** lifted above the lane at the cursor (the "chit in your hand");
-  committed on release. **Stretch view (2026-07-04):** column widths are now a **log-compressed** map
+  committed on release. **All performance-lane edits are UNDOABLE** — chit clicks (duration/accent/
+  articulation), chit swaps, and set-all each mint one per-pattern undo entry (`GridView._commit` →
+  `onHistory` → `pushHistory`, no-op when nothing changed). **Stretch view (2026-07-04):** column widths are now a **log-compressed** map
   of duration into a bounded band (`stretchWidth`, ~26–60px, by-eye tunable) — decoupled from the piano
   roll (that alignment no longer mattered), like music engraving; and width-changing drags no longer
   **oscillate** because the drop target is computed against the **pristine pre-drag layout** (a
@@ -648,13 +732,21 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   - **REPEAT — the fill handle** (Excel idiom; chosen over shift-drag and a one-shot button —
     discoverable, no modifier, no arming; "Cubase kinda sorta does the handle thing" — user):
     a small blue grip rides the **right edge of the selection block** (kept glued by
-    `syncSelHandle` on every selection change; hidden during drag previews). Drag it right to
+    `syncSelHandle` on every selection change; hidden during drag previews). Drag it to
     stamp **whole-block copies at `blockStart + k·period`** (period = block span → seamless;
-    a trailing gap can't be part of the loop, accepted); count tracks the pointer (pull back to
-    shed, release to commit, k=0 no-op, Esc cancels); preview bands are drawn **without
-    re-rendering** (the handle under the pointer must survive its own gesture). One undo entry;
-    afterwards the **selection = originals + all stamps** (user's choice — ready for a
-    whole-run transform). Transforms clone onto stamps/copies.
+    a trailing gap can't be part of the loop, accepted). **Bidirectional (2026-07-06):** the one
+    right-edge grip goes **both ways** — drag right for right copies (`k>0`), drag left *through*
+    the block (that's the shed zone) and past its left edge for **left copies** (`k<0`, at
+    `blockStart − |k|·period`, clamped so a copy before beat 0 is blocked). `planRepeat` takes a
+    **signed k**; the sign is derived from which side of the block the pointer is on. A **count chip
+    follows the pointer** (`.repeat-count`, `position:fixed` so it survives the gesture's edge-scroll):
+    **"N + M"** — N tiles selected, M copies that actually land — or **"N + M (I)"** for a multi-tile
+    selection, I = |k| (e.g. all blocked → "2 + 0 (2)"). `onRepeatPreview` returns the placed count for
+    the chip. Count tracks the pointer (pull back to shed, release to commit, k=0 no-op, Esc cancels);
+    preview bands are drawn **without re-rendering** (the handle under the pointer must survive its own
+    gesture). One undo entry; afterwards the **selection = originals + all stamps** (user's choice — ready
+    for a whole-run transform). Transforms clone onto stamps/copies. `notch/blockops.mjs` covers left
+    stamps + the beat-0 clamp.
   **Removed with the brushes** (select-then-act replaced them; git remembers): arming/one-shot/
   Shift-to-stay, the paint-gesture Esc-cancel path, path-exact sweep hit-testing (`segmentHits`,
   Liang–Barsky — deleted, tests trimmed to `clampGrip`), the painted-tile highlight, and the
@@ -672,6 +764,60 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
   per-tile (`tile.transforms`, optional/backward-safe), **undoable** (carried through `arrApply`),
   **copies carry cloned transforms**. Future Phase 2: append semantics + reorderable chips +
   **Rotate** (the non-commuting case that forces real ordering UI).
+- **Modeless-pane primitive extracted — Patch Catalog Phase A BUILT (2026-07-06)** ([src/panel.js](src/panel.js)).
+  The floating/draggable/resizable/scroll-resistant/geometry-remembered/**document-agnostic** window chrome
+  was factored out of the inspector into `createPanel({title, storeKey, defaultGeom})` — a tenant appends
+  content to `panel.root` after the header and drives `show/hide/toggle/isOpen/onToggle`. The **Tile
+  inspector is now its first tenant** (behavior-preserving; smoke test 34/34). CSS chrome classes renamed
+  `.inspector*` → `.panel*`; the inspector keeps its own content classes. This is **Phase A** of the Patch
+  Catalog (future_directions §14) — the shared shell the catalog (and future pop-out windows) build on.
+- **Tile Inspector — first cut BUILT (2026-07-05)** ([src/inspector.js](src/inspector.js) + a "Tile
+  Inspector" button in the tile-player top row, after Export Stems). The first of an intended family of
+  **modeless windows** (future_directions §12). Deliberately **not** a modal: it stays open, blocks
+  nothing, and **follows the tile selection** (its refresh rides the same `refreshTransformBar` hook as
+  the transform chips). **Window discipline (user's spec):** `position: fixed` so it **owns its spot and
+  ignores page scroll** (the user controls its location), **draggable by the header** (pointer capture,
+  clamped to keep a grabbable sliver on-screen), **resizable** via CSS `resize: both` with a sensible
+  **min-width/min-height** (240×180), and it **never scrolls the page** — interior overflow scrolls
+  inside `.inspector-body` with `overscroll-behavior: contain`. Position/size/open-state persist
+  (`notorolla.inspector`, a workspace pref, best-effort try/catch — never nags). **Document-agnostic
+  seam** for the later pop-out: the pane renders from the root node's `ownerDocument` and takes a plain
+  **facts** data structure (`setFacts({ heading, sub, sections:[{title, rows:[[k,v]…]}] })` or
+  `{ empty }`), so docked→floating→popped-out is just adopting the node — not a second implementation.
+  **Content (this cut = read-only data dump)** for the **anchor** tile: Placement (lane, start, length,
+  end), Pattern (name, columns, notes, tuning, scale, key), Instrument (the lane's voice label + type),
+  Transforms (list or "none"). A **multi-selection** still shows the **anchor** (last-clicked) tile, with
+  a "anchor of N selected" sub-note. **Opened only by its button** — single/double-click on a tile are
+  already taken (select / open-in-grid). **Transport cluster (▶ ■ ↻)** at the top (a first, deliberately
+  **un-standardized** cluster — we're not ready to standardize a shared transport): **Play** = audition
+  the anchor tile once, **Loop** = the app's **LIMITED loop** (tap to stack `LOOP_STEP` passes, capped at
+  `LOOP_MAX`, counting down — *there is no infinite loop anywhere in the app; a counted loop is the cure
+  for "loop burn-in"*), **Stop** = stop (only enabled while the inspector's own `audit` source is playing).
+  Both drive the same `'audit'` source as a tile double-click (`auditionTile(id, {loop})`, now loop-aware;
+  `auditTileId` tracks the sounding tile). The **inspector never holds focus** (user's rule — no keyboard
+  shortcuts belong to it): transport buttons are `tabIndex=-1` and **blur after click**, so Space et al.
+  stay routed to the app. No per-tile *editing* yet (transforms stay in the bar; the instrument-override
+  plumbing is future). **Rename BUILT (2026-07-06):** double-click the inspector heading to give the
+  tile a **friendly name**, shown with the canonical registry name after it — **"Break Beat 2 (A6)"**
+  (unlabeled → just "A6"). **The label lives on the PATTERN** (`Pattern.label`, since the canonical name
+  A6 *is* the pattern's registry key), so every tile referencing it follows, and — per the spec —
+  **clones/stencils do NOT inherit it** (`clone()`/`stencil()` don't copy `label`, so a clone keeps the
+  canonical sequence A7…; user: "don't yet use the user-given name when naming clones"). Persisted in the
+  library JSON (autosave + project file; **omitted when empty**, older saves load blank — backward-safe,
+  no migration) and it **counts as musical content** (renaming marks the project dirty). Inline edit:
+  Enter/blur commits the trimmed value (empty clears it), **ESC cancels** (the app-wide "ESC cancels the
+  in-progress thing" rule; a done-guard stops the ESC-blur from committing). This is the one time the
+  inspector holds focus — a transient text field the user opened; the global key handler already ignores
+  keys typed into inputs, so shortcuts don't fire while renaming. **The friendly name shows wherever the
+  tile is displayed** (user: "the name should be used wherever the tile is displayed"): the lane
+  **thumbnail** shows **just the friendly name** ("Groovy" — *not* "Groovy (A1)"; the canonical name
+  belongs in the inspector, revealed on the tile only via its hover `title`), or the canonical name when
+  unlabeled; inner `.tile-name-txt` span ellipsis-truncates on a narrow tile, and the **drag ghost**
+  inherits it free via `cloneNode`. The `(A6)` canonical-in-parens form stays in the **inspector heading**
+  only. *Deferred:* using the friendly name in clone lineage. `notch/label.mjs` (7). Smoke-tested
+  headless against a DOM mock (create/show/hide/toggle/persist/drag/
+  facts/transport/rename, 34/34). See the **Scroll discipline** section: the page-jump-on-tile-drag fix
+  (`TilePlayer.render()` now restores the window scroll too) landed alongside this.
 - Both lanes share **one horizontal time axis** (a single scale `tilePlayer.ppb`, one shared
   scroll, common origin), so tiles **align in time** across lanes. Tiles are **freely positioned**:
   each carries an explicit **`start` beat** (snapped to the 1/4-note grid = integer beats), so gaps

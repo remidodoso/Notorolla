@@ -13,6 +13,27 @@ it's called out.
 
 ---
 
+## What goes here vs. in notes & status
+
+**This file is not the status log.** The detailed record of what's *built* — mechanics,
+decisions, file/function names, test counts, the fine-grained deferred backlog — lives in
+[notes_and_status.md](notes_and_status.md). Day-to-day implementation updates go **there**,
+not here.
+
+Updates to *this* file are only two kinds:
+
+- **Accumulating future debt** — new "pie in the sky" / wish-list ideas as they come up
+  (a new numbered direction, or a bullet under an existing one).
+- **Status flips on an existing direction** — a short note that idea X has been
+  **implemented** (then the mechanics move to notes & status and this entry shrinks to a
+  pointer), or **shelved**, **reworked**, **superseded**, etc.
+
+So: if you're writing down *how* something now works, it belongs in notes & status. If
+you're writing down *that* a future idea landed / died / changed shape, or adding a brand-new
+wish, it belongs here.
+
+---
+
 ## The shape of it (leverage vs. cost)
 
 A few of these are keystones that multiply the value of the others; a few are gated behind
@@ -33,6 +54,7 @@ a shared enabler. Rough read before the details:
 | **11. Scale-space tools** | scale-mask library (data) + transpose features | **no** | harmonization waits on 7 |
 | **12. Tile inspector** (per-tile modifiers) | pure model + UI | no | composes with 1 & 7 |
 | **13. Instrument cleanup pass** (levels, weak controls, shared labels) | audio metering + DSP tuning | no | — |
+| **14. Patch catalog** (named patches + modeless catalog windows) | pure model + UI + a user-global store | no | reuses the inspector's pane shell (12); catalogs generalize |
 
 Two corrections to flag up front, because they change sequencing:
 
@@ -618,6 +640,13 @@ no WASM.
 
 ## 12. Tile inspector — the per-tile modifier stack
 
+**First cut BUILT (2026-07-05):** the modeless-window shell + a read-only facts dump + a play/stop/loop
+transport cluster ([src/inspector.js](src/inspector.js), a "Tile Inspector" button in the tile-player top
+row) — floating, `position:fixed`, draggable, resizable, never scrolls the page, follows the tile
+selection, never holds focus. No per-tile modifier *editing* yet (transforms still live in the transform
+bar; the instrument-override plumbing below is untouched). Mechanics in
+[notes_and_status.md](notes_and_status.md). The rest of this section is still ahead.
+
 **The idea (yours):** individual tiles in the player can already be changed without touching the
 pattern they reference — today that's transpose and reverse. Add more per-tile modifiers, and give
 them a proper home: a **tile inspector** panel for the selected tile. The first real new use:
@@ -749,6 +778,134 @@ terms" idea that runs through mods, tiles, and expression.
 the small amount of metadata for the shared labels. **Tie-ins:** 7 (articulation is the per-note user
 of the labels), 12 (tile overrides start with concrete settings and gain the shared labels once this
 lands).
+
+---
+
+## 14. Patch catalog — named patches + modeless catalog windows
+
+**The idea (yours):** a whole family of **modeless "catalog" windows** for browsing collections — the
+first and most-needed being **instrument patches**. Others follow the same shape (effects presets, a
+pattern browser, grid templates like "four-on-the-floor"); rack instances are "probably another catalog"
+too. This is the *library* sibling of the **Tile inspector (12)**: the inspector shows facts about the
+one selected thing; a catalog shows *many things you pick from and apply*. Both are **modeless floating
+windows**, so they share one pane shell (see Phase A).
+
+**"Catalog" is the old-school word (user's), not "preset" — an instrument's saved sounds are its
+patches, browsed in the patch catalog.**
+
+### The core model — patches as first-class, id-keyed, named objects
+
+Today a lane owns a private `lane.patch` blob. Promote patches to **first-class named objects**, the way
+patterns already are (a registry + references), but **keyed by a globally-unique random id, not by name**:
+
+- **Patch** = `{ id, name, kind, group, tags, params, factory }`. `id` = a UUID-ish token
+  (`crypto.randomUUID()`, fine on localhost) so two users' catalogs **can never collide** — the key to
+  alien-project imports. **Names are non-unique display labels, never dictionary keys.** The id is
+  internal but occasionally surfaceable (an inspector could show it).
+- **Everything is always named.** Each kind ships a factory **`Init`** patch (read-only); fresh lanes /
+  grid start on it. There is no "Unnamed" state.
+- **A lane (and the grid patch, treated the same) stores its full working params (self-contained — rides
+  the project, the catalog is never a load-time dependency) plus `originId` + an `originName` snapshot +
+  a `dirty` bool.** Display state is computed at render time:
+  - **`Name`** — origin id resolves in my catalog and matches → clean.
+  - **`Name*`** — resolves but edited, or a typed-but-not-yet-Saved name. The asterisk means *"this sound
+    may be related to this name, but isn't exactly this named sound"* (one unified meaning — an editor's
+    dirty dot; not two overloaded uses).
+  - **`Name [I]`** — origin id does **not** resolve: an **imported/foreign** patch (globally-unique ids
+    make this unambiguous). Ride-the-project and sounds correct; **no auto-pollution** of my catalog on
+    import; **Save As** *adopts* it (mints a fresh id in my namespace). `[I]` is a display decoration
+    (id-unresolved), not stored in the name.
+
+### The stores — user-global vs. in-document
+
+- **The catalog is user-global** (localStorage now; file **export/import** later so patches are
+  shareable), **not** part of any project file. Editing it never dirties the project.
+- **Factory tier** = `factory:true` entries shipped as **code/data** (a factory-patches source file),
+  separate from the user store. A **super-user "Factory Save"** authoring tool (deferred) writes into that
+  tier — practically, emits the JSON the dev commits. It changes nothing else; just targets the factory
+  tier instead of the user tier.
+- The project stays **self-contained**: the resolved params always ride it, so a patch that isn't in the
+  opener's catalog still sounds right (just shows `[I]` or the remembered name).
+
+### The editor (instrument pane) owns save/load/name
+
+- The pane header carries the **inline-renamable patch name** (the exact double-click-to-rename control
+  from the Tile inspector) + **Save / Save As / Load / Delete** (Delete/Rename on **user** entries only).
+- **Save** on an `Init`/factory ancestry can't overwrite (factory is read-only) → becomes **Save As with a
+  blank name field you must fill**. A user Save whose name collides with a **factory** name in that kind
+  **auto-uniquifies** (`Init` → `Init1` … `Init57`); user↔user name collisions are allowed.
+- **Naming is intent; Save commits.** Typing a name shows `Name*` until Save writes the catalog entry.
+- **Changing the instrument kind resets to that kind's `Init`** (a name is meaningful only within a kind;
+  the catalog is per-kind). *(Open, deferred to build time: Save-with-a-changed-name on a **user** patch —
+  rename the entry in place vs. fork; Save As is always the explicit fork.)*
+
+### The catalog window
+
+- Modeless floating window (the Phase-A pane), one **per catalog type** (patches, effects, patterns…).
+- Hierarchy **kind → group → patch** (group = one folder path per patch); **tags** = many cross-cutting
+  attributes (a second, faceted filter); **live text search** prunes the tree. The three filters compose
+  — the design for hundreds/thousands of patches (virtualized rendering only if we actually hit huge lists;
+  factory content is sparse at first — one `Init` per kind + whatever you Save).
+- **Double-click a patch = apply to the current editor target.** **Drag a patch onto a lane head** (and the
+  instrument-pane target chip) = apply there — reusing the tile-drag ghost idiom. Applying a patch of a
+  *different* kind switches the lane's instrument (kind + params in one move); an undoable mutation.
+
+### Lane head, restated
+
+The **Edit button goes away**; the lane head shows two lines — **Instrument** (kind) over **Patch**
+(`Name` / `Name*` / `Name [I]`). **Double-click anywhere there** → scroll to the editor with that lane
+loaded. (This keeps evolving as lane heads get reworked.)
+
+### Rack instruments (deferred, but designed-for)
+
+Lanes "notionally sharing an instrument" — really **sharing one live patch instance** (Cubase *rack*
+vs. *track* instruments): edit once, all sharers re-sound. First-class id-keyed patches make this natural
+later (multiple lanes → one instance, exactly as tiles → one pattern). **Not in the initial phases** —
+for now every lane keeps its own independent patch. When it lands it needs a lane-head indicator and is
+"probably its own catalog" (a catalog of shared instances you assign lanes to). Until then, **Save does
+*not* re-sound independent copies** — a lane holding an old copy of a just-re-Saved patch simply goes
+`Name*` (its copy no longer matches the saved sound).
+
+### Auditioning (parked, but this is what it plugs into)
+
+Judging a patch needs to hear it play a **pattern**, not one Test note. Decided shape: an **"Audition
+Grid"** action (in the instrument pane, beside Test) that plays the **current grid pattern, looped** (the
+limited/counted loop — no burn-in), through the **pane's current edit target** (so a lane's bus/effects
+apply); disabled on an empty grid; a keybind later. The **catalog's per-patch ♪ audition reuses that same
+verb**. Test stays for the quick single note. Deliberately **parked** for now to keep the catalog work
+focused — but it's the audio verb the catalog leans on, so build it alongside the catalog, not after.
+
+### Implementation phases
+
+- **Phase A — extract the modeless-pane primitive — BUILT (2026-07-06)** *(enabler, no visible change)*:
+  the floating / draggable / resizable / scroll-resistant / geometry-persisted / **document-agnostic**
+  chrome is now [src/panel.js](src/panel.js) (`createPanel`); the Tile inspector is its first tenant
+  (behavior-preserving). The shared shell the catalog (and future pop-outs) build on. *(Mechanics in
+  notes_and_status.md.)*
+- **Phase B — patch identity on the lane + the editor's Save/Load — BUILT (2026-07-06)** *(the core
+  value)*: the user-global patch store ([src/patches.js](src/patches.js), factory `Init` per kind + user
+  tier, id-keyed); lane/grid patches carry originId/originName/dirty; the instrument pane gained a Patch
+  bar (inline-rename + Save / Save As / Load); lane-head rework (two-line Instrument/Patch(`*`),
+  double-click → editor, Edit button removed); Save = overwrite-or-fork by whether-the-name-changed, with
+  sibling `*` propagation. Delete/true-Rename deferred to C. Mechanics in notes_and_status.md;
+  `notch/patches.mjs`. *The "desperately needed" step — name, recall, and see-when-changed.*
+- **Phase C — the patch catalog window — BUILT (2026-07-06)** *(browse + apply + manage)*:
+  [src/catalog.js](src/catalog.js), a panel.js tenant opened from the instrument pane — kind → patch
+  (all instruments), **live name search**, **double-click = apply to the current target** (cross-kind
+  aware), **Rename / Delete** of user patches (factory read-only). Plus the **`imported` flag** (`[I]`,
+  set on project-file Open; a local delete detaches linkers to `Name*`, not `[I]`), the **name-collision
+  dialog** (Save / Rename / Cancel — we discourage silent duplicates), and true in-place **Rename**
+  (display derives from the entry when clean, so it propagates). Mechanics in notes_and_status.md;
+  `notch/patches.mjs`.
+- **Phase D — organize at scale**: group (one path) + tags (many) on patches; the window gains the tree,
+  tag facets, and live search.
+- **Phase E — drag-to-apply**: drag a patch onto a lane head / the pane target chip, reusing the tile-drag
+  ghost.
+- **Deferred (explicitly out):** rack instruments (+ their catalog + lane indicator), patch auditioning
+  (parked as above), Factory-Save tooling, pop-out-into-OS-window, catalog file export/import,
+  virtualization for huge lists.
+
+**Cost.** Pure model + UI + a small persisted store — no WASM, no new sound-generating code.
 
 ---
 

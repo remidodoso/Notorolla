@@ -63,9 +63,85 @@ export function buildInstrumentPane(containerEl, cb) {
   head.append(target, kindSel, desc, spacer, testBtn, copyBtn, pasteBtn, resetBtn);
   containerEl.append(head);
 
+  // Patch bar: the target's PATCH identity + catalog ops (Phase B of §14). The
+  // name shows Name / Name* (edited or name-not-yet-Saved) / Name [I] (imported —
+  // origin id unknown to this catalog). Double-click the name to rename (declaring
+  // a fork — Save then creates a new patch). Save = commit to the shown identity
+  // (overwrite a user patch of the same name, else fork); Save As = always fork;
+  // Load = pick another patch of this kind.
+  const patchbar = document.createElement('div');
+  patchbar.className = 'instr-patchbar';
+  const patchLabel = document.createElement('span');
+  patchLabel.className = 'instr-patch-lbl';
+  patchLabel.textContent = 'Patch';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'instr-patch-name';
+  nameEl.title = 'Double-click to rename (creates a new patch on Save)';
+  nameEl.addEventListener('dblclick', startRenamePatch);
+  const saveBtn = mkBtn('Save', 'tbtn', 'Save this patch (a factory or renamed patch saves as a new one)', () => cb.onSave());
+  const saveAsBtn = mkBtn('Save As', 'tbtn', 'Save these settings as a new named patch', () => cb.onSaveAs());
+  const loadSel = document.createElement('select');
+  loadSel.className = 'instr-load-sel';
+  loadSel.title = 'Load a patch for this instrument';
+  loadSel.addEventListener('change', () => {
+    const id = loadSel.value;
+    loadSel.selectedIndex = 0; // the select is an action prompt, not a state display
+    if (id) cb.onLoad(id);
+  });
+  const catalogBtn = mkBtn('Catalog', 'tbtn', 'Open the Patch Catalog — browse, apply, rename, delete', () => cb.onCatalog && cb.onCatalog());
+  patchbar.append(patchLabel, nameEl, saveBtn, saveAsBtn, loadSel, catalogBtn);
+  containerEl.append(patchbar);
+
   const body = document.createElement('div');
   body.className = 'instr-grid';
   containerEl.append(body);
+
+  // Repaint the patch-name (Name / Name* / Name [I]) and refill the Load menu for
+  // the current target/kind. main.js supplies both via callbacks.
+  function syncIdentity() {
+    const id = cb.getIdentity ? cb.getIdentity() : null;
+    if (id) {
+      nameEl.textContent = id.name + (id.dirty ? '*' : '') + (id.imported ? ' [I]' : '');
+      nameEl.classList.toggle('dirty', !!id.dirty || !!id.imported);
+    } else {
+      nameEl.textContent = '—';
+      nameEl.classList.remove('dirty');
+    }
+    // Load menu: a placeholder prompt + every patch for the current kind.
+    loadSel.innerHTML = '';
+    const ph = document.createElement('option'); ph.value = ''; ph.textContent = 'Load…'; loadSel.append(ph);
+    const list = (cb.getPatchList && patch) ? cb.getPatchList() : [];
+    for (const e of list) {
+      const o = document.createElement('option'); o.value = e.id;
+      o.textContent = e.factory ? `${e.name} (factory)` : e.name;
+      loadSel.append(o);
+    }
+    loadSel.selectedIndex = 0;
+  }
+
+  // Inline rename of the patch name — swap the name span for a text field. Enter/
+  // blur commits (declaring a fork name); ESC cancels (the app-wide rule). Focus
+  // returns to the app after; the global key handler ignores keys typed in inputs.
+  function startRenamePatch() {
+    const id = cb.getIdentity ? cb.getIdentity() : null;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'instr-patch-name-input';
+    input.value = id ? id.name : '';
+    nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+    let done = false;
+    const restore = () => { input.replaceWith(nameEl); syncIdentity(); };
+    const commit = () => { if (done) return; done = true; const v = input.value.trim(); restore(); if (v && cb.onRenamePatch) cb.onRenamePatch(v); };
+    const cancel = () => { if (done) return; done = true; restore(); };
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+    });
+    input.addEventListener('blur', commit);
+  }
 
   // Build the control body for `kind`: one column per param group (first-seen
   // order). A group whose params are flagged `bar` gets a row of vertical faders
@@ -300,12 +376,13 @@ export function buildInstrumentPane(containerEl, cb) {
     kindSel.value = newPatch.kind;
     desc.textContent = instrument(newPatch.kind).desc;
     refresh();
+    syncIdentity();
   }
 
   // Enable/disable Paste (main.js enables it once something has been copied).
   function setCanPaste(can) { pasteBtn.disabled = !can; }
 
-  return { refresh, setTarget, setCanPaste };
+  return { refresh, setTarget, setCanPaste, syncIdentity };
 }
 
 function mkBtn(text, className, title, onclick) {

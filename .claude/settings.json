@@ -4,7 +4,15 @@
       "Bash(node notch/newctx.mjs)",
       "Bash(node notch/run.mjs)",
       "Bash(node notch/edo.mjs)",
-      "Bash(node notch/tuning2.mjs)"
+      "Bash(node notch/tuning2.mjs)",
+      "Bash(node --check src/inspector.js)",
+      "Bash(node insp_smoke.mjs)",
+      "Bash(node notch/label.mjs)",
+      "Bash(python -m http.server 8205)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" \"http://localhost:8205/src/tileplayer.js\")",
+      "Bash(kill %1)",
+      "Bash(node notch/patches.mjs)",
+      "Bash(npx --no-install playwright --version)"
     ]
   }
 }

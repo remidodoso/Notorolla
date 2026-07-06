@@ -48,6 +48,9 @@ export function buildToolbar(el, state, onChange) {
     b.style.background = PALETTE[i];
     b._dur = i;
     b.onclick = () => { state.brush.durIndex = i; refresh(); onChange('duration'); };
+    // Double-click a duration brush → set the WHOLE pattern to that duration (quick,
+    // undoable). The two clicks first set the brush; the dblclick applies it to all.
+    b.ondblclick = () => { state.brush.durIndex = i; onChange('durationAll'); };
     durBtns.push(b);
     el.append(b);
   });

@@ -12,6 +12,7 @@
 
 import { Pattern } from './grid.js';
 import { defaultPatch, normalizePatch } from './instrument.js';
+import { factoryInitId } from './patches.js';
 import { normalizeTransforms } from './transforms.js';
 import { defaultDelay, normalizeDelay } from './delay.js';
 import { defaultChorus, normalizeChorus } from './chorus.js';
@@ -139,6 +140,7 @@ export class PatternLibrary {
     return {
       patterns: [...this.patterns.values()].map((p) => ({
         name: p.name, cols: p.toJSON(), tuning: p.tuningId, scale: p.scaleId, root: p.root,
+        ...(p.label ? { label: p.label } : {}), // friendly name — omitted when unset (backward-safe)
       })),
       counter: this.counter,
       currentName: this.currentName,
@@ -149,11 +151,12 @@ export class PatternLibrary {
   static fromJSON(o, isReferenced) {
     const lib = new PatternLibrary(isReferenced);
     // tuning/scale/root are optional — older patterns default to 12-ET chromatic.
-    for (const { name, cols, tuning, scale, root } of o.patterns) {
+    for (const { name, cols, tuning, scale, root, label } of o.patterns) {
       const p = Pattern.fromJSON(cols, name);
       if (tuning) p.tuningId = tuning;
       if (scale) p.scaleId = scale;
       if (root != null) p.root = root;
+      if (label) p.label = label; // optional friendly name (older saves have none)
       lib.patterns.set(name, p);
     }
     lib.counter = o.counter;
@@ -280,6 +283,7 @@ export class Arrangement {
     lane.chorus = defaultChorus();
     lane.reverb = defaultReverb();
     lane.patch = defaultPatch();
+    lane.patchOriginId = factoryInitId(lane.patch.kind); lane.patchName = 'Init'; lane.patchDirty = false; lane.patchImported = false;
     lane.modsByKind = {};
     lane.fresh = true;
     this.pruneSelection();
@@ -473,23 +477,26 @@ export class Arrangement {
     return plan;
   }
 
-  // Plan stamping `k` repeats of the selection block to its right (pure; the
-  // fill-handle preview and repeatSelection share it). Copy r of a member lands
-  // at start + r×period, period = the block span — rhythmically seamless.
-  // Stamps from different repeats are disjoint by construction, so collisions
-  // are only against PRE-EXISTING tiles.
+  // Plan stamping `|k|` repeats of the selection block (pure; the fill-handle
+  // preview and repeatSelection share it). k > 0 stamps to the RIGHT, k < 0 to
+  // the LEFT — copy r of a member lands at start ± r×period, period = the block
+  // span, so it's rhythmically seamless. Stamps from different repeats are disjoint
+  // by construction (and don't overlap the originals), so collisions are only
+  // against PRE-EXISTING tiles; a left copy that would fall before beat 0 is blocked.
   planRepeat(k, lenOf) {
     const block = this.selectionBlock(lenOf);
-    if (!block || k <= 0) return [];
+    if (!block || !k) return [];
     const period = block.end - block.start;
     if (period <= 0) return [];
     const existing = block.lane.tiles.slice();
+    const dir = k > 0 ? 1 : -1;
     const out = [];
-    for (let rep = 1; rep <= k; rep++) {
+    for (let rep = 1; rep <= Math.abs(k); rep++) {
+      const offset = dir * rep * period;
       for (const t of this.selectedTiles()) {
-        const start = t.start + rep * period;
+        const start = t.start + offset;
         const len = lenOf(t.name);
-        const blocked = existing.some((o) => o.start < start + len && start < o.start + lenOf(o.name));
+        const blocked = start < 0 || existing.some((o) => o.start < start + len && start < o.start + lenOf(o.name));
         out.push({ srcId: t.id, name: t.name, start, blocked });
       }
     }
@@ -560,6 +567,10 @@ export class Arrangement {
         chorus: l.chorus, // per-lane Juno chorus insert
         reverb: l.reverb, // per-lane insert reverb
         patch: l.patch, // the lane's instrument settings
+        patchOriginId: l.patchOriginId, // catalog entry this patch derives from (by id)
+        patchName: l.patchName,         // display name shown on the lane head
+        patchDirty: !!l.patchDirty,     // edited / not-saved-as-shown (the `*`)
+        patchImported: !!l.patchImported, // from a foreign project, not in this catalog (the `[I]`)
         modsByKind: l.modsByKind, // playback modulators, one pair per instrument kind
         fresh: !!l.fresh, // never-used lane (adopts a dropped tile's instrument)
       })),
@@ -576,16 +587,27 @@ export class Arrangement {
     // (the loader derives gapless starts via ensureTileStarts) / the factory
     // patch (the caller may re-seed patch-less lanes from the old global patch).
     const tile = (t) => ({ id: t.id, name: t.name, start: t.start, transforms: normalizeTransforms(t.transforms) });
-    const lane = (l) => ({
-      id: l.id, tiles: l.tiles.map(tile), mute: !!l.mute, solo: !!l.solo,
-      gain: l.gain == null ? 1 : l.gain, pan: l.pan == null ? 0 : l.pan,
-      delay: normalizeDelay(l.delay), chorus: normalizeChorus(l.chorus), reverb: normalizeReverb(l.reverb), patch: normalizePatch(l.patch),
-      modsByKind: normalizeModsByKind(l.modsByKind),
-      fresh: !!l.fresh, // optional; old saves default not-fresh (won't auto-seed)
-    });
+    const lane = (l) => {
+      const patch = normalizePatch(l.patch);
+      // Patch identity: new saves carry it; a LEGACY lane (no origin) migrates to
+      // its kind's factory Init but marked DIRTY → shows "Init*" (its custom sound
+      // is a modified Init awaiting a name), per the agreed migration rule.
+      const hasIdentity = l.patchOriginId != null;
+      return {
+        id: l.id, tiles: l.tiles.map(tile), mute: !!l.mute, solo: !!l.solo,
+        gain: l.gain == null ? 1 : l.gain, pan: l.pan == null ? 0 : l.pan,
+        delay: normalizeDelay(l.delay), chorus: normalizeChorus(l.chorus), reverb: normalizeReverb(l.reverb), patch,
+        patchOriginId: hasIdentity ? l.patchOriginId : factoryInitId(patch.kind),
+        patchName: hasIdentity ? (l.patchName || 'Init') : 'Init',
+        patchDirty: hasIdentity ? !!l.patchDirty : true,
+        patchImported: !!l.patchImported, // default false; file-Open re-derives it
+        modsByKind: normalizeModsByKind(l.modsByKind),
+        fresh: !!l.fresh, // optional; old saves default not-fresh (won't auto-seed)
+      };
+    };
     const lanes = o.lanes
       ? o.lanes.map(lane)
-      : [{ id: 0, tiles: (o.tiles || []).map(tile), mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), chorus: defaultChorus(), reverb: defaultReverb(), patch: defaultPatch(), modsByKind: {}, fresh: false }, newLane(1)];
+      : [{ id: 0, tiles: (o.tiles || []).map(tile), mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), chorus: defaultChorus(), reverb: defaultReverb(), patch: defaultPatch(), patchOriginId: factoryInitId(defaultPatch().kind), patchName: 'Init', patchDirty: false, patchImported: false, modsByKind: {}, fresh: false }, newLane(1)];
     const a = new Arrangement(lanes);
     a.seq = o.seq || 0;
     a.activeLaneId = o.activeLaneId ?? lanes[0].id;
@@ -605,7 +627,20 @@ export function deletePoint(p, s, e) { return p >= e ? p - (e - s) : Math.min(p,
 // the instrument of the first tile dropped into it (from the grid, or the source
 // lane on a cross-lane move); it stops being fresh once it gets a tile OR its
 // instrument is edited, so a lane you set up and later emptied keeps its sound.
-function newLane(id) { return { id, tiles: [], mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), chorus: defaultChorus(), reverb: defaultReverb(), patch: defaultPatch(), modsByKind: {}, fresh: true }; }
+function newLane(id) {
+  const patch = defaultPatch();
+  return {
+    id, tiles: [], mute: false, solo: false, gain: 1, pan: 0,
+    delay: defaultDelay(), chorus: defaultChorus(), reverb: defaultReverb(),
+    patch, modsByKind: {}, fresh: true,
+    // Patch identity (future_directions §14): a fresh lane sits on its kind's
+    // factory Init, clean. originId links to the catalog entry (by id, not name);
+    // patchName is the display label; patchDirty = edited/not-saved (the `*`);
+    // patchImported = came from a foreign project, not in this catalog (the `[I]`,
+    // set on project-file Open, drives "add to your catalog?").
+    patchOriginId: factoryInitId(patch.kind), patchName: 'Init', patchDirty: false, patchImported: false,
+  };
+}
 function sortLane(lane) { lane.tiles.sort((a, b) => a.start - b.start); }
 
 // --- tile positioning: rigid ripple --------------------------------------

@@ -157,6 +157,11 @@ export class Pattern {
   constructor(columns, name = 'A') {
     this.columns = columns;
     this.name = name;
+    // A user-given friendly name ("Break Beat 2"), shown alongside the canonical
+    // registry `name` (e.g. "Break Beat 2 (A6)"). Empty = show the canonical name
+    // alone. Deliberately NOT copied by clone()/stencil() — a clone keeps the
+    // canonical naming sequence (A7…) with no inherited label.
+    this.label = '';
     // Pitch context (Stage 1: all on the 12-degree grid). tuningId = how degrees
     // sound; scaleId + root = which degrees are "in scale" (highlight + snap).
     this.tuningId = '12-et';

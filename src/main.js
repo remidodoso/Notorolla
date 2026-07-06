@@ -8,7 +8,7 @@ import { Pattern, BASE_PITCH, DURATIONS, DEFAULT_ARTIC } from './grid.js';
 import { PatternLibrary, Arrangement, laneColor, insertPoint, deletePoint } from './library.js';
 import { enumerateTriadulations, familiesFor, familyLabel, chordsFor } from './triads.js';
 import { generateRandom, applyDurationBias, applyAccentBias, RANDOM_DEFAULTS } from './random.js';
-import { edoOf, tuningFreq, pitchClassName, degreeBounds, nearestDegreeToFreq } from './tuning.js';
+import { edoOf, tuningFreq, pitchClassName, degreeBounds, nearestDegreeToFreq, TUNING_LIST } from './tuning.js';
 import { scalesFor, scaleValidForEdo, scaleById } from './scales.js';
 import { notesToMidi } from './midi.js';
 import { encodeWav, encodeBwf } from './wav.js';
@@ -17,7 +17,9 @@ import { GridView } from './gridview.js';
 import { TilePlayer, TILE_SCALES, DEFAULT_SCALE_IDX } from './tileplayer.js';
 import { buildToolbar } from './toolbar.js';
 import { buildInstrumentPane } from './instrumentpane.js';
-import { normalizePatch, defaultPatch, clonePatch, patchRelease, instrument } from './instrument.js';
+import { normalizePatch, defaultPatch, clonePatch, patchRelease, instrument, instrumentKinds } from './instrument.js';
+import { PatchStore, factoryInitId } from './patches.js';
+import { createCatalog } from './catalog.js';
 import { normalizeDelay } from './delay.js';
 import { buildDelayEditor } from './delay.js';
 import { normalizeChorus, buildChorusEditor } from './chorus.js';
@@ -25,6 +27,7 @@ import { normalizeReverb, buildReverbEditor, reverbSeconds } from './reverb.js';
 import { MOD_SLOTS, defaultMod, buildModEditor, modTargetsFor, modsActive, normalizeModsByKind } from './mods.js';
 import { applyTransforms, setTileTranspose, setTileReverse, hasReverse, describeTransform, transformKindLabel, normalizeTransforms } from './transforms.js';
 import { openModal } from './modal.js';
+import { createInspector } from './inspector.js';
 import { setupPanes } from './panes.js';
 import { VERSION, buildEnvelope, validate, migrate, defaultName, downloadJSON, downloadBytes, readFile } from './project.js';
 
@@ -35,6 +38,8 @@ const LAYOUT_KEY = 'notorolla.layout2';
 const PROJ_KEY = 'notorolla.proj'; // { name, snapshot } — current project identity + last-saved content
 const PATCH_KEY = 'notorolla.patch'; // legacy single global patch — seeds existing lanes on first load, then vestigial
 const GRIDPATCH_KEY = 'notorolla.gridpatch'; // the grid's neutral audition patch (a workspace preference, not in the project)
+const PATCHES_KEY = 'notorolla.patches'; // the user-global patch catalog (cross-project, not in any project file)
+const GRIDMETA_KEY = 'notorolla.gridpatchmeta'; // the grid patch's identity (workspace pref, like the grid patch)
 const LOOP_MAX = 8;
 const LOOP_STEP = 4;
 const HISTORY_LIMIT = 200;
@@ -107,6 +112,19 @@ engine.lite = state.lite;              // Lite Instruments (live only); read at 
 // grid's click-to-hear / Test uses a separate neutral patch — a workspace
 // preference kept out of the project (its own key, defaults to factory).
 const gridPatch = normalizePatch(readJSON(GRIDPATCH_KEY));
+
+// The user-global patch catalog (Phase B of §14): factory Init per kind + saved
+// user patches. Cross-project (its own key), never part of a project file.
+const patches = new PatchStore();
+patches.loadUser(readJSON(PATCHES_KEY));
+function persistPatches() { safeSet(PATCHES_KEY, JSON.stringify(patches.toJSON())); }
+
+// The grid patch's identity (which catalog patch it derives from + dirty), a
+// workspace preference like gridPatch itself. Defaults to its kind's Init.
+let gridPatchMeta = readJSON(GRIDMETA_KEY);
+if (!gridPatchMeta || gridPatchMeta.patchOriginId == null) {
+  gridPatchMeta = { patchOriginId: factoryInitId(gridPatch.kind), patchName: 'Init', patchDirty: false, patchImported: false };
+}
 
 // One-time migration: lanes saved before per-lane instruments had no patch, so
 // seed those from the old single global patch — the project reloads sounding
@@ -506,11 +524,13 @@ const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, 
   // preview shows only what will land; commit stamps them (one undo entry)
   // and the selection grows to original + stamps (user's choice).
   onRepeatPreview: (laneId, k) => {
-    tilePlayer.showStamps(laneId, arrangement.planRepeat(k, patternLen).filter((p) => !p.blocked));
+    const stamps = arrangement.planRepeat(k, patternLen).filter((p) => !p.blocked);
+    tilePlayer.showStamps(laneId, stamps);
+    return stamps.length; // M — how many copies actually land (for the count chip)
   },
   onRepeatCommit: (laneId, k) => {
     tilePlayer.clearStamps();
-    if (k <= 0) return;
+    if (k === 0) return;
     const before = arrSnap();
     arrangement.repeatSelection(k, patternLen);
     arrCommit(before); // no entry if every stamp was blocked
@@ -523,7 +543,9 @@ const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, 
   onSolo: (laneId) => toggleLaneFlag('solo', laneId),
   onAddLane: () => addLane(),
   onResetLane: (laneId) => resetLane(laneId),
-  onEdit: (laneId) => editLane(laneId, true), // explicit Edit → scroll the pane into view
+  onEdit: (laneId) => editLane(laneId, true), // double-click the lane head → scroll the pane into view
+  // The lane's patch display { name, dirty, imported } for the lane head.
+  patchDisplay: (lane) => patchInfo(lane),
   onMixStart: () => onMixStart(),
   onMixChange: (laneId, key, value) => onMixChange(laneId, key, value),
   onMixEnd: () => onMixEnd(),
@@ -828,7 +850,8 @@ function endTileDrag(e) {
   // so the tiles keep sounding the way they did. A used lane keeps its own.
   const destLane = arrangement.lane(preview.toLaneId);
   const seedFromSource = destLane && destLane.fresh && preview.toLaneId !== preview.fromLaneId;
-  const srcPatch = seedFromSource ? (arrangement.lane(preview.fromLaneId) || {}).patch : null;
+  const srcLane = seedFromSource ? arrangement.lane(preview.fromLaneId) : null;
+  const srcPatch = srcLane ? srcLane.patch : null;
 
   const before = arrSnap();
   if (preview.multi) {
@@ -843,7 +866,10 @@ function endTileDrag(e) {
     arrangement.select(newId);
   }
   arrCommit(before);
-  if (srcPatch) destLane.patch = clonePatch(srcPatch); // adopt the source instrument
+  if (srcPatch) { // adopt the source instrument AND its patch identity
+    destLane.patch = clonePatch(srcPatch);
+    destLane.patchOriginId = srcLane.patchOriginId; destLane.patchName = srcLane.patchName; destLane.patchDirty = srcLane.patchDirty;
+  }
   if (destLane) destLane.fresh = false;                // the lane now has a tile
   arrangement.activeLaneId = preview.toLaneId;
   refresh();
@@ -1245,6 +1271,8 @@ function refreshTransformBar() {
       mkChip(kind, text, () => removeSelectedTransform(kind));
     }
   }
+
+  refreshTileInspector(); // the modeless inspector follows the same selection
 }
 
 // Double-click: load the tile's pattern into the editor (by reference) but keep
@@ -1255,7 +1283,7 @@ function refreshTransformBar() {
 // modulators included, and notes keep their true ruler position for the
 // Loop-Mod anchor — it sounds exactly as it does in context). One-shot;
 // double-clicking another tile replaces the audition; Space stops it.
-async function auditionTile(id) {
+async function auditionTile(id, { loop = false } = {}) {
   const lane = arrangement.laneOfTile(id);
   const tile = lane && lane.tiles.find((t) => t.id === id);
   const p = tile && library.patterns.get(tile.name);
@@ -1280,11 +1308,54 @@ async function auditionTile(id) {
   if (engine.modEpoch == null) engine.modEpoch = now;
   scheduler.stop();
   activeSource = 'audit';
+  auditTileId = id;
   applyLaneGains(0); // mute/solo bus state before the first note
-  scheduler.start(() => score, now + 0.05, 1, false);
+  // loop = the app's LIMITED loop: LOOP_STEP passes counting down (never endless
+  // — there is no infinite loop; a counted loop is the cure for loop burn-in).
+  scheduler.start(() => score, now + 0.05, loop ? LOOP_STEP : 1, loop);
   tilePlayer.setPlaying(new Set([id])); // the green "playing" badge on the auditioned tile
   startRender();
   updateTransportButtons();
+}
+let auditTileId = null; // which tile the 'audit' source is sounding (inspector transport + badge)
+let tileInspector = null; // the Tile Inspector floating pane (created in the wiring tail below)
+let catalog = null;       // the Patch Catalog floating pane (created below)
+
+// --- Tile Inspector transport (play / stop / loop the ANCHOR tile) ----------
+// A first, deliberately un-standardized cluster (we're not ready to standardize
+// a shared transport). It drives the same 'audit' source as a tile double-click.
+function inspectorPlay() {
+  if (arrangement.selectedId == null) return;
+  auditionTile(arrangement.selectedId, { loop: false });
+}
+function inspectorStop() {
+  if (activeSource !== 'audit') return; // only controls its own playback
+  stop();
+}
+// Loop tap: stack passes (the LIMITED, counted loop). If this same tile is
+// already auditing, add LOOP_STEP passes (capped) without restarting; else start
+// a fresh counted loop.
+function inspectorLoop() {
+  const id = arrangement.selectedId;
+  if (id == null) return;
+  if (activeSource === 'audit' && scheduler.isPlaying && auditTileId === id) {
+    scheduler.loop = true;
+    scheduler.remaining = Math.min(scheduler.remaining + LOOP_STEP, LOOP_MAX);
+    updateTransportButtons();
+    return;
+  }
+  auditionTile(id, { loop: true });
+}
+
+// Reflect transport state onto the inspector's play/stop/loop cluster.
+function syncInspectorTransport() {
+  if (!tileInspector) return; // not built yet during init, or no inspector
+  const auditing = activeSource === 'audit' && scheduler.isPlaying;
+  tileInspector.setTransport({
+    canPlay: arrangement.selectedId != null,
+    playing: auditing,
+    looping: auditing && scheduler.isLooping,
+  });
 }
 
 // Edit-instrument pane (the Vesperia). An editor panel, not a transport pane:
@@ -1292,12 +1363,20 @@ async function auditionTile(id) {
 // patch at a time (a lane's, or the grid's neutral one). Slider edits mutate
 // that patch in place (heard on the next note) and autosave the right place.
 const instrPane = buildInstrumentPane(document.getElementById('instr'), {
-  onChange: persistPatch,
+  onChange: onPatchEdit,
   onKindChange: changeKind,
   onTest: testInstrument,
   onReset: resetInstrument,
   onCopy: copyPatch,
   onPaste: pastePatch,
+  // Patch catalog (Phase B): identity + save/load.
+  getIdentity: () => { const m = targetMeta(); return m ? patchInfo(m) : null; },
+  getPatchList: () => patches.allForKind(editTarget.patch.kind).map((e) => ({ id: e.id, name: e.name, factory: e.factory })),
+  onRenamePatch: renameTargetPatch,
+  onSave: saveTargetPatch,
+  onSaveAs: saveTargetPatchAs,
+  onLoad: loadTargetPatch,
+  onCatalog: () => { catalog.toggle(); },
 });
 
 // What the editor is currently editing: the grid's neutral patch, or a lane's.
@@ -1334,7 +1413,11 @@ function changeKind(kind) {
   let stash = patchStash.get(stashKey(editTarget.laneId));
   if (!stash) { stash = {}; patchStash.set(stashKey(editTarget.laneId), stash); }
   stash[cur.kind] = clonePatch(cur);
+  const usedStash = !!stash[kind];
   swapTargetPatch(stash[kind] ? clonePatch(stash[kind]) : defaultPatch(kind));
+  // A kind change resets identity to that kind's Init (a name is meaningful only
+  // within a kind). A restored stash isn't the bare default → mark it dirty (Init*).
+  setTargetIdentity(patches.initId(kind), 'Init', usedStash);
 }
 
 // Point the editor at the grid's active instrument (when the grid pane has focus):
@@ -1354,6 +1437,7 @@ function editGrid() {
   tilePlayer.editLaneId = null;
   instrPane.setTarget(gridPatch, 'Grid', '#8a8f98');
   tilePlayer.render();
+  if (catalog && catalog.isOpen()) catalog.refresh(); // follow the target's highlight
 }
 
 // Point the editor at a lane's own patch. `scroll` brings the pane into view —
@@ -1367,6 +1451,7 @@ function editLane(laneId, scroll = false) {
   tilePlayer.editLaneId = laneId;
   instrPane.setTarget(lane.patch, `Lane ${idx + 1}`, laneColor(idx));
   tilePlayer.render();
+  if (catalog && catalog.isOpen()) catalog.refresh(); // follow the target's highlight
   // Reveal the pane only when its TOP isn't already on-screen. The pane is often
   // taller than the viewport, so an unconditional scrollIntoView('nearest') can
   // never be a no-op (it aligns an edge) and yanks the page even when the pane is
@@ -1399,7 +1484,273 @@ function pastePatch() {
   // Paste can cross kinds (Copy a Zindel, Paste onto a Vesperia lane), so swap
   // the whole patch — swapTargetPatch rebuilds the pane for the pasted kind.
   swapTargetPatch(clonePatch(patchClipboard));
+  // A pasted sound isn't the kind's bare default → Init*, awaiting a name.
+  setTargetIdentity(patches.initId(editTarget.patch.kind), 'Init', true);
 }
+
+// --- patch identity: dirty tracking, Save/Save As/Load/Rename ----------------
+// The patch-identity record for the current edit target (a lane, or the grid).
+function targetMeta() {
+  if (editTarget.laneId == null) return gridPatchMeta;
+  return arrangement.lane(editTarget.laneId) || gridPatchMeta;
+}
+// Display info for a patch-identity record: { name, dirty, imported }. The UI
+// composes `name + (dirty?'*') + (imported?' [I]')`. `imported` is an EXPLICIT
+// flag (set on project-file Open), not inferred from id-resolution — so a locally
+// deleted patch reads as `Name*`, only a genuinely foreign one as `[I]`.
+function patchInfo(meta) {
+  if (!meta) return { name: 'Init', dirty: false, imported: false };
+  const entry = patches.get(meta.patchOriginId);
+  const imported = !!meta.patchImported;
+  // A clean, resolvable, non-imported patch shows the entry's CURRENT name (so an
+  // in-place Rename propagates to every linker); otherwise the local snapshot.
+  const name = (entry && !meta.patchDirty && !imported) ? entry.name : (meta.patchName || 'Init');
+  return { name, dirty: !!meta.patchDirty, imported };
+}
+
+// A user param edit flips the target dirty (only the first edit needs the repaint)
+// and persists. (Programmatic swaps use setTargetIdentity, not this.)
+function onPatchEdit() {
+  const m = targetMeta();
+  if (m && !m.patchDirty) {
+    m.patchDirty = true;
+    instrPane.syncIdentity();
+    if (editTarget.laneId != null) tilePlayer.render();
+  }
+  persistPatch();
+}
+
+// Persist the identity record to the right place (grid = its own key; a lane
+// rides the arrangement) and repaint the pane name + lane head.
+function persistPatchMeta() {
+  if (editTarget.laneId == null) safeSet(GRIDMETA_KEY, JSON.stringify(gridPatchMeta));
+  else persist();
+  instrPane.syncIdentity();
+  if (editTarget.laneId != null) tilePlayer.render();
+  if (catalog && catalog.isOpen()) catalog.refresh(); // new/loaded patch, highlight move
+}
+function setTargetIdentity(originId, name, dirty) {
+  const m = targetMeta();
+  if (!m) return;
+  m.patchOriginId = originId; m.patchName = name; m.patchDirty = dirty;
+  m.patchImported = false; // linked to a known entry → no longer "imported"
+  persistPatchMeta();
+}
+
+// Rename = declare a fork name; shows Name* until Save creates the catalog entry.
+function renameTargetPatch(name) {
+  const m = targetMeta();
+  if (!m) return;
+  m.patchName = name;
+  m.patchDirty = true; // differs from any saved entry until Save
+  persistPatchMeta();
+}
+
+// Save: overwrite the linked USER entry when the name is unchanged; otherwise (a
+// renamed patch, or a factory/Init origin) fork a new user patch. (Save-with-a-
+// changed-name = "make a new patch" — never an in-place rename; true rename is
+// Phase C.)
+function saveTargetPatch() {
+  const m = targetMeta();
+  if (!m) return;
+  const entry = patches.get(m.patchOriginId);
+  const kind = editTarget.patch.kind;
+  const nameChanged = !entry || m.patchName !== entry.name;
+  if (entry && !entry.factory && !nameChanged) {
+    patches.update(entry.id, { params: clonePatch(editTarget.patch) });
+    persistPatches();
+    markSiblingsDirty(entry.id, m); // independent copies fall out of sync → `*`
+    setTargetIdentity(entry.id, entry.name, false);
+    return;
+  }
+  // Fork: needs a name. A factory Init with an unchanged name must supply one now.
+  let name = m.patchName;
+  if (entry && entry.factory && !nameChanged) {
+    name = (prompt('Name this patch:', '') || '').trim();
+    if (!name) return; // cancelled — nothing saved
+  }
+  forkPatch(kind, name);
+}
+
+function saveTargetPatchAs() {
+  const m = targetMeta();
+  if (!m) return;
+  const suggested = m.patchName === 'Init' ? '' : m.patchName;
+  const name = (prompt('Save patch as:', suggested) || '').trim();
+  if (!name) return;
+  forkPatch(editTarget.patch.kind, name);
+}
+
+// Create a new user patch from the target's current params and link to it. The
+// name is resolved against catalog collisions first (factory names auto-uniquify;
+// a user-name clash offers Save/Rename/Cancel — we discourage silent duplicates).
+function forkPatch(kind, name) {
+  resolveForkName(kind, name, (finalName) => {
+    if (!finalName) return; // cancelled
+    const e = patches.add({ name: finalName, kind, params: clonePatch(editTarget.patch) });
+    persistPatches();
+    setTargetIdentity(e.id, e.name, false);
+  });
+}
+
+// Resolve `name` for a new user patch, then call ok(finalName) — or ok(null) if
+// cancelled. A FACTORY-name collision is reserved → auto-uniquify (Init→Init1). A
+// USER-name collision opens a Save/Rename/Cancel choice (Save = use it anyway;
+// Rename = pick another and re-check; Cancel = abort).
+function resolveForkName(kind, name, ok) {
+  name = (name || '').trim();
+  if (!name) { ok(null); return; }
+  if (patches.factoryNames(kind).has(name)) { ok(patches.uniqueUserName(kind, name)); return; }
+  if (patches.userNames(kind).has(name)) {
+    openNameCollision(name, (choice) => {
+      if (choice === 'use') ok(name);
+      else if (choice === 'rename') {
+        const next = (prompt('New patch name:', name) || '').trim();
+        if (!next) { ok(null); return; }
+        resolveForkName(kind, next, ok);
+      } else ok(null);
+    });
+    return;
+  }
+  ok(name);
+}
+
+// The "name already in use" dialog (Save / Rename / Cancel). done(choice) with
+// 'use' | 'rename' | null.
+function openNameCollision(name, done) {
+  const body = document.createElement('div');
+  body.className = 'delay-editor';
+  const msg = document.createElement('div');
+  msg.className = 'delay-row'; msg.style.display = 'block';
+  msg.textContent = `There is already a patch named “${name}”. Use the name again?`;
+  const actions = document.createElement('div');
+  actions.className = 'delay-row rand-actions';
+  let choice = null;
+  const mk = (text, cls, val) => {
+    const b = document.createElement('button'); b.className = cls; b.textContent = text;
+    b.addEventListener('click', () => { choice = val; modal.close(); });
+    actions.append(b);
+  };
+  mk('Save', 'stem-go', 'use');
+  mk('Rename', 'seg', 'rename');
+  const sp = document.createElement('span'); sp.style.flex = '1'; actions.append(sp);
+  mk('Cancel', 'seg', null);
+  body.append(msg, actions);
+  const modal = openModal({ title: 'Patch name in use', body, onClose: () => done(choice) });
+}
+
+// Load a catalog patch into the current target (same kind — the Load menu is
+// per-kind), replacing its params in place and adopting the entry's identity.
+function loadTargetPatch(id) {
+  const e = patches.get(id);
+  if (!e) return;
+  applyPatchToTarget(clonePatch(e.params));
+  setTargetIdentity(e.id, e.name, false);
+}
+
+// Replace the target patch's contents in place (references stay valid) and
+// rebuild the pane for the (possibly new) kind — like swapTargetPatch, but the
+// caller sets identity explicitly afterward.
+function applyPatchToTarget(next) {
+  const cur = editTarget.patch;
+  for (const k of Object.keys(cur)) delete cur[k];
+  Object.assign(cur, next);
+  if (editTarget.laneId == null) editGrid(); else editLane(editTarget.laneId);
+  persistPatch();
+  syncGridReference();
+}
+
+// After overwriting a user entry, mark OTHER targets holding an independent copy
+// of it (same origin id, currently clean) dirty — their copy no longer matches
+// the re-Saved sound. (Rack sharing, later, would re-sound them instead.)
+function markSiblingsDirty(entryId, exceptMeta) {
+  for (const lane of arrangement.lanes) {
+    if (lane === exceptMeta) continue;
+    if (lane.patchOriginId === entryId && !lane.patchDirty) lane.patchDirty = true;
+  }
+  if (gridPatchMeta !== exceptMeta && gridPatchMeta.patchOriginId === entryId && !gridPatchMeta.patchDirty) {
+    gridPatchMeta.patchDirty = true;
+    safeSet(GRIDMETA_KEY, JSON.stringify(gridPatchMeta));
+  }
+  persist();
+  tilePlayer.render();
+}
+
+// --- catalog management: apply / rename / delete -----------------------------
+// Every identity record (lanes + the grid) that links to a catalog entry.
+function patchLinkers(id) {
+  const out = arrangement.lanes.filter((l) => l.patchOriginId === id);
+  if (gridPatchMeta.patchOriginId === id) out.push(gridPatchMeta);
+  return out;
+}
+
+// Repaint everything that shows a patch name after a catalog change.
+function refreshPatchUI() {
+  instrPane.syncIdentity();
+  tilePlayer.render();
+  if (catalog && catalog.isOpen()) catalog.refresh();
+}
+
+// True in-place Rename of a USER entry (keeps its id, so all links follow). Clean
+// linkers derive their display from the entry, so they update on the next render;
+// dirty linkers keep their own snapshot. A name clash is discouraged like a Save.
+function renamePatchEntry(id, name) {
+  const e = patches.get(id);
+  if (!e || e.factory) return;
+  name = (name || '').trim();
+  if (!name || name === e.name) return;
+  const commit = (finalName) => {
+    patches.update(id, { name: finalName });
+    persistPatches();
+    // Refresh the snapshot on dirty linkers so a later delete keeps the new name.
+    for (const m of patchLinkers(id)) if (m.patchDirty) m.patchName = finalName;
+    persist();
+    refreshPatchUI();
+  };
+  if (patches.factoryNames(e.kind).has(name)) { commit(patches.uniqueUserName(e.kind, name)); return; }
+  const clash = [...patches.userNames(e.kind)].includes(name) && patches.allForKind(e.kind).some((o) => !o.factory && o.id !== id && o.name === name);
+  if (clash) {
+    openNameCollision(name, (choice) => {
+      if (choice === 'use') commit(name);
+      else if (choice === 'rename') { const n = (prompt('New patch name:', name) || '').trim(); if (n) renamePatchEntry(id, n); }
+    });
+    return;
+  }
+  commit(name);
+}
+
+// Delete a USER entry. Linked targets keep their sound but detach → `Name*`
+// (dirty, NOT imported — a deliberate local delete, not a foreign import).
+function deletePatch(id) {
+  const e = patches.get(id);
+  if (!e || e.factory) return;
+  const users = patchLinkers(id);
+  if (users.length && !confirm(`Delete “${e.name}”?\nIt's used by ${users.length} target${users.length > 1 ? 's' : ''} — they keep the sound as “${e.name}*” (unsaved).`)) return;
+  patches.remove(id);
+  persistPatches();
+  for (const m of users) { m.patchDirty = true; m.patchName = e.name; m.patchImported = false; }
+  if (users.includes(gridPatchMeta)) safeSet(GRIDMETA_KEY, JSON.stringify(gridPatchMeta));
+  persist();
+  refreshPatchUI();
+}
+
+// Apply a catalog patch to the current edit target (cross-kind aware — reuses the
+// Phase-B load path, which rebuilds the pane for a new kind).
+function applyCatalogPatch(id) { loadTargetPatch(id); if (catalog && catalog.isOpen()) catalog.refresh(); }
+
+// The Patch Catalog window (a panel.js tenant). Applies to the current editor
+// target; opened from the instrument pane.
+catalog = createCatalog({
+  list: () => instrumentKinds().map((k) => ({
+    kindLabel: instrument(k).label,
+    patches: patches.allForKind(k).map((e) => ({ id: e.id, name: e.name, factory: e.factory })),
+  })),
+  currentId: () => { const m = targetMeta(); return m ? m.patchOriginId : null; },
+  onApply: applyCatalogPatch,
+  onRename: (id) => { const e = patches.get(id); if (!e) return; const n = (prompt('Rename patch:', e.name) || '').trim(); if (n) renamePatchEntry(id, n); },
+  onDelete: deletePatch,
+});
+if (catalog.isOpen()) catalog.refresh(); // it may have auto-reopened from last session
 
 // Audition the target patch on a fixed mid-register note (independent of the
 // Audition toggle, which gates click-to-hear on the grid). A lane target plays
@@ -1411,8 +1762,10 @@ async function testInstrument() {
 }
 
 function resetInstrument() {
-  // Reset to THIS instrument's defaults (not always Vesperia's).
-  swapTargetPatch(defaultPatch(editTarget.patch.kind));
+  // Reset to THIS instrument's defaults (not always Vesperia's) = its factory Init.
+  const kind = editTarget.patch.kind;
+  swapTargetPatch(defaultPatch(kind));
+  setTargetIdentity(patches.initId(kind), 'Init', false);
 }
 
 editGrid(); // start with the editor showing the grid's neutral patch
@@ -1591,6 +1944,12 @@ function arrApply(json, full = false) {
       reverb: carry ? cur.reverb : normalizeReverb(l.reverb),
       modsByKind: carry ? cur.modsByKind : normalizeModsByKind(l.modsByKind),
       patch: carry ? cur.patch : normalizePatch(l.patch),
+      // Patch identity is part of the live "sound panel" layer — carried on a
+      // normal entry, restored from the snapshot on a full (reset) entry.
+      patchOriginId: carry ? cur.patchOriginId : (l.patchOriginId != null ? l.patchOriginId : factoryInitId(normalizePatch(l.patch).kind)),
+      patchName: carry ? cur.patchName : (l.patchName || 'Init'),
+      patchDirty: carry ? cur.patchDirty : !!l.patchDirty,
+      patchImported: carry ? cur.patchImported : !!l.patchImported,
       fresh: !!l.fresh,
     };
   });
@@ -1647,7 +2006,10 @@ function dropCurrentTile(laneId, rawBeat) {
   // it did in the grid. A lane that's been used keeps its established instrument.
   // Clone so the lane's patch doesn't alias (and keep being edited by) the grid's.
   const lane = arrangement.lane(laneId);
-  if (lane && lane.fresh) lane.patch = clonePatch(gridPatch);
+  if (lane && lane.fresh) { // adopt the grid patch AND its identity so the tile keeps its name
+    lane.patch = clonePatch(gridPatch);
+    lane.patchOriginId = gridPatchMeta.patchOriginId; lane.patchName = gridPatchMeta.patchName; lane.patchDirty = gridPatchMeta.patchDirty;
+  }
   arrangement.insertAt(laneId, library.current().name, start, patternLen, state.ripple);
   if (lane) lane.fresh = false; // the lane now has a tile
   arrangement.activeLaneId = laneId;
@@ -2136,6 +2498,9 @@ function onToolbarChange(what) {
       grid.updateCursor();
       if (!grid.applyDuration(state.brush.durIndex)) refresh();
       return;
+    case 'durationAll': // double-clicked a duration brush → set the whole pattern to it (undoable)
+      grid.applyDurationAll(state.brush.durIndex);
+      return;
     case 'tuning': {
       const cur = library.current();
       cur.tuningId = tb.tuningSel.value;
@@ -2331,6 +2696,11 @@ function loadContent(env) {
   arrangement.seq = freshArr.seq;
   arrangement.activeLaneId = freshArr.activeLaneId;
   arrangement.clearSelection();
+  // Opening a FILE: any lane whose patch origin isn't in this catalog came from
+  // elsewhere → mark it imported (`[I]`, offers "add to your catalog?"). Resolvable
+  // origins clear the flag. (Autosave reload doesn't run here, so an in-session
+  // delete's `Name*` survives a normal reload — only a file Open mints `[I]`.)
+  for (const l of arrangement.lanes) l.patchImported = !patches.get(l.patchOriginId);
 
   if (env.tempo) {
     state.bpm = env.tempo;
@@ -2624,6 +2994,9 @@ if (savedSnapshot) {
         if (bl.delay == null) { bl.delay = ll.delay; changed = true; }
         if (bl.chorus == null) { bl.chorus = ll.chorus; changed = true; }
         if (bl.reverb == null) { bl.reverb = ll.reverb; changed = true; }
+        // Patch identity (originId/name/dirty) added this version — absorb the
+        // migrated values so an existing project doesn't reload spuriously dirty.
+        if (bl.patchOriginId == null) { bl.patchOriginId = ll.patchOriginId; bl.patchName = ll.patchName; bl.patchDirty = ll.patchDirty; changed = true; }
       }
       // Region markers (top-level arr fields) added in this version too.
       if (!('playStart' in base.arr)) { base.arr.playStart = arrangement.playStart; base.arr.playEnd = arrangement.playEnd; changed = true; }
@@ -2655,6 +3028,7 @@ const tileDeleteBtn = document.getElementById('tileDelete');
 const midiExportBtn = document.getElementById('midiExport');
 const audioExportBtn = document.getElementById('audioExport');
 const stemExportBtn = document.getElementById('stemExport');
+const tileInspectorBtn = document.getElementById('tileInspector');
 const exportProgEl = document.getElementById('exportProg');
 const modLoopBtn = document.getElementById('modLoop');
 const modClockEl = document.getElementById('modClock');
@@ -2710,6 +3084,97 @@ midiExportBtn.addEventListener('click', exportMidi);
 audioExportBtn.addEventListener('click', exportAudio);
 stemExportBtn.addEventListener('click', openStemModal);
 document.getElementById('resetPlayer').addEventListener('click', resetPlayer);
+
+// The Tile Inspector — a modeless floating window of facts about the selected
+// tile (see future_directions.md §12). It's opened only by this button (single/
+// double click on a tile are already bound to select/open-in-grid). It follows
+// the tile selection while open (refreshTileInspector runs from the same hook
+// as the transform chips).
+tileInspector = createInspector({
+  title: 'Tile Inspector',
+  transport: { onPlay: inspectorPlay, onStop: inspectorStop, onLoop: inspectorLoop },
+});
+tileInspector.onToggle = (open) => {
+  tileInspectorBtn.classList.toggle('active', open);
+  if (open) { refreshTileInspector(); syncInspectorTransport(); }
+};
+tileInspectorBtn.addEventListener('click', () => tileInspector.toggle());
+// It may have auto-reopened from last session before onToggle was wired above —
+// sync the button state (content is filled once the tile UI is built).
+tileInspectorBtn.classList.toggle('active', tileInspector.isOpen());
+
+// A tuning id → its display label ("12-ET", "16-ET", …).
+const tuningLabelById = new Map(TUNING_LIST.map((t) => [t.id, t.label]));
+
+// Build the facts data dump for the current anchor tile (the last-clicked tile
+// in the selection). Everything shown is read-only for this first cut.
+function tileInspectorFacts() {
+  const anchor = arrangement.allTiles().find((t) => t.id === arrangement.selectedId);
+  // No anchor → nothing selected. (A MULTI-selection still has an anchor — the
+  // last-clicked tile — so the inspector shows THAT tile, and the transport plays
+  // it; a "N tiles" note flags that the rest of the selection isn't shown.)
+  if (!anchor) return { empty: 'Select a tile to inspect it.' };
+  const lane = arrangement.laneOfTile(anchor.id);
+  const laneIdx = arrangement.lanes.indexOf(lane);
+  const p = library.patterns.get(anchor.name);
+  const instr = lane && instrument(lane.patch && lane.patch.kind);
+
+  const multi = arrangement.selectedIds.size > 1;
+  const placement = [['Lane', lane ? `Lane ${laneIdx + 1}` : '—'], ['Start', `beat ${anchor.start}`]];
+  const sections = [{ title: 'Placement', rows: placement }];
+
+  if (p) {
+    const lengthBeats = p.columns.reduce((s, c) => s + DURATIONS[c.durIndex].beats, 0);
+    placement.push(['Length', `${+lengthBeats.toFixed(3)} beats`]);
+    placement.push(['End', `beat ${+(anchor.start + lengthBeats).toFixed(3)}`]);
+    const noteCols = p.columns.filter((c) => !c.isRest).length;
+    sections.push({ title: 'Pattern', rows: [
+      ['Name', p.name],
+      ['Columns', String(p.columns.length)],
+      ['Notes', `${noteCols} / ${p.columns.length}`],
+      ['Tuning', tuningLabelById.get(p.tuningId) || p.tuningId],
+      ['Scale', scaleById(p.scaleId).name],
+      ['Key', pitchClassName(p.root, p.tuningId)],
+    ] });
+  } else {
+    sections.push({ title: 'Pattern', rows: [['Name', `${anchor.name} (missing)`]] });
+  }
+
+  if (instr) {
+    sections.push({ title: 'Instrument', rows: [
+      ['Voice', instr.label],
+      ['Type', instr.desc],
+    ] });
+  }
+
+  const transforms = anchor.transforms || [];
+  sections.push({ title: 'Transforms', rows: transforms.length
+    ? transforms.map((t) => [transformKindLabel(t).kind, describeTransform(t)])
+    : [['', 'none']] });
+
+  const sub = multi ? `id ${anchor.id} · anchor of ${arrangement.selectedIds.size} selected` : `id ${anchor.id}`;
+  // Heading shows the friendly name with the canonical registry name after it
+  // ("Break Beat 2 (A6)"), or just the canonical name when unlabeled. Double-
+  // clicking it renames the PATTERN (all tiles referencing it follow); the label
+  // lives on the pattern, so clones — which mint a fresh canonical name — don't
+  // inherit it (your spec). Commit = set label + refresh (persists, marks dirty,
+  // re-renders). No pattern (shouldn't happen) → no rename.
+  const canonical = anchor.name;
+  const label = p ? p.label : '';
+  const heading = label ? `${label} (${canonical})` : canonical;
+  const rename = p ? {
+    label, canonical,
+    onCommit: (newLabel) => { p.label = newLabel; refresh(); },
+  } : null;
+  return { heading, sub, sections, rename };
+}
+
+// Push fresh facts into the inspector — cheap no-op while it's closed.
+function refreshTileInspector() {
+  if (!tileInspector || !tileInspector.isOpen()) return;
+  tileInspector.setFacts(tileInspectorFacts());
+  syncInspectorTransport(); // canPlay follows the anchor selection
+}
 
 let rafId = null;
 
@@ -2801,6 +3266,7 @@ function stop() {
   }
   scheduler.stop();
   activeSource = null;
+  auditTileId = null;
   resumeBeat = null;
   tilePlayer.setPlaying(new Set());
   tilePlayer.setPlayhead(state.playheadBeat);
@@ -2860,6 +3326,8 @@ function updateTransportButtons() {
   const tilesLooping = activeSource === 'tiles' && scheduler.isLooping;
   tileLoopBtn.textContent = loopLabel(tilesLooping);
   tileLoopBtn.classList.toggle('active', tilesLooping);
+
+  syncInspectorTransport(); // mirror onto the inspector's play/stop/loop cluster
 }
 
 // Complete repeats still to come after the current pass; nothing on the last.

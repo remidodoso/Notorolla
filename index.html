@@ -163,6 +163,18 @@
     .instr-title { font-weight: 700; color: #cbd2e0; font-size: 0.95rem; }
     .instr-kind { color: #6b7280; font-size: 0.78rem; }
     .instr-head button { font-size: 0.82rem; padding: 0.28rem 0.6rem; }
+    /* Patch bar: the target's patch identity (Name/Name*/Name [I]) + Save/Load. */
+    .instr-patchbar { display: flex; align-items: center; gap: 0.5rem; padding-bottom: 0.7rem; flex-wrap: wrap; }
+    .instr-patch-lbl { color: #6b7280; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .instr-patch-name { color: #cbd2e0; font-size: 0.85rem; font-weight: 700; cursor: text;
+      padding: 0.1rem 0.4rem; border: 1px solid transparent; border-radius: 4px; min-width: 60px; }
+    .instr-patch-name:hover { border-color: #2a3040; }
+    .instr-patch-name.dirty { color: #d6b96a; } /* not the saved sound */
+    .instr-patch-name-input { font: inherit; font-weight: 700; color: #e2e7f0; min-width: 120px;
+      background: #0c0e14; border: 1px solid #3d5a80; border-radius: 4px; padding: 0.08rem 0.35rem; }
+    .instr-patchbar button { font-size: 0.82rem; padding: 0.28rem 0.6rem; }
+    .instr-load-sel { background: #11141c; color: #cbd2e0; border: 1px solid #2a3040; border-radius: 4px;
+      padding: 0.22rem 0.4rem; font-size: 0.8rem; }
     .instr-grid { display: flex; flex-wrap: wrap; gap: 1.4rem 2.2rem; }
     .instr-group { display: flex; flex-direction: column; gap: 0.35rem; min-width: 220px; }
     .instr-group-title {
@@ -237,18 +249,21 @@
     }
     .lane.active-lane .lane-head { border-color: #3d5a80; background: #0e1422; }
     .lane-stripe { flex: 0 0 6px; width: 6px; border-radius: 3px; }
-    /* Instrument block: name (future selector) over an Edit button. */
-    .lane-info { display: flex; flex-direction: column; justify-content: center; gap: 4px; flex: 1 1 auto; min-width: 0; }
+    /* Lane head instrument block: Instrument (kind) over Patch (name / star / bracket-I).
+       Double-click to edit; highlighted while it's the editor's target. */
+    .lane-info { display: flex; flex-direction: column; justify-content: center; gap: 3px; flex: 1 1 auto;
+      min-width: 0; cursor: pointer; padding: 2px 3px; border-radius: 4px; }
+    .lane-info:hover { background: rgba(255,255,255,0.04); }
+    .lane-info.editing { background: #1e3050; box-shadow: inset 0 0 0 1px #3d5a80; }
     .lane-instr {
-      font-size: 0.72rem; font-weight: 600; color: #aeb6c4; line-height: 1; padding-left: 2px;
-      max-width: 70px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      font-size: 0.72rem; font-weight: 600; color: #aeb6c4; line-height: 1;
+      max-width: 78px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
-    .lane-edit {
-      height: 20px; padding: 0 8px; font-size: 0.72rem; font-weight: 600; line-height: 1;
-      border-radius: 4px; background: #20242e; color: #8a93a3; border: 1px solid #313747;
+    .lane-patch {
+      font-size: 0.7rem; color: #7f8798; line-height: 1;
+      max-width: 78px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
-    .lane-edit:hover { background: #272c38; color: #cbd2e0; }
-    .lane-edit.on { background: #1e3050; border-color: #3d5a80; color: #cfe0ff; }
+    .lane-patch.dirty { color: #d6b96a; } /* Name* / Name [I] — not the saved sound */
     /* Delay "D" button (between the instrument block and the knobs); lit when on. */
     .lane-delay {
       align-self: center; width: 20px; height: 20px; padding: 0; font-size: 0.74rem; font-weight: 700;
@@ -289,6 +304,78 @@
     .modal-x { width: 24px; height: 24px; padding: 0; font-size: 1.1rem; line-height: 1; border-radius: 4px;
       background: #20242e; color: #9aa1ad; border: 1px solid #313747; }
     .modal-x:hover { background: #3a2326; color: #d6a3a8; border-color: #5a2f33; }
+    /* Modeless floating pane primitive (panel.js) — the shared chrome for the
+       Tile inspector and the coming Patch Catalog. Floats, stays put, never
+       scrolls the page: position:fixed (owns its spot, ignores page scroll) +
+       resize:both with a min size; a tenant makes its own body scroll inside. */
+    .panel {
+      position: fixed; z-index: 60; display: flex; flex-direction: column;
+      width: 300px; height: 360px; min-width: 240px; min-height: 180px;
+      max-width: 96vw; max-height: 92vh;
+      background: #11141c; border: 2px solid #4a5670; border-radius: 10px;
+      box-shadow: 0 14px 44px rgba(0,0,0,0.55);
+      resize: both; overflow: hidden; /* resize needs a clipped box; body scrolls */
+    }
+    .panel-head {
+      display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem 0.7rem;
+      border-bottom: 1px solid #1c2029; cursor: move; user-select: none;
+      background: #161a24; border-radius: 10px 10px 0 0; touch-action: none;
+    }
+    .panel-title { flex: 1; font-weight: 700; color: #cbd2e0; font-size: 0.85rem; }
+    .panel-x { width: 22px; height: 22px; padding: 0; font-size: 1rem; line-height: 1; border-radius: 4px;
+      background: #20242e; color: #9aa1ad; border: 1px solid #313747; cursor: pointer; }
+    .panel-x:hover { background: #3a2326; color: #d6a3a8; border-color: #5a2f33; }
+    .inspector-transport {
+      display: flex; align-items: center; gap: 0.35rem; padding: 0.4rem 0.7rem;
+      border-bottom: 1px solid #1c2029; background: #12151d;
+    }
+    .insp-tbtn {
+      min-width: 30px; height: 26px; padding: 0 0.4rem; font-size: 0.85rem; line-height: 1;
+      background: #20242e; color: #cbd2e0; border: 1px solid #313747; border-radius: 4px; cursor: pointer;
+    }
+    .insp-tbtn:hover:not(:disabled) { background: #272c38; }
+    .insp-tbtn:disabled { opacity: 0.35; cursor: default; }
+    .insp-tbtn.on { background: #1e3050; border-color: #3d5a80; color: #cfe0ff; } /* loop armed */
+    .inspector-body {
+      flex: 1; overflow: auto; overscroll-behavior: contain; /* never chain scroll to the page */
+      padding: 0.6rem 0.75rem; font-size: 0.82rem; color: #aeb9d0;
+    }
+    .inspector-empty { color: #6b7280; padding: 1rem 0.2rem; text-align: center; }
+    /* Patch Catalog window (catalog.js) — a panel.js tenant: search bar + a
+       kind→patch list that scrolls inside. */
+    .cat-bar { padding: 0.5rem 0.6rem; border-bottom: 1px solid #1c2029; background: #12151d; }
+    .cat-search { width: 100%; box-sizing: border-box; font: inherit; font-size: 0.82rem; color: #cbd2e0;
+      background: #0c0e14; border: 1px solid #2a3040; border-radius: 4px; padding: 0.3rem 0.5rem; }
+    .cat-search:focus { outline: none; border-color: #3d5a80; }
+    .cat-body { flex: 1; overflow: auto; overscroll-behavior: contain; padding: 0.3rem 0.4rem 0.6rem; }
+    .cat-kind { color: #8ea0c8; font-weight: 600; font-size: 0.72rem; text-transform: uppercase;
+      letter-spacing: 0.04em; margin: 0.6rem 0.25rem 0.2rem; }
+    .cat-item { display: flex; align-items: center; gap: 0.4rem; padding: 0.28rem 0.45rem; border-radius: 4px;
+      font-size: 0.85rem; color: #cbd2e0; cursor: pointer; }
+    .cat-item:hover { background: rgba(255,255,255,0.05); }
+    .cat-item.current { background: #1e3050; box-shadow: inset 0 0 0 1px #3d5a80; }
+    .cat-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cat-tag { color: #6b7280; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.03em; margin-left: auto; }
+    .cat-act { width: 20px; height: 20px; padding: 0; font-size: 0.78rem; line-height: 1; border-radius: 4px;
+      background: #20242e; color: #9aa1ad; border: 1px solid #313747; cursor: pointer; visibility: hidden; }
+    .cat-item:hover .cat-act { visibility: visible; }
+    .cat-act:hover { background: #272c38; color: #d6dae2; }
+    .cat-empty { color: #6b7280; padding: 1.2rem 0.4rem; text-align: center; font-size: 0.82rem; }
+    .inspector-heading { font-weight: 700; color: #e2e7f0; font-size: 0.98rem; margin-bottom: 0.1rem; }
+    .inspector-heading.editable { cursor: text; }
+    .inspector-heading.editable:hover { text-decoration: underline dotted #4a5468; text-underline-offset: 3px; }
+    .inspector-heading.rename { display: flex; align-items: baseline; gap: 0.35rem; }
+    .insp-rename-input {
+      flex: 1; min-width: 0; font: inherit; font-weight: 700; color: #e2e7f0;
+      background: #0c0e14; border: 1px solid #3d5a80; border-radius: 4px; padding: 0.1rem 0.35rem;
+    }
+    .insp-rename-suffix { color: #8a93a3; font-weight: 400; font-size: 0.82rem; white-space: nowrap; }
+    .inspector-sub { color: #8a93a3; font-size: 0.78rem; margin-bottom: 0.6rem; }
+    .inspector-sectitle { color: #8ea0c8; font-weight: 600; font-size: 0.72rem; text-transform: uppercase;
+      letter-spacing: 0.04em; margin: 0.7rem 0 0.25rem; }
+    .inspector-rows { display: grid; grid-template-columns: max-content 1fr; gap: 0.15rem 0.7rem; }
+    .insp-k { color: #8a93a3; white-space: nowrap; }
+    .insp-v { color: #cbd2e0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
     .fx-modal { display: flex; flex-direction: column; }
     .fx-copybar { display: flex; gap: 0.4rem; justify-content: flex-end; padding: 0.6rem 0.8rem 0; }
     .delay-editor { padding: 0.8rem; display: flex; flex-direction: column; gap: 0.7rem; }
@@ -409,7 +496,9 @@
       position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
       font-size: 0.9rem; font-weight: 700; color: #fff;
       text-shadow: 0 1px 3px rgba(0,0,0,0.9); pointer-events: none; line-height: 1;
+      padding: 0 4px; overflow: hidden; /* clip a long friendly name to the tile */
     }
+    .tile-name-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
     /* per-tile transform swaths — translucent bands at the bottom marking a
        transformed tile (height/offset set inline; stacked bottom-up in order).
        The thumbnail keeps the pattern's identity; color-keyed per transform. */
@@ -435,6 +524,13 @@
       cursor: ew-resize; z-index: 2; touch-action: none;
     }
     .sel-handle:hover { background: #7fc0ff; }
+    /* Repeat count chip — follows the pointer during a fill-handle drag. */
+    .repeat-count {
+      position: fixed; z-index: 70; pointer-events: none; display: none;
+      background: #1e3050; color: #cfe0ff; border: 1px solid #3d5a80; border-radius: 4px;
+      padding: 0.12rem 0.4rem; font-size: 0.8rem; font-weight: 700; font-variant-numeric: tabular-nums;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.5); white-space: nowrap;
+    }
     /* transform bar: the brush palette + armed-brush controls + selected-tile chips */
     /* Sits between the controls row and the lanes (tool palette + selected tile's chips). */
     .transform-bar { display: flex; align-items: center; gap: 0.6rem; padding-bottom: 0.6rem; flex-wrap: wrap; font-size: 0.82rem; color: #aeb9d0; }
@@ -549,6 +645,8 @@
           <button id="midiExport" title="Export the arrangement as a Standard MIDI file">Export MIDI</button>
           <button id="audioExport" title="Render the arrangement to a WAV audio file">Export Audio</button>
           <button id="stemExport" title="Render each lane to its own Broadcast Wave (BWF) stem, bundled as a zip">Export Stems</button>
+          <span class="tsep"></span>
+          <button id="tileInspector" title="Open the Tile Inspector — a modeless window of facts about the selected tile">Tile Inspector</button>
           <span id="exportProg" class="export-prog" title="Rendering…"></span>
           <button id="resetPlayer" class="danger" title="Reset the tile player to two empty lanes (undoable)" style="margin-left:auto">Reset player</button>
         </div>

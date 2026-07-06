@@ -228,6 +228,15 @@ export class GridView {
     return true;
   }
 
+  // Set EVERY column's duration to durIndex (double-clicking a toolbar duration
+  // brush — a quick "make the whole pattern this duration"). One undo entry;
+  // _commit is a no-op if nothing changed.
+  applyDurationAll(durIndex) {
+    const before = this._snap();
+    for (const c of this.pattern.columns) c.durIndex = durIndex;
+    this._commit(before);
+  }
+
   // Reverse the order of the target notes among their columns (retrograde).
   reverseSelection() {
     const cols = this._permuteTargets();

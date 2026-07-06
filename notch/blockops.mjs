@@ -106,6 +106,24 @@ const starts = (a, li = 0) => a.lanes[li].tiles.map((t) => `${t.name}${t.start}`
   ok(placed.length === 3 && starts(a) === 'A0,B4,C12,C16,C20,C24', `repeat: single-tile block (got ${starts(a)})`);
 }
 
+// --- planRepeat LEFT (negative k) -------------------------------------------
+{
+  const a = arr();
+  a.select(3); // C [12,16), period 4
+  const plan = a.planRepeat(-2, lenOf); // left copies at 8 (free) then 4 (hits B[4,8))
+  ok(plan.length === 2 && plan[0].start === 8 && plan[1].start === 4, 'repeat left: stamps at start − r×period');
+  ok(plan[0].blocked === false && plan[1].blocked === true, 'repeat left: per-tile blocking (4 hits B)');
+  const placed = a.repeatSelection(-2, lenOf);
+  ok(placed.length === 1 && starts(a) === 'A0,B4,C8,C12', `repeat left: free copy placed, blocked skipped (got ${starts(a)})`);
+}
+{
+  const a = arr();
+  a.select(1); a.toggleSelect(2); // A+B block [0,8), period 8
+  const plan = a.planRepeat(-1, lenOf); // left copies at −8 / −4 → before beat 0
+  ok(plan.length === 2 && plan.every((p) => p.blocked), 'repeat left: copies before beat 0 are blocked');
+  ok(a.repeatSelection(-1, lenOf).length === 0, 'repeat left: nothing placed past the start');
+}
+
 // --- selectionBlock ----------------------------------------------------------
 {
   const a = arr();

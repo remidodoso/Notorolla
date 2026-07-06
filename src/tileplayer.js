@@ -131,6 +131,13 @@ export class TilePlayer {
     // scrollLeft to 0 — every rebuild was silently rewinding the view to the
     // beginning. Save and restore the scroll across the rebuild.
     const keepX = c.scrollLeft, keepY = c.scrollTop;
+    // Same hazard at the PAGE level: the collapse shrinks the document height, so
+    // the browser clamps the window scroll — most visibly when a tile drag calls
+    // render() directly (bypassing refresh()'s own guard), yanking the page (and
+    // the tile you're holding) away mid-gesture. Snapshot and restore it too, so
+    // a render NEVER moves the page. (overflow-anchor:none is the belt for this;
+    // this is the suspenders — robust to any cause.)
+    const winX = window.scrollX, winY = window.scrollY;
     c.innerHTML = '';
     // Element caches for the per-frame playback updates (setPlaying/setPlayhead
     // run at 60 fps — they must not querySelectorAll a big DOM every frame).
@@ -181,19 +188,22 @@ export class TilePlayer {
       resetBtn.title = 'Reset this lane — clear its tiles and restore default instrument/mixer (undoable)';
       resetBtn.onclick = () => this.cb.onResetLane(lane.id);
 
+      // Instrument (kind) over Patch (name/*/[I]). Double-click anywhere here
+      // opens the editor on this lane — the old "Edit" button is gone (the name
+      // is the control). Highlighted while this lane is the editor's target.
       const info = document.createElement('div');
-      info.className = 'lane-info';
+      info.className = 'lane-info' + (this.editLaneId === lane.id ? ' editing' : '');
+      info.title = 'Double-click to edit this lane’s instrument';
+      info.ondblclick = () => this.cb.onEdit(lane.id);
+      const instrLabel = instrument(lane.patch && lane.patch.kind).label; // the lane's instrument kind
       const instr = document.createElement('span');
       instr.className = 'lane-instr';
-      const instrLabel = instrument(lane.patch && lane.patch.kind).label; // the lane's instrument kind
       instr.textContent = instrLabel;
-      instr.title = `Instrument: ${instrLabel}`;
-      const editBtn = document.createElement('button');
-      editBtn.className = 'lane-edit' + (this.editLaneId === lane.id ? ' on' : '');
-      editBtn.textContent = 'Edit';
-      editBtn.title = 'Edit this lane’s instrument';
-      editBtn.onclick = () => this.cb.onEdit(lane.id);
-      info.append(instr, editBtn);
+      const pd = this.cb.patchDisplay ? this.cb.patchDisplay(lane) : { name: lane.patchName || 'Init', dirty: false, imported: false };
+      const patchName = document.createElement('span');
+      patchName.className = 'lane-patch' + ((pd.dirty || pd.imported) ? ' dirty' : '');
+      patchName.textContent = pd.name + (pd.dirty ? '*' : '') + (pd.imported ? ' [I]' : '');
+      info.append(instr, patchName);
 
       // Chorus + Delay: small "C"/"D" buttons (lit when on) opening their editor
       // modals, between the instrument block and the Pan/Gain knobs.
@@ -322,7 +332,17 @@ export class TilePlayer {
 
           const name = document.createElement('span');
           name.className = 'tile-name';
-          name.textContent = t.name;
+          // The tile shows JUST the friendly name ("Groovy"), or the canonical
+          // registry name ("A1") when unlabeled — the canonical stays in the Tile
+          // Inspector, not on the tile. Inner span so a long name ellipsis-
+          // truncates inside a narrow tile; the tile's title reveals the canonical
+          // name on hover (tile-name is pointer-events:none).
+          const label = pattern && pattern.label;
+          const nameTxt = document.createElement('span');
+          nameTxt.className = 'tile-name-txt';
+          nameTxt.textContent = label || t.name;
+          name.append(nameTxt);
+          el.title = label ? `${label} (${t.name})` : t.name;
 
           el.append(name);
 
@@ -398,6 +418,7 @@ export class TilePlayer {
     this.syncSelHandle(!!preview); // repeat handle (hidden while a drag preview is showing)
 
     if (before) this._flip(before);
+    if (window.scrollX !== winX || window.scrollY !== winY) window.scrollTo(winX, winY);
   }
 
   // Position the per-track playhead lines at `beat` (track-relative, so they
@@ -599,7 +620,7 @@ export class TilePlayer {
     if (!track) return;
     const handle = document.createElement('div');
     handle.className = 'sel-handle';
-    handle.title = 'Repeat — drag right to stamp copies of the selection';
+    handle.title = 'Repeat — drag right or left to stamp copies of the selection';
     handle.style.left = `${Math.round(block.end * this.ppb)}px`;
     handle.addEventListener('pointerdown', (e) => {
       e.stopPropagation(); // not an empty-space press — no marquee
@@ -609,29 +630,49 @@ export class TilePlayer {
     this._selHandle = handle;
   }
 
-  // Fill-handle drag: stamp whole-block repeats to the right. The count tracks
-  // the pointer (pull back to shed copies, release to commit — k=0 is a no-op);
-  // preview goes through cb.onRepeatPreview (main plans the collisions and we
-  // draw stamp bands directly — NO re-render mid-gesture, so the handle under
-  // the pointer survives its own drag); Esc cancels.
+  // Fill-handle drag: stamp whole-block repeats. Drag RIGHT for right copies,
+  // LEFT (past the block's left edge) for left copies — one signed count that
+  // tracks the pointer (pull back through the block to shed, release to commit —
+  // k=0 is a no-op); preview goes through cb.onRepeatPreview (main plans the
+  // collisions, returns how many land, and we draw stamp bands directly — NO
+  // re-render mid-gesture, so the handle under the pointer survives its own drag).
+  // A count chip follows the pointer: "N + M" (or "N + M (I)" for a multi-tile
+  // selection) — N selected, M actually placed, I = |k| copies. Esc cancels.
   _repeatDrag(e, track, laneId, blockStart, blockEnd) {
     const period = blockEnd - blockStart;
     if (period <= 0) return;
     const handle = e.currentTarget;
-    let k = 0;
+    const n = this.arrangement.selectedIds.size; // N — the selection block size
+    let k = 0, placed = 0;
     handle.setPointerCapture(e.pointerId);
+    const chip = document.createElement('div');
+    chip.className = 'repeat-count';
+    document.body.append(chip);
     const beatAt = (x) => (x - track.getBoundingClientRect().left) / this.ppb;
+    const showChip = (cx, cy) => {
+      if (k === 0) { chip.style.display = 'none'; return; }
+      chip.style.display = 'block';
+      chip.textContent = n > 1 ? `${n} + ${placed} (${Math.abs(k)})` : `${n} + ${placed}`;
+      chip.style.left = `${cx + 14}px`;
+      chip.style.top = `${cy - 26}px`;
+    };
     const move = (ev) => {
       this.edgeScroll(ev.clientX, ev.clientY);
-      // Copy r spans [end+(r−1)·period, end+r·period): count = the copy the
-      // pointer is inside (a whisker of slack so the exact seam doesn't jitter).
-      const nk = Math.max(0, Math.ceil((beatAt(ev.clientX) - blockEnd) / period - 0.02));
-      if (nk !== k) { k = nk; this.cb.onRepeatPreview(laneId, k); }
+      // Signed count: pointer right of the block's right edge → right copies;
+      // left of the block's left edge → left copies; inside the block → 0. A
+      // whisker of slack so the exact seam doesn't jitter.
+      const b = beatAt(ev.clientX);
+      let nk = 0;
+      if (b > blockEnd) nk = Math.ceil((b - blockEnd) / period - 0.02);
+      else if (b < blockStart) nk = -Math.ceil((blockStart - b) / period - 0.02);
+      if (nk !== k) { k = nk; placed = this.cb.onRepeatPreview(laneId, k) || 0; }
+      showChip(ev.clientX, ev.clientY);
     };
     const cleanup = () => {
       handle.removeEventListener('pointermove', move);
       handle.removeEventListener('pointerup', up);
       window.removeEventListener('keydown', onKey, true);
+      chip.remove();
     };
     const up = () => {
       try { handle.releasePointerCapture(e.pointerId); } catch { /* gone */ }
