@@ -407,6 +407,7 @@
     .rand-editor .delay-val { min-width: 62px; text-align: right; }
     .rand-actions { gap: 0.4rem; margin-top: 0.2rem; }
     .rand-actions .seg:disabled, .rand-actions .stem-go:disabled { opacity: 0.45; cursor: default; }
+    .rand-nav { padding: 0.28rem 0.5rem; font-weight: 700; font-size: 1rem; line-height: 1; } /* ‹ › history nav around Randomize */
     .rand-editor .delay-row.rand-disabled { opacity: 0.5; }
     .rand-sort { display: inline-flex; align-items: center; gap: 0.2rem; color: #9aa1ad; font-size: 0.72rem; cursor: pointer; user-select: none; }
     .rand-sort input { cursor: pointer; }
@@ -446,12 +447,19 @@
       border: 1px solid #1c2029; border-left: none; border-radius: 0 6px 6px 0; background: #0b0d12;
     }
     /* thin "add a lane" row at the bottom of the stack, + on the left */
-    .lane-add { display: flex; align-items: center; padding: 1px 0; }
-    .lane-add-btn {
-      width: 22px; height: 20px; padding: 0; font-size: 1rem; line-height: 1;
-      border-radius: 4px; background: #20242e; color: #8a93a3; border: 1px solid #313747;
+    /* Add-lane row: a pinned enclosure the width of a lane head (sticky like the
+       heads, so it doesn't scroll away), sitting neatly below the lane stack. */
+    .lane-add {
+      position: sticky; left: 0; z-index: 3;
+      flex: 0 0 var(--lane-head-w); width: var(--lane-head-w);
+      display: flex; align-items: stretch;
     }
-    .lane-add-btn:hover { background: #272c38; color: #cbd2e0; }
+    .lane-add-btn {
+      flex: 1; height: 34px; padding: 0; font-size: 0.85rem; font-weight: 600; line-height: 1;
+      border-radius: 6px; background: #12151d; color: #8a93a3; border: 1px dashed #37404f;
+      display: flex; align-items: center; justify-content: center; gap: 0.35rem; cursor: pointer;
+    }
+    .lane-add-btn:hover { background: #1a1f2a; color: #cbd2e0; border-color: #4a5670; }
     .lane.active-lane .lane-track { border-color: #3d5a80; background: #0e1422; }
     .tile-hint { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: #4a5160; font-size: 0.85rem; }
     /* Non-ripple drop preview: a filled band over the exact landing span… */

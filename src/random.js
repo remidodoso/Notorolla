@@ -29,7 +29,21 @@ export const RANDOM_DEFAULTS = {
   unique: 1, run: 0, triad: 0,
   durBias: 0, accentBias: 0,       // −1 (Low) … +1 (High); how much long/loud columns pull pitch
   durSort: false, accentSort: false, // per-bias mechanism: false = steer generation, true = post-hoc sort
+  range: 0,                        // max distinct scale degrees in the pool: 0 = unlimited (= note count), else 1..24
 };
+
+// Even monotonic staircase across `window`, `count` notes long — the deterministic
+// FULL-RUN (|run| = 1) output. dir > 0 ascends (low→high), < 0 descends. It reduces
+// to the sorted window when the window size == count; when the window is SMALLER it
+// repeats steps evenly (no flat top — the fix for a ramp-then-flatline); when LARGER
+// it spreads across evenly-spaced degrees. `k·R/count` floored distributes the notes.
+export function runStaircase(window, count, dir) {
+  const R = window.length;
+  const asc = dir > 0 ? window : window.slice().reverse();
+  const out = new Array(count);
+  for (let k = 0; k < count; k++) out[k] = asc[Math.min(R - 1, Math.floor((k * R) / count))];
+  return out;
+}
 
 // Shared "rank-correlation re-pairing" behind the bias sliders. Redistributes a
 // per-position `material` array across positions so its low→high order correlates
@@ -156,8 +170,15 @@ export function scaleWindow({ count, centroid, scaleId, root, edo, bounds }) {
 // for the enabled chord families (see chordsFor) — the triad slider's targets.
 export function generateRandom({ count, centroid, scaleId, root, edo, bounds, chordKeys, settings, rng = Math.random, bias = null }) {
   const s = { ...RANDOM_DEFAULTS, ...settings };
-  const window = scaleWindow({ count, centroid, scaleId, root, edo, bounds });
+  // The pool is `range` in-scale degrees (centered on the centroid), or `count`
+  // when unlimited. range < count → notes must repeat; range > count → a wider,
+  // gappier spread; range == count → the classic one-per-note tone row.
+  const windowSize = s.range > 0 ? s.range : count;
+  const window = scaleWindow({ count: windowSize, centroid, scaleId, root, edo, bounds });
   if (!window.length) return [];
+  // Full run (|run| = 1) is deterministic: an even staircase across the pool —
+  // outranks the other sliders, and never flat-tops when the pool is small.
+  if (Math.abs(s.run) >= 1) return runStaircase(window, count, s.run > 0 ? 1 : -1);
   const pcKey = (a, b, c) => {
     const set = [...new Set([a, b, c].map((d) => (((d % edo) + edo) % edo)))].sort((x, y) => x - y);
     return set.length === 3 ? set.join(',') : null;

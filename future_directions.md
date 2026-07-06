@@ -52,9 +52,9 @@ a shared enabler. Rough read before the details:
 | **9. Convolution cross-synthesis** | native `ConvolverNode` + offline bounce | **no** — reuses the reverb core | reverb + `renderToBuffer`; sample-IR waits on 5 |
 | **10. Analog synths** (mono+glide, poly Prophet/OB) | native subtractive engine (shared) | **no** | glide pairs with 7's legato/gate |
 | **11. Scale-space tools** | scale-mask library (data) + transpose features | **no** | harmonization waits on 7 |
-| **12. Tile inspector** (per-tile modifiers) | pure model + UI | no | composes with 1 & 7 |
+| **12. Tile inspector** (per-tile modifiers) — *shell + facts + transport + rename BUILT; per-tile modifiers ahead* | pure model + UI | no | composes with 1 & 7 |
 | **13. Instrument cleanup pass** (levels, weak controls, shared labels) | audio metering + DSP tuning | no | — |
-| **14. Patch catalog** (named patches + modeless catalog windows) | pure model + UI + a user-global store | no | reuses the inspector's pane shell (12); catalogs generalize |
+| **14. Patch catalog** (named patches + modeless catalog windows) — *Phases A–C BUILT; D (groups/tags) & E (drag-to-lane) ahead* | pure model + UI + a user-global store | no | reuses the inspector's pane shell (12); catalogs generalize |
 
 Two corrections to flag up front, because they change sequencing:
 

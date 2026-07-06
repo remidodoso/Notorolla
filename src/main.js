@@ -7,8 +7,8 @@ import { Note, Score } from './model.js';
 import { Pattern, BASE_PITCH, DURATIONS, DEFAULT_ARTIC } from './grid.js';
 import { PatternLibrary, Arrangement, laneColor, insertPoint, deletePoint } from './library.js';
 import { enumerateTriadulations, familiesFor, familyLabel, chordsFor } from './triads.js';
-import { generateRandom, applyDurationBias, applyAccentBias, RANDOM_DEFAULTS } from './random.js';
-import { edoOf, tuningFreq, pitchClassName, degreeBounds, nearestDegreeToFreq, TUNING_LIST } from './tuning.js';
+import { generateRandom, applyDurationBias, applyAccentBias, scaleWindow, RANDOM_DEFAULTS } from './random.js';
+import { edoOf, tuningFreq, pitchClassName, degreeBounds, nearestDegreeToFreq, degreeToName, TUNING_LIST } from './tuning.js';
 import { scalesFor, scaleValidForEdo, scaleById } from './scales.js';
 import { notesToMidi } from './midi.js';
 import { encodeWav, encodeBwf } from './wav.js';
@@ -2154,6 +2154,7 @@ function runRandomModal(mode) {
     accentBias: cl(saved.accentBias, -1, 1, RANDOM_DEFAULTS.accentBias),
     durSort: saved.durSort === true,       // false = steer generation (default), true = post-hoc sort
     accentSort: saved.accentSort === true,
+    range: Math.round(cl(saved.range, 0, 24, RANDOM_DEFAULTS.range)), // 0 = unlimited, else 1..24 scale degrees
   };
 
   const src = library.current();
@@ -2172,6 +2173,38 @@ function runRandomModal(mode) {
   let genPattern = null;
   let accepted = false;
 
+  // In-modal back/redo: an ephemeral linear stack of { columns, settings } snapshots.
+  // Every Randomize (incl. the auto-roll = state 0) pushes; ‹ / › restore a snapshot's
+  // pattern AND settings; a fresh roll truncates the forward history. Reset and plain
+  // slider/checkbox moves don't touch it. Session-scoped (fresh each open); soft cap.
+  const HIST_CAP = 500;
+  const hist = [];
+  let histIdx = -1;
+  let backBtn = null, fwdBtn = null;
+  const captureState = () => ({ columns: JSON.parse(JSON.stringify(target().columns)), settings: { ...settings } });
+  function pushState() {
+    hist.length = histIdx + 1;       // drop any forward (redo) history
+    hist.push(captureState());
+    while (hist.length > HIST_CAP) hist.shift();
+    histIdx = hist.length - 1;
+    updateNavButtons();
+  }
+  function restoreState(i) {
+    if (i < 0 || i >= hist.length) return;
+    histIdx = i;
+    const st = hist[i];
+    Object.assign(settings, st.settings);         // sliders/checkboxes → this snapshot's settings
+    for (const s of sliders) { s.input.value = String(settings[s.key]); s.show(); }
+    for (const c of checkboxes) c.input.checked = !!settings[c.key];
+    target().columns = JSON.parse(JSON.stringify(st.columns)); // pattern → this snapshot's pitches
+    refresh();
+    updateNavButtons();
+  }
+  function updateNavButtons() {
+    if (backBtn) backBtn.disabled = histIdx <= 0;
+    if (fwdBtn) fwdBtn.disabled = histIdx >= hist.length - 1;
+  }
+
   // The pattern the roll writes into: the current one (in place), or a lazily-minted new one.
   const target = () => {
     if (mode !== 'new') return src;
@@ -2187,7 +2220,9 @@ function runRandomModal(mode) {
 
   // Slider rows. Each: label, range input, live value readout — plus, for the bias
   // rows, a "Sort" checkbox choosing the mechanism (off = steer generation so Run/Triad
-  // survive; on = post-hoc re-pair, stronger but scrambles arpeggios). Toggling it re-rolls.
+  // survive; on = post-hoc re-pair, stronger but scrambles arpeggios). Nothing but
+  // Randomize (and the ‹ › history nav) ever touches the grid — a setting change just
+  // stages the next roll.
   const sliders = [];
   const checkboxes = [];
   const row = (label, min, max, key, fmt, title, enabled = true, disabledNote = '(uniform rhythm)', sortKey = null) => {
@@ -2211,7 +2246,7 @@ function runRandomModal(mode) {
       wrap.title = 'Sort: re-pair the finished pitches by this bias (stronger, but breaks Run/Triad arpeggios). Off = steer generation so those shapes survive.';
       const cb = document.createElement('input');
       cb.type = 'checkbox'; cb.checked = !!settings[sortKey]; cb.disabled = !enabled;
-      cb.addEventListener('change', () => { settings[sortKey] = cb.checked; doRandomize(); });
+      cb.addEventListener('change', () => { settings[sortKey] = cb.checked; }); // a plain setting — takes effect on the next Randomize
       const t = document.createElement('span'); t.textContent = 'Sort';
       wrap.append(cb, t);
       r.append(wrap);
@@ -2220,6 +2255,29 @@ function runRandomModal(mode) {
     body.append(r);
     sliders.push({ key, input, show });
   };
+  // Range: the pool size (distinct in-scale degrees, centered on the grid view).
+  // Its own row — integer 0..24 with a note-name readout instead of a % — and it
+  // rides `sliders` so Reset restores it. 0 (far left) = unlimited (one per note).
+  {
+    const r = document.createElement('div');
+    r.className = 'delay-row';
+    r.title = 'Range — the maximum number of distinct scale degrees the melody may use, centered on the grid view. Far left = unlimited (one degree per note). Fewer degrees than notes → pitches must repeat; more → a wider, gappier spread.';
+    const l = document.createElement('span'); l.className = 'delay-label'; l.textContent = 'Range';
+    const input = document.createElement('input');
+    input.type = 'range'; input.min = '0'; input.max = '24'; input.step = '1'; input.value = String(settings.range);
+    const val = document.createElement('span'); val.className = 'delay-val';
+    const show = () => {
+      if (!settings.range) { val.textContent = 'unlimited'; return; }
+      const centroid = Math.round(state.topDegree - (state.visibleRows - 1) / 2);
+      const w = scaleWindow({ count: settings.range, centroid, scaleId: ctx.scaleId, root: ctx.root, edo: edoOf(ctx.tuningId), bounds: degreeBounds(ctx.tuningId, ctx.root) });
+      val.textContent = w.length ? `${degreeToName(w[0], ctx.tuningId)}–${degreeToName(w[w.length - 1], ctx.tuningId)}` : '—';
+    };
+    input.addEventListener('input', () => { settings.range = +input.value; show(); });
+    show();
+    r.append(l, input, val);
+    body.append(r);
+    sliders.push({ key: 'range', input, show });
+  }
   row('Unique', 0, 1, 'unique', (v) => `${Math.round(v * 100)}%`,
     'How strictly pitches avoid repeating: 100% = never reuse a degree (a tone row); lower = repeats allowed.');
   row('Run', -1, 1, 'run', (v) => (Math.abs(v) < 0.005 ? '0' : `${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}`),
@@ -2271,6 +2329,7 @@ function runRandomModal(mode) {
       });
     }
     refresh();
+    pushState(); // this roll (and its settings) becomes a history entry
   }
 
   // Play the previewed pattern once through the grid's audition patch.
@@ -2310,7 +2369,9 @@ function runRandomModal(mode) {
     actions.append(b);
     return b;
   };
+  backBtn = mkbtn('‹', 'seg rand-nav', 'Back — recall the previous roll and its settings', () => restoreState(histIdx - 1));
   mkbtn('Randomize', 'seg', 'Generate (or re-generate) a candidate — previewed live on the grid', doRandomize);
+  fwdBtn = mkbtn('›', 'seg rand-nav', 'Redo — the roll you backed over', () => restoreState(histIdx + 1));
   mkbtn('♪ Audition', 'seg', 'Play the previewed pattern once', doAudition);
   mkbtn('Reset', 'seg', 'Restore the sliders to their defaults', () => {
     Object.assign(settings, RANDOM_DEFAULTS);

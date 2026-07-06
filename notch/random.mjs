@@ -1,5 +1,5 @@
 // New Random generator: window placement, scale masking, uniqueness, runs, triads.
-import { scaleWindow, generateRandom, applyDurationBias, applyAccentBias, RANDOM_DEFAULTS } from '../src/random.js';
+import { scaleWindow, generateRandom, applyDurationBias, applyAccentBias, runStaircase, RANDOM_DEFAULTS } from '../src/random.js';
 import { inScale } from '../src/scales.js';
 import { chordsFor, familiesFor, classifyTriad } from '../src/triads.js';
 import { degreeBounds } from '../src/tuning.js';
@@ -259,6 +259,46 @@ ok(RANDOM_DEFAULTS.durSort === false && RANDOM_DEFAULTS.accentSort === false, 'd
   }
   ok(triples > 0, 'triad character survives steer bias (harmonic triples still form)');
   ok(outs.size > 1, 'triad + max bias still yields multiple distinct arrangements');
+}
+
+// --- range: pool size decoupled from note count ----------------------------
+{
+  // range < count → the pool is only `range` degrees, so notes must repeat.
+  const d = generateRandom({ count: 12, centroid: 66, ...base12, settings: { range: 3, unique: 1 }, rng: rng32(9) });
+  ok(d.length === 12, 'range: still generates `count` notes');
+  ok(new Set(d).size <= 3, `range 3 → at most 3 distinct degrees (got ${new Set(d).size})`);
+}
+{
+  // range > count → wider pool, still unique, spread over a bigger span.
+  const wSmall = scaleWindow({ count: 5, centroid: 66, ...base12 });
+  const wWide = scaleWindow({ count: 20, centroid: 66, ...base12 });
+  const d = generateRandom({ count: 5, centroid: 66, ...base12, settings: { range: 20, unique: 1 }, rng: rng32(3) });
+  ok(new Set(d).size === 5, 'range > count: still 5 distinct notes');
+  const span = Math.max(...d) - Math.min(...d);
+  ok((wWide[wWide.length - 1] - wWide[0]) > (wSmall[wSmall.length - 1] - wSmall[0]), 'range > count widens the available pool');
+  ok(d.every((x) => x >= wWide[0] && x <= wWide[wWide.length - 1]), 'range > count: notes drawn from the wide pool');
+}
+
+// --- full-run staircase (the "no flat top" fix) ----------------------------
+{
+  // runStaircase: sorted window when R == count.
+  const w = [10, 11, 12, 13];
+  ok(runStaircase(w, 4, 1).join(',') === '10,11,12,13', 'staircase R=count → sorted window (asc)');
+  ok(runStaircase(w, 4, -1).join(',') === '13,12,11,10', 'staircase desc → reversed window');
+  // R < count → even repeats, monotonic, no flat top.
+  const w3 = [20, 21, 22];
+  ok(runStaircase(w3, 8, 1).join(',') === '20,20,20,21,21,21,22,22', 'staircase R<count → even repeats, ends on the top');
+  const asc = runStaircase(w3, 8, 1);
+  ok(asc.every((x, i) => i === 0 || x >= asc[i - 1]), 'staircase is monotonic non-decreasing');
+  ok(asc[asc.length - 1] === 22, 'staircase reaches the top (no flat-top short of it)');
+}
+{
+  // Full run through generateRandom with range < count → the staircase (repeats,
+  // reaches top, monotonic) rather than a ramp-then-random.
+  const d = generateRandom({ count: 9, centroid: 66, ...base12, settings: { range: 3, run: 1 }, rng: rng32(1) });
+  ok(new Set(d).size === 3 && d.every((x, i) => i === 0 || x >= d[i - 1]), 'full run, range 3: monotonic staircase over 3 degrees');
+  const dn = generateRandom({ count: 9, centroid: 66, ...base12, settings: { range: 3, run: -1 }, rng: rng32(1) });
+  ok(dn.every((x, i) => i === 0 || x <= dn[i - 1]), 'full run negative: descending staircase');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

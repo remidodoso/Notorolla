@@ -5,6 +5,21 @@ own sound (no audio samples), runs from plain files, no build step, no dependenc
 
 ---
 
+## Notes from user to agent - DO NOT MODIFY
+
+This is the document to consult for status and detailed progress.
+
+Keep this document updated in moderate detail. "Future directions" is strategic and used for discussing "big picture" items.
+
+Organization: See "file map" below and keep it maintained.
+
+Commits: The user performs all commits. There is no need to discuss this or provide reminders.
+
+Discussion vs Implementation: The user strongly prefers to discuss before implementation. The user indicates "ready to implement" with the phrase "make it so." Do not implement a change without seeing the phrase: "Make it so."
+
+## END OF DO NOT MODIFY
+
+
 ## Vision & aesthetic
 
 - Long arc: algorithmic composition starting near 12-tone ideas and going "wherever the
@@ -623,7 +638,23 @@ scroll offset, bracket it with a save/restore — don't rely on the belt alone. 
   it — live from the auto-roll), **Cancel/Esc** (restores). Settings persist in `notorolla.randgen`.
   The result **inherits the source's tuning/scale/root** (and now its rhythm). Pure generator (`generateRandom`,
   injectable rng) — headless-tested incl. run extremes, triad bias, 16-ET Mavila, short-ladder reuse.
-  *Deferred (user):* generator **presets**, more controls (e.g. articulation/rhythm randomization).
+  - **Range slider + back/redo history — BUILT (2026-07-06).** A **Range** slider (its own row, top of the
+    modal): the **max number of distinct in-scale degrees** the melody may use, a pool **centered on the grid
+    view** — far left = **unlimited** (= note count, the classic tone row); else **1..24** with a **note-span
+    readout** ("E4–G#4"). `windowSize = range || count` in `generateRandom`; **range < count → pitches repeat**,
+    **range > count → a wider, gappier spread**. **Full run (|run|=1) is now an even monotonic *staircase***
+    across the pool (`runStaircase`) — the sorted window when range==count, evenly-repeating steps when range <
+    count (no ramp-then-flat-top — the case the user flagged), evenly-spaced when range > count. **`<` back /
+    `>` redo** flank Randomize: an **ephemeral per-session** linear stack of `{ columns, settings }` — every
+    Randomize (incl. the **auto-roll = state 0**) pushes; nav restores that snapshot's **pattern AND sliders**;
+    a fresh roll truncates the forward history; disabled at the ends (open = both grayed, first Randomize lights
+    `<`); soft cap 500. **Reset** and plain slider/checkbox moves don't touch the stack; **Accept** persists the
+    (possibly backed-up) current settings. **Sort demoted** to a plain setting — toggling it **no longer
+    re-rolls** (nothing but Randomize / nav touches the grid now). `notch/random.mjs` 64 (range + staircase).
+    Verified in-browser (Chrome/Playwright): range readout, exact pattern+settings restore on back/redo, nav
+    enable/disable sequence, Sort-no-reroll.
+  *Deferred (user):* generator **presets**, more controls (e.g. articulation/rhythm randomization); modeless
+  New Random (down the road — modal for now).
 - **Opening a pattern auto-centers the pitch viewport** on its notes (`centerGridOn`: midpoint of
   the note span, clamped to the pattern's navigable range), so a pattern a couple octaves away doesn't
   land off-screen. Applies on double-click-open a tile, Restore, and project load; a note-less
@@ -652,11 +683,14 @@ scroll offset, bracket it with a save/restore — don't rely on the belt alone. 
 - **Undo/redo is per-pattern**; the tile lane has its own append/delete undo.
 
 ### Tile player (the arrangement)
-- **Parallel lanes** — **2 by default**, and you can **add more** via a thin "+" row at the bottom
-  of the lane stack (`addLane`; new lane is empty and becomes active; undoable, persisted; New
+- **Parallel lanes** — **2 by default**, and you can **add more** via an **"+ Lane"** button at the
+  bottom of the lane stack (`addLane`; new lane is empty and becomes active; undoable, persisted; New
   Project resets to 2). No hard cap. Lane colors are auto-assigned (`laneColor`: the established
   blue/orange first, then golden-angle HSL hues). *Removing* lanes is deferred (likely a right-click
-  menu later). Each lane is an ordered set of positioned tile references.
+  menu later). Each lane is an ordered set of positioned tile references. **Add button reworked
+  (2026-07-06):** it's a **pinned enclosure the width of a lane head** (`position:sticky; left:0`, like
+  the heads) sitting **below and aligned with the lane stack** — bigger (dashed 202×34 box) and it **no
+  longer scrolls away** with the tracks (the old tiny 22×20 "+" was un-pinned and slid off on h-scroll).
 - Drag the grid's **grab handle** into a lane to drop a tile (a width-proportional
   thumbnail; note bars colored by duration; bordered in lane color; name centered).
 - **Fresh-lane instrument seeding**: dropping into a **fresh** lane (`lane.fresh` — brand-new or
@@ -771,6 +805,8 @@ scroll offset, bracket it with a save/restore — don't rely on the belt alone. 
   inspector is now its first tenant** (behavior-preserving; smoke test 34/34). CSS chrome classes renamed
   `.inspector*` → `.panel*`; the inspector keeps its own content classes. This is **Phase A** of the Patch
   Catalog (future_directions §14) — the shared shell the catalog (and future pop-out windows) build on.
+  **Border QoL (user):** all `.panel` tenants got a **clearer 2px border** (brighter `#4a5670`, up from 1px
+  `#2a3040`) so the modeless windows read as distinctly framed.
 - **Tile Inspector — first cut BUILT (2026-07-05)** ([src/inspector.js](src/inspector.js) + a "Tile
   Inspector" button in the tile-player top row, after Export Stems). The first of an intended family of
   **modeless windows** (future_directions §12). Deliberately **not** a modal: it stays open, blocks
@@ -817,7 +853,10 @@ scroll offset, bracket it with a save/restore — don't rely on the belt alone. 
   only. *Deferred:* using the friendly name in clone lineage. `notch/label.mjs` (7). Smoke-tested
   headless against a DOM mock (create/show/hide/toggle/persist/drag/
   facts/transport/rename, 34/34). See the **Scroll discipline** section: the page-jump-on-tile-drag fix
-  (`TilePlayer.render()` now restores the window scroll too) landed alongside this.
+  (`TilePlayer.render()` now restores the window scroll too) landed alongside this. **Follow-up
+  (2026-07-06):** that window-scroll restore must run **BEFORE `_flip`** measures client rects — placed
+  after, FLIP read the "after" positions while the page was still clamped from the innerHTML wipe and
+  animated a bogus vertical delta (a **jerk/bounce** on tile pickup and drag-across-row). Order fixed.
 - Both lanes share **one horizontal time axis** (a single scale `tilePlayer.ppb`, one shared
   scroll, common origin), so tiles **align in time** across lanes. Tiles are **freely positioned**:
   each carries an explicit **`start` beat** (snapped to the 1/4-note grid = integer beats), so gaps

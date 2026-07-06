@@ -401,12 +401,13 @@ export class TilePlayer {
       c.append(laneEl);
     });
 
-    // A thin row at the bottom with a "+" on the left to add another lane.
+    // Add-lane row: a pinned enclosure the width of a lane head (sticky like the
+    // heads), below and aligned with the lane stack.
     const addRow = document.createElement('div');
     addRow.className = 'lane-add';
     const addBtn = document.createElement('button');
     addBtn.className = 'lane-add-btn';
-    addBtn.textContent = '+';
+    addBtn.textContent = '+ Lane';
     addBtn.title = 'Add a lane';
     addBtn.addEventListener('click', () => this.cb.onAddLane());
     addRow.append(addBtn);
@@ -417,8 +418,12 @@ export class TilePlayer {
     if (this._playheadBeat != null) this.setPlayhead(this._playheadBeat); // re-place after the rebuild
     this.syncSelHandle(!!preview); // repeat handle (hidden while a drag preview is showing)
 
-    if (before) this._flip(before);
+    // Restore the page scroll BEFORE the FLIP measures client rects — otherwise
+    // FLIP reads the "after" positions while the page is still clamped from the
+    // innerHTML wipe, computing a bogus vertical delta that animates as a jerk/
+    // bounce when you pick up or drag a tile.
     if (window.scrollX !== winX || window.scrollY !== winY) window.scrollTo(winX, winY);
+    if (before) this._flip(before);
   }
 
   // Position the per-track playhead lines at `beat` (track-relative, so they
