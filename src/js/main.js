@@ -39,9 +39,7 @@ import { initMeter } from './app/meter.js';
 import { initHistory } from './app/history.js';
 import { initZoom } from './app/zoom.js';
 import { initScore } from './app/score.js';
-
-const LOOP_MAX = 8;
-const LOOP_STEP = 4;
+import { initTransport, LOOP_MAX, LOOP_STEP } from './app/transport.js';
 
 // The shared-context object: extracted controllers register their API on it and
 // read each other's (and main.js's) shared state/functions through it. Storage
@@ -256,39 +254,11 @@ function applyLaneReverbAll() {
   for (const lane of arrangement.lanes) engine.applyLaneReverb(lane.id);
 }
 
-// Beat position → "m:ss" wall-clock at the current tempo (for the range readout).
-function fmtClock(beats) {
-  const sec = Math.round(beats * (60 / state.bpm));
-  const m = Math.floor(sec / 60), s = sec % 60;
-  return `${m}:${String(s).padStart(2, '0')}`;
-}
-
+// The scheduler is constructed here (like the view instances) and registered on
+// ctx; app/transport.js drives it (onEnded/onCycle wiring, start/stop). It stays
+// ahead of initScore / initZoom, which read ctx.scheduler.
 const scheduler = new Scheduler(engine);
-// Natural finish (one-shot ended, loop passes exhausted): the playhead rewinds
-// to the beginning. A manual Stop parks it in place instead (see stop()).
-scheduler.onEnded = () => {
-  if (activeSource === 'tiles') {
-    state.playheadBeat = ctx.playStartBeat();
-    tilePlayer.setPlayhead(state.playheadBeat);
-    ensureTileVisible(state.playheadBeat); // follow the rewind back into view
-  }
-  ctx.resumeBeat = null;
-};
-scheduler.onCycle = (score) => { roll.setScore(score); };
 ctx.scheduler = scheduler;
-
-let activeSource = null; // 'grid' | 'tiles' | null — only one transport at a time
-
-// Resume (ArrowRight): the FIRST pass of the play that's being armed runs from
-// this beat instead of the region start; null = a normal from-the-top play.
-// Self-clearing — see windowedArrangementScore.
-ctx.resumeBeat = null;
-ctx.resumeStartTime = 0; // the scheduler startTime a pending resume was armed for
-// Display-side pass origin: the absolute beat the CURRENT pass began at. Equals
-// the resume point during a resumed first pass, the region start otherwise;
-// renderLoop flips it forward when the loop wraps.
-let passBase = 0;
-let lastCurBeat = 0;
 
 initScore(ctx); // score-building layer (activeScore is used just below)
 
@@ -473,10 +443,12 @@ Object.assign(ctx, {
   roll, tilePlayer,
   refresh, editGrid, recomputeDirty,
   applyLaneMix, applyLaneDelayAll, applyLaneChorusAll, applyLaneReverbAll,
+  setActive, applyLaneGains, syncInspectorTransport,
 });
 initMeter(ctx);
 initHistory(ctx);
 initZoom(ctx);
+initTransport(ctx);
 
 // In-memory Copy/Paste clipboards for the effect editors — one per effect type
 // (a delay can't paste onto a reverb). Cleared on reload; persists across modal
@@ -616,7 +588,7 @@ function onMixEnd() {
   if (mixBefore != null) ctx.arrCommit(mixBefore); // a net change → one undo step
   mixBefore = null;
   ctx.persist(); // autosave + dirty (knobs already drove the audio live)
-  updateTransportButtons(); // reflect the new arrangement-undo entry immediately
+  ctx.updateTransportButtons(); // reflect the new arrangement-undo entry immediately
 }
 
 // Add a lane (undoable arrangement edit) and make it active.
@@ -663,7 +635,7 @@ function applyLaneGains(rampSec) {
 // upcoming multi-select needs for range selection). A committed reorder's audio
 // lands at the next loop boundary, like other live edits.
 const DRAG_THRESH = 5; // px of movement before a press becomes a drag (else click)
-let tileDrag = null;   // { id, fromLaneId, preview } while a drag is active
+ctx.tileDrag = null;   // { id, fromLaneId, preview } while a drag is active
 
 // pointerdown on a tile: decide click vs drag from movement, via window-level
 // listeners (so they survive the re-renders the preview triggers).
@@ -708,16 +680,16 @@ function startTileDrag(id, grabX) {
   // Normalized grip (user's rule): square-ish tiles are held by the center; long
   // skinny ones where grabbed, but never closer than half the tile height to an
   // edge. Captured once (in beats) at pickup; the drop math subtracts it.
-  tileDrag = { id, fromLaneId: lane ? lane.id : null, preview: null, gripBeats: tilePlayer.gripFor(id, grabX) };
+  ctx.tileDrag = { id, fromLaneId: lane ? lane.id : null, preview: null, gripBeats: tilePlayer.gripFor(id, grabX) };
   // Dragging a member of a MULTI-selection moves/copies the whole selection as
   // a rigid block; dragging an unselected tile is a plain single-tile drag.
   if (arrangement.selectedIds.size > 1 && arrangement.selectedIds.has(id)) {
     const grabbed = arrangement.allTiles().find((t) => t.id === id);
     const block = arrangement.selectionBlock(ctx.patternLen);
-    tileDrag.multi = { grabbedStart: grabbed.start, blockStart: block.start };
+    ctx.tileDrag.multi = { grabbedStart: grabbed.start, blockStart: block.start };
   }
   tilePlayer.setPlaying(new Set()); // drop the green "playing" badge while dragging
-  tilePlayer.makeGhost(id, tileDrag.gripBeats * tilePlayer.ppb); // ghost hangs from the grip point
+  tilePlayer.makeGhost(id, ctx.tileDrag.gripBeats * tilePlayer.ppb); // ghost hangs from the grip point
 }
 
 function updateTileDrag(e) {
@@ -728,33 +700,33 @@ function updateTileDrag(e) {
   // grip, rounded) — the original grip-preserving feel. The caret switches to
   // carry mode and marks the landing's left edge (see setCarryCaret).
   let preview = null;
-  if (tgt && tileDrag.multi) {
+  if (tgt && ctx.tileDrag.multi) {
     // Multi-selection: the grabbed tile's destination sets a rigid shift for
     // the whole block (clamped so no member lands before beat 0); the plan
     // (with per-member collision blocking) is what the drop will commit.
-    const dest = Math.round(tgt.beat - tileDrag.gripBeats);
-    const shift = Math.max(dest - tileDrag.multi.grabbedStart, -tileDrag.multi.blockStart);
+    const dest = Math.round(tgt.beat - ctx.tileDrag.gripBeats);
+    const shift = Math.max(dest - ctx.tileDrag.multi.grabbedStart, -ctx.tileDrag.multi.blockStart);
     preview = {
       multi: arrangement.planSelectionDrop(tgt.laneId, shift, ctx.patternLen, copy),
-      shift, copy, toLaneId: tgt.laneId, fromLaneId: tileDrag.fromLaneId,
+      shift, copy, toLaneId: tgt.laneId, fromLaneId: ctx.tileDrag.fromLaneId,
     };
   } else if (tgt) {
-    preview = { id: tileDrag.id, fromLaneId: tileDrag.fromLaneId, copy, toLaneId: tgt.laneId, start: Math.max(0, Math.round(tgt.beat - tileDrag.gripBeats)) };
+    preview = { id: ctx.tileDrag.id, fromLaneId: ctx.tileDrag.fromLaneId, copy, toLaneId: tgt.laneId, start: Math.max(0, Math.round(tgt.beat - ctx.tileDrag.gripBeats)) };
   }
-  if (!samePreview(preview, tileDrag.preview)) {
-    tileDrag.preview = preview;
+  if (!samePreview(preview, ctx.tileDrag.preview)) {
+    ctx.tileDrag.preview = preview;
     tilePlayer.render(preview, true); // animate the live ripple
   }
-  if (preview) tilePlayer.setCarryCaret(preview.toLaneId, preview.multi ? tileDrag.multi.blockStart + preview.shift : preview.start);
+  if (preview) tilePlayer.setCarryCaret(preview.toLaneId, preview.multi ? ctx.tileDrag.multi.blockStart + preview.shift : preview.start);
   else tilePlayer.setCarryCaret(null); // off the lanes — a drop would cancel
   tilePlayer.moveGhost(e.clientX, e.clientY, copy);
 }
 
 function endTileDrag(e) {
-  const preview = tileDrag.preview;
+  const preview = ctx.tileDrag.preview;
   tilePlayer.clearGhost();
   tilePlayer.setCarryCaret(null); // back to hover mode
-  tileDrag = null;
+  ctx.tileDrag = null;
 
   if (!preview) { refresh(); return; } // dropped off the lanes → cancel
   const copy = e.ctrlKey;              // authoritative copy state at the drop
@@ -948,7 +920,7 @@ function commitRange(kind, s, e, keepArmed) {
     arrangement.deleteTime(s, e);
     state.playheadBeat = deletePoint(state.playheadBeat, s, e);
   }
-  state.playheadBeat = clampPlayhead(state.playheadBeat);
+  state.playheadBeat = ctx.clampPlayhead(state.playheadBeat);
   tilePlayer.setPlayhead(state.playheadBeat);
   ctx.arrCommit(before); // no-op when the range touched nothing
   if (!keepArmed) disarmRangeTool();
@@ -1222,17 +1194,17 @@ async function auditionTile(id, { loop = false } = {}) {
   const now = await engine.ensureRunning();
   if (engine.modEpoch == null) engine.modEpoch = now;
   scheduler.stop();
-  activeSource = 'audit';
-  auditTileId = id;
+  ctx.activeSource = 'audit';
+  ctx.auditTileId = id;
   applyLaneGains(0); // mute/solo bus state before the first note
   // loop = the app's LIMITED loop: LOOP_STEP passes counting down (never endless
   // — there is no infinite loop; a counted loop is the cure for loop burn-in).
   scheduler.start(() => score, now + 0.05, loop ? LOOP_STEP : 1, loop);
   tilePlayer.setPlaying(new Set([id])); // the green "playing" badge on the auditioned tile
-  startRender();
-  updateTransportButtons();
+  ctx.startRender();
+  ctx.updateTransportButtons();
 }
-let auditTileId = null; // which tile the 'audit' source is sounding (inspector transport + badge)
+ctx.auditTileId = null; // which tile the 'audit' source is sounding (inspector transport + badge)
 let tileInspector = null; // the Tile Inspector floating pane (created in the wiring tail below)
 let catalog = null;       // the Patch Catalog floating pane (created below)
 
@@ -1244,8 +1216,8 @@ function inspectorPlay() {
   auditionTile(arrangement.selectedId, { loop: false });
 }
 function inspectorStop() {
-  if (activeSource !== 'audit') return; // only controls its own playback
-  stop();
+  if (ctx.activeSource !== 'audit') return; // only controls its own playback
+  ctx.stop();
 }
 // Loop tap: stack passes (the LIMITED, counted loop). If this same tile is
 // already auditing, add LOOP_STEP passes (capped) without restarting; else start
@@ -1253,10 +1225,10 @@ function inspectorStop() {
 function inspectorLoop() {
   const id = arrangement.selectedId;
   if (id == null) return;
-  if (activeSource === 'audit' && scheduler.isPlaying && auditTileId === id) {
+  if (ctx.activeSource === 'audit' && scheduler.isPlaying && ctx.auditTileId === id) {
     scheduler.loop = true;
     scheduler.remaining = Math.min(scheduler.remaining + LOOP_STEP, LOOP_MAX);
-    updateTransportButtons();
+    ctx.updateTransportButtons();
     return;
   }
   auditionTile(id, { loop: true });
@@ -1265,7 +1237,7 @@ function inspectorLoop() {
 // Reflect transport state onto the inspector's play/stop/loop cluster.
 function syncInspectorTransport() {
   if (!tileInspector) return; // not built yet during init, or no inspector
-  const auditing = activeSource === 'audit' && scheduler.isPlaying;
+  const auditing = ctx.activeSource === 'audit' && scheduler.isPlaying;
   tileInspector.setTransport({
     canPlay: arrangement.selectedId != null,
     playing: auditing,
@@ -1721,36 +1693,6 @@ function applyActiveHighlight() {
 
 const rollScroll = document.getElementById('rollScroll');
 
-// Playback auto-follow is PAGE-JUMP scrolling (DAW-style), not continuous: the
-// view holds still while the playhead sweeps across it, and JUMPS a page (the
-// playhead re-enters at the left margin) only when it runs off the right edge.
-// Scrolling the whole track layer a little every frame was the remaining
-// playback scroll cost — an occasional jump is cheap (and easier to watch).
-function ensureRollVisible(x) {
-  const el = rollScroll;
-  const headW = roll.gutter ? roll.gutter.width : 0; // the pinned label gutter overlays the left edge
-  const margin = 60;
-  if (x > el.scrollLeft + el.clientWidth - margin || x < el.scrollLeft + headW) {
-    el.scrollLeft = Math.max(0, x - headW - margin);
-  }
-}
-
-// Same page-jump follow for the tile player. The playhead's x within the scroll
-// content is the (sticky) lane-header width plus its track position, so a jump
-// lands it just right of the header, never behind it.
-let laneHeadW = 0; // sticky head width — runtime-constant, read from the DOM once
-function ensureTileVisible(beat) {
-  const el = document.getElementById('tileLane');
-  if (!laneHeadW) {
-    const head = el.querySelector('.lane-head');
-    laneHeadW = head ? head.offsetWidth : 0;
-  }
-  const x = laneHeadW + beat * tilePlayer.ppb;
-  const margin = 80;
-  if (x > el.scrollLeft + el.clientWidth - margin || x < el.scrollLeft + laneHeadW) {
-    el.scrollLeft = Math.max(0, x - laneHeadW - margin);
-  }
-}
 function scrollRollToSelected() {
   if (scheduler.isPlaying) return; // playback drives the scroll itself
   if (ctx.activePane === 'tiles' && arrangement.selectedId != null) {
@@ -1779,9 +1721,9 @@ function tuningsInUse(tilesView) {
 }
 
 function updateRollContent() {
-  const tilesView = scheduler.isPlaying ? activeSource === 'tiles' : ctx.activePane === 'tiles';
+  const tilesView = scheduler.isPlaying ? ctx.activeSource === 'tiles' : ctx.activePane === 'tiles';
   const score = scheduler.isPlaying
-    ? (activeSource === 'tiles' ? ctx.arrangementScore() : ctx.buildScore())
+    ? (ctx.activeSource === 'tiles' ? ctx.arrangementScore() : ctx.buildScore())
     : ctx.activeScore();
   roll.tunings = tuningsInUse(tilesView); // before setScore — affects gutter sizing
   roll.setScore(score);
@@ -2420,14 +2362,14 @@ function refresh() {
   // unit): started tiles stay, not-yet-started tiles are taken live, the cycle
   // end follows the live length. Grid playback commits whole-pattern at the loop
   // boundary, so it isn't resynced here.
-  if (scheduler.isPlaying && activeSource === 'tiles') scheduler.resync();
+  if (scheduler.isPlaying && ctx.activeSource === 'tiles') scheduler.resync();
   gridName.textContent = library.currentName;
   updateEditButtons();
   updateTriadulateButtons();
   updateSelectionTools();
   updateReferenceEnable();
   updateScaleControls();
-  updateTransportButtons();
+  ctx.updateTransportButtons();
   refreshTransformBar();
   ctx.persist();
   if (window.scrollX !== sx || window.scrollY !== sy) window.scrollTo(sx, sy);
@@ -2621,7 +2563,7 @@ async function openProject(file) {
     return;
   }
   if (dirty && !confirm('You have unsaved changes. Open this project and discard them?')) return;
-  stop();
+  ctx.stop();
   loadContent(env);
   projectName = env.name || file.name.replace(/\.json$/i, '');
   markClean();
@@ -2629,7 +2571,7 @@ async function openProject(file) {
 
 function newProject() {
   if (dirty && !confirm('You have unsaved changes. Start a new project and discard them?')) return;
-  stop();
+  ctx.stop();
   loadContent({ lib: { patterns: [], counter: 0, currentName: null, parkedName: null }, arr: {}, tempo: 120 });
   projectName = null;
   markClean();
@@ -2676,9 +2618,9 @@ function exportMidi() {
 //   tailSec     ring-out after the region end (default computeTail())
 // The region is always shifted so its start is file time 0 (a mixdown has no
 // notion of an offset — plain WAV, no BWF metadata).
-let exporting = false;
+ctx.exporting = false;
 async function exportAudio(opts = {}) {
-  if (exporting || arrangement.allTiles().length === 0) return;
+  if (ctx.exporting || arrangement.allTiles().length === 0) return;
   const score = ctx.arrangementScore();
   const spb = 60 / state.bpm;
   const sampleRate = opts.sampleRate || 48000;
@@ -2715,7 +2657,7 @@ async function exportAudio(opts = {}) {
 // Quick Export and Export Audio… share the `exporting` flag, so both disable and
 // read "Rendering…" while a mixdown runs.
 function setExporting(on) {
-  exporting = on;
+  ctx.exporting = on;
   exportProgEl.classList.toggle('on', on);
   const haveTiles = arrangement.allTiles().length > 0;
   quickExportBtn.textContent = on ? 'Rendering…' : 'Quick Export';
@@ -2740,9 +2682,9 @@ function safeFileName(s) {
 // into every stem. 0 = "region start is time 0" (stems align to each other);
 // a nonzero value = the region's absolute sample offset, so the DAW re-places the
 // set at its true project position on Import-at-Origin.
-let exportingStems = false;
+ctx.exportingStems = false;
 async function exportStems(opts = {}) {
-  if (exportingStems || arrangement.allTiles().length === 0) return;
+  if (ctx.exportingStems || arrangement.allTiles().length === 0) return;
   const busMode = opts.busMode || 'dry';
   const score = ctx.arrangementScore();
   const spb = 60 / state.bpm;
@@ -2799,7 +2741,7 @@ async function exportStems(opts = {}) {
 }
 
 function setExportingStems(on) {
-  exportingStems = on;
+  ctx.exportingStems = on;
   exportProgEl.classList.toggle('on', on);
   stemExportBtn.textContent = on ? 'Rendering…' : 'Export Stems…';
   stemExportBtn.disabled = on || arrangement.allTiles().length === 0;
@@ -2841,9 +2783,9 @@ function exportRangeControls(body) {
     lab.append(radio, span);
     return lab;
   };
-  rangeWrap.append(mkRange('entire', 'Entire project', `(end beat ${+fullEnd.toFixed(2)} · ${fmtClock(fullEnd)})`, false));
+  rangeWrap.append(mkRange('entire', 'Entire project', `(end beat ${+fullEnd.toFixed(2)} · ${ctx.fmtClock(fullEnd)})`, false));
   const markerDetail = markersSet
-    ? `Start beat ${+startBeat.toFixed(2)} (${fmtClock(startBeat)}) — End beat ${+endBeat.toFixed(2)} (${fmtClock(endBeat)})`
+    ? `Start beat ${+startBeat.toFixed(2)} (${ctx.fmtClock(startBeat)}) — End beat ${+endBeat.toFixed(2)} (${ctx.fmtClock(endBeat)})`
     : '(no markers set)';
   rangeWrap.append(mkRange('markers', 'Between markers', markerDetail, !markersSet));
   const rangeRow = document.createElement('div'); rangeRow.className = 'export-row';
@@ -2870,7 +2812,7 @@ function exportRangeControls(body) {
 
 // The Export Audio… dialog: rate / range / tail, then a single-file mixdown.
 function openAudioModal() {
-  if (exporting || arrangement.allTiles().length === 0) return;
+  if (ctx.exporting || arrangement.allTiles().length === 0) return;
   const body = document.createElement('div');
   body.className = 'stem-export';
   const intro = document.createElement('p');
@@ -2905,7 +2847,7 @@ const STEM_MODES = [
     desc: 'As post-fader, plus the master limiter. Each stem sounds as it does soloed in the mix, but stems no longer sum exactly.' },
 ];
 function openStemModal() {
-  if (exportingStems || arrangement.allTiles().length === 0) return;
+  if (ctx.exportingStems || arrangement.allTiles().length === 0) return;
   const body = document.createElement('div');
   body.className = 'stem-export';
   const intro = document.createElement('p');
@@ -3040,55 +2982,7 @@ const audioExportBtn = document.getElementById('audioExport');
 const stemExportBtn = document.getElementById('stemExport');
 const tileInspectorBtn = document.getElementById('tileInspector');
 const exportProgEl = document.getElementById('exportProg');
-const modLoopBtn = document.getElementById('modLoop');
-const modClockEl = document.getElementById('modClock');
 const gridName = document.getElementById('gridName');
-
-// Global "Loop Mod" toggle: all modulators on ruler time (reset each loop pass)
-// vs elapsed time from the session's first Play. A workspace preference.
-modLoopBtn.className = 'tbtn' + (state.modLoop ? ' active' : '');
-modLoopBtn.addEventListener('click', () => {
-  state.modLoop = !state.modLoop;
-  modLoopBtn.classList.toggle('active', state.modLoop);
-  ctx.persist();
-});
-
-// "Lite Instruments" — a workspace preference (not part of the document): the
-// heavy voices (Wendelhorn, Nayumi) build a cheaper live graph to avoid dropouts.
-// Read fresh at every note-on, so toggling takes effect on the next note; offline
-// exports never see it, so a bounce is always the full voice.
-const liteBox = document.getElementById('liteInstruments');
-liteBox.checked = state.lite;
-liteBox.addEventListener('change', () => {
-  state.lite = liteBox.checked;
-  engine.lite = state.lite;
-  ctx.persist();
-});
-
-// The transport clock (mm:ss.hh). Stopped (or grid playing): the parked
-// playhead's position — regardless of Loop Mod. While the tiles play: the clock
-// the mods actually read — elapsed since the session's first Play, or the
-// playhead's ruler time when Loop Mod is on. Cheap fixed interval; only writes
-// the DOM when the text changes.
-function modClockText() {
-  let sec;
-  if (!(scheduler.isPlaying && activeSource === 'tiles')) {
-    sec = clampPlayhead(state.playheadBeat) * (60 / state.bpm);
-  } else if (state.modLoop) {
-    sec = (passBase + scheduler.currentBeat) * (60 / state.bpm);
-  } else {
-    sec = engine.modEpoch != null ? Math.max(0, engine.currentTime - engine.modEpoch) : 0;
-  }
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  const h = Math.floor((sec % 1) * 100);
-  const p2 = (n) => String(n).padStart(2, '0');
-  return `${p2(m)}:${p2(s)}.${p2(h)}`;
-}
-setInterval(() => {
-  const t = modClockText();
-  if (modClockEl.textContent !== t) modClockEl.textContent = t;
-}, 50);
 
 midiExportBtn.addEventListener('click', exportMidi);
 quickExportBtn.addEventListener('click', () => exportAudio()); // one-click defaults
@@ -3187,176 +3081,6 @@ function refreshTileInspector() {
   syncInspectorTransport(); // canPlay follows the anchor selection
 }
 
-let rafId = null;
-
-function renderLoop() {
-  // No roll playhead for a tile audition — the roll shows the arrangement (or
-  // grid pattern), not the one tile being auditioned, so a sweep would lie.
-  const rollBeat = scheduler.isPlaying && activeSource !== 'audit' ? scheduler.currentBeat : null;
-  roll.draw(rollBeat);
-  if (rollBeat != null) {
-    ensureRollVisible(roll.xForBeat(rollBeat));
-    if (activeSource === 'tiles') {
-      // The scheduler runs in pass-relative beats (the windowed score); the tile
-      // timeline is absolute, so add the pass origin back. When the position
-      // jumps backward the loop wrapped — passes after the first always start at
-      // the region start (a resume offsets only its own pass).
-      const cur = scheduler.currentBeat;
-      if (cur < lastCurBeat) passBase = ctx.playStartBeat();
-      lastCurBeat = cur;
-      const absBeat = passBase + cur;
-      // The playhead marks real playback position — shown even mid-drag.
-      tilePlayer.setPlayhead(absBeat);
-      ensureTileVisible(absBeat);
-      // The green "playing" badge is suppressed during a drag (prospective slots).
-      if (!tileDrag) tilePlayer.setPlaying(ctx.playingTileIds(absBeat));
-    } else {
-      tilePlayer.setPlayhead(state.playheadBeat); // grid playback: the parked playhead stays put
-    }
-  }
-  updateTransportButtons();
-  if (scheduler.isPlaying) {
-    rafId = requestAnimationFrame(renderLoop);
-  } else {
-    rafId = null;
-    activeSource = null;
-    tilePlayer.setPlaying(new Set());
-    tilePlayer.setPlayhead(state.playheadBeat); // parked — the playhead never hides
-    refresh();
-  }
-}
-
-function startRender() { if (rafId === null) renderLoop(); }
-
-async function startTransport(source, loop, fromBeat = null) {
-  if (source === 'tiles' && arrangement.allTiles().length === 0) return;
-  setActive(source);
-  const now = await engine.ensureRunning();
-  // The "elapsed" modulator clock's zero: the session's FIRST Play, counting up
-  // from there (later plays do NOT reset it — modulators keep evolving).
-  if (engine.modEpoch == null) engine.modEpoch = now;
-  scheduler.stop();
-  activeSource = source;
-  // Arm a resume only when it lands strictly inside the region — at/before the
-  // start it's just a normal play, at/after the end there'd be nothing to hear.
-  ctx.resumeBeat = source === 'tiles' && fromBeat != null
-    && fromBeat > ctx.playStartBeat() && fromBeat < ctx.playEndBeat() ? fromBeat : null;
-  ctx.resumeStartTime = now + 0.1;
-  passBase = ctx.resumeBeat != null ? ctx.resumeBeat : ctx.playStartBeat();
-  // -Infinity, NOT 0: playback starts 100 ms in the future, so the first frames'
-  // currentBeat is slightly NEGATIVE — seeding 0 would read that as a loop wrap
-  // and instantly reset passBase, drawing a resumed pass's playhead at the start.
-  lastCurBeat = -Infinity;
-  if (source === 'tiles') applyLaneGains(0); // set mute/solo before the first note
-  const provider = source === 'tiles' ? ctx.windowedArrangementScore : ctx.buildAuditionScore;
-  scheduler.start(provider, now + 0.1, loop ? LOOP_STEP : 1, loop);
-  startRender();
-  updateTransportButtons();
-}
-
-// Loop tap: queue, don't interrupt. If this source is already playing — whether
-// looping OR a one-shot still in progress — promote it to a loop in place and
-// add LOOP_STEP passes (capped), without restarting. Only a stopped/other source
-// starts fresh.
-function loopClick(source) {
-  if (activeSource === source && scheduler.isPlaying) {
-    scheduler.loop = true; // promote a one-shot in progress to a loop
-    scheduler.remaining = Math.min(scheduler.remaining + LOOP_STEP, LOOP_MAX);
-    updateTransportButtons();
-    return;
-  }
-  startTransport(source, true);
-}
-
-function stop() {
-  // A manual Stop parks the playhead where playback was (a natural finish
-  // rewinds it to the beginning instead — see scheduler.onEnded).
-  const wasTiles = scheduler.isPlaying && activeSource === 'tiles';
-  if (wasTiles) {
-    state.playheadBeat = clampPlayhead(passBase + scheduler.currentBeat);
-  }
-  scheduler.stop();
-  activeSource = null;
-  auditTileId = null;
-  ctx.resumeBeat = null;
-  tilePlayer.setPlaying(new Set());
-  tilePlayer.setPlayhead(state.playheadBeat);
-  refresh();
-  if (wasTiles) ensureTileVisible(state.playheadBeat); // stop with the playhead in view
-}
-
-// --- the parked playhead ------------------------------------------------
-// Where the tile transport sits when stopped (beats, absolute; always visible).
-// Space plays from the region start; ArrowRight resumes from the parked spot.
-
-function clampPlayhead(beat) {
-  return Math.max(0, Math.min(beat || 0, ctx.arrangementEndBeat()));
-}
-
-// Park the playhead (⏮/⏭ buttons, B/E keys) and scroll it into view. Stopped
-// transport only — live locate is a bigger feature, deliberately not this one.
-function movePlayhead(beat) {
-  if (scheduler.isPlaying) return;
-  state.playheadBeat = clampPlayhead(beat);
-  tilePlayer.setPlayhead(state.playheadBeat);
-  ensureTileVisible(state.playheadBeat);
-  ctx.persist();
-}
-
-// ArrowRight: play the arrangement from the parked playhead — one pass of
-// [playhead, region end); a Shift+Space loop promotion wraps to the region start.
-function resumePlay() {
-  if (scheduler.isPlaying || arrangement.allTiles().length === 0) return;
-  if (state.playheadBeat >= ctx.playEndBeat()) return; // parked at/after the end — nothing to play
-  startTransport('tiles', false, state.playheadBeat);
-}
-
-let transportSig = null; // last-applied state — this runs per animation frame
-function updateTransportButtons() {
-  const playing = scheduler.isPlaying;
-  const haveTiles = arrangement.allTiles().length > 0;
-  // Everything below derives from these inputs; skip the DOM when none changed.
-  const sig = `${playing}|${haveTiles}|${activeSource}|${scheduler.isLooping}|${scheduler.remaining}|${exporting}|${exportingStems}`;
-  if (sig === transportSig) return;
-  transportSig = sig;
-
-  playBtn.disabled = playing;
-  stopBtn.disabled = !playing;
-  tilePlayBtn.disabled = playing || !haveTiles;
-  tileStopBtn.disabled = !playing;
-  tileLoopBtn.disabled = !haveTiles;
-  phHomeBtn.disabled = phEndBtn.disabled = playing; // playhead parks only while stopped
-  midiExportBtn.disabled = !haveTiles;
-  quickExportBtn.disabled = exporting || !haveTiles;
-  audioExportBtn.disabled = exporting || !haveTiles;
-  stemExportBtn.disabled = exportingStems || !haveTiles;
-
-  const gridLooping = activeSource === 'grid' && scheduler.isLooping;
-  loopBtn.textContent = loopLabel(gridLooping);
-  loopBtn.classList.toggle('active', gridLooping);
-
-  const tilesLooping = activeSource === 'tiles' && scheduler.isLooping;
-  tileLoopBtn.textContent = loopLabel(tilesLooping);
-  tileLoopBtn.classList.toggle('active', tilesLooping);
-
-  syncInspectorTransport(); // mirror onto the inspector's play/stop/loop cluster
-}
-
-// Complete repeats still to come after the current pass; nothing on the last.
-function loopLabel(looping) {
-  if (!looping) return '↻';
-  const complete = scheduler.remaining - 1;
-  return complete > 0 ? `↻ ${complete}` : '↻';
-}
-
-loopBtn.addEventListener('click', () => loopClick('grid'));
-playBtn.addEventListener('click', () => startTransport('grid', false));
-stopBtn.addEventListener('click', stop);
-tileLoopBtn.addEventListener('click', () => loopClick('tiles'));
-tilePlayBtn.addEventListener('click', () => startTransport('tiles', false));
-tileStopBtn.addEventListener('click', stop);
-phHomeBtn.addEventListener('click', () => movePlayhead(ctx.playStartBeat()));
-phEndBtn.addEventListener('click', () => movePlayhead(ctx.playEndBeat()));
 arrUndoBtn.addEventListener('click', ctx.arrUndo);
 arrRedoBtn.addEventListener('click', ctx.arrRedo);
 tileDeleteBtn.addEventListener('click', deleteSelectedTile);
@@ -3369,14 +3093,6 @@ tb.grabHandle.addEventListener('dragstart', (e) => {
 // grid-drag landing preview.
 tb.grabHandle.addEventListener('dragend', () => clearGridDragPreview());
 
-tempo.value = state.bpm;
-tempoLabel.textContent = `${state.bpm} BPM`;
-tempo.addEventListener('input', () => {
-  state.bpm = Number(tempo.value);
-  tempoLabel.textContent = `${state.bpm} BPM`;
-  applyLaneDelayAll(); // delay time is tempo-synced
-  refresh();
-});
 
 // Deselect (Select None) for the active pane.
 function selectNone() {
@@ -3420,14 +3136,14 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     const src = tiles ? 'tiles' : 'grid';
     if (e.shiftKey) {
-      loopClick(src);
+      ctx.loopClick(src);
       flash(src === 'tiles' ? tileLoopBtn : loopBtn);
     } else if (scheduler.isPlaying) {
-      const playing = activeSource;
-      stop();
+      const playing = ctx.activeSource;
+      ctx.stop();
       flash(playing === 'tiles' ? tileStopBtn : stopBtn);
     } else {
-      startTransport(src, false);
+      ctx.startTransport(src, false);
       flash(src === 'tiles' ? tilePlayBtn : playBtn);
     }
     return;
@@ -3462,9 +3178,9 @@ window.addEventListener('keydown', (e) => {
   // Tile-player playhead (stopped transport only): B/E park it at the
   // beginning/end; ArrowRight resumes playback from wherever it's parked.
   if (tiles && !mod && !scheduler.isPlaying) {
-    if (k === 'b') { movePlayhead(ctx.playStartBeat()); flash(phHomeBtn); return; }
-    if (k === 'e') { movePlayhead(ctx.playEndBeat()); flash(phEndBtn); return; }
-    if (e.key === 'ArrowRight') { e.preventDefault(); resumePlay(); flash(tilePlayBtn); return; }
+    if (k === 'b') { ctx.movePlayhead(ctx.playStartBeat()); flash(phHomeBtn); return; }
+    if (k === 'e') { ctx.movePlayhead(ctx.playEndBeat()); flash(phEndBtn); return; }
+    if (e.key === 'ArrowRight') { e.preventDefault(); ctx.resumePlay(); flash(tilePlayBtn); return; }
   }
   if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !tiles) {
     e.preventDefault(); // scale-step within the active mask; Shift = a literal octave (equave)
@@ -3485,7 +3201,7 @@ buildTransformBar();
 refresh(); // selection starts empty (runtime-only, not persisted)
 // The parked playhead is always visible — restore it (clamped: the arrangement
 // may have shrunk since it was persisted).
-state.playheadBeat = clampPlayhead(state.playheadBeat);
+state.playheadBeat = ctx.clampPlayhead(state.playheadBeat);
 tilePlayer.setPlayhead(state.playheadBeat);
 // Restore the tile player's scroll (after the render above built the content;
 // the browser clamps if the arrangement shrank).

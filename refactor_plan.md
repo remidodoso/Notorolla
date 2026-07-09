@@ -1,9 +1,10 @@
 # Refactor plan — source-tree hierarchy + main.js split
 
-**Status: Phases 1–3 done (2026-07-09)** — P1: directory hierarchy + import repoint. P2: `ctx` stood
-up; `storage`/`meter`/`history`/`zoom` extracted. P3: `app/score.js` extracted (15 score fns); main.js
-now 3495 lines. notch green; awaiting user in-browser smoke test before Phase 4. Update this line as
-phases complete (e.g. "Phases 1–4 done (YYYY-MM-DD)").
+**Status: Phases 1–4 done (2026-07-09)** — P1: dir hierarchy + import repoint. P2: `ctx` stood up;
+`storage`/`meter`/`history`/`zoom`. P3: `app/score.js` (15 score fns). P4: `app/transport.js` (~330
+lines — scheduler wiring, render loop, playhead/buttons, tempo, mod-clock, lite, auto-scroll); main.js
+now 3209 lines. notch green; awaiting user in-browser smoke test before Phase 5. Update this line as
+phases complete (e.g. "Phases 1–5 done (YYYY-MM-DD)").
 
 Agreed with the user 2026-07-08. This document is the **complete instruction set** for a series of
 agent sessions. Each phase is one self-contained task ending in a green verification; **the user
@@ -433,3 +434,29 @@ Noted during planning (2026-07-08); executing agents append here rather than fix
   `reverbSeconds`, `patchRelease`.
 - **Tooling win:** this phase's word-form pass was clean (no string/comment over-reach beyond one
   self-inserted comment) — the audit-comments-and-strings-first step paid off.
+
+**Appended during Phase 4 (2026-07-09):**
+
+- **Scheduler construction stayed in main.js** (user-approved deviation from the Phase-4 text, option
+  A): `new Scheduler(engine)` is constructed + registered on ctx in main.js like the view instances,
+  and `transport.js` only *drives* it (onEnded/onCycle wiring, start/stop). This avoids reopening
+  score.js/zoom.js, which destructure `ctx.scheduler` before transport's late init. Consequence:
+  main.js's own `scheduler.*` uses stay bare; only transport.js uses `ctx.scheduler`.
+- **Five mutables promoted to ctx:** `activeSource` (home = transport, exposed on ctx; read by
+  audition/inspector/selection clusters), `tileDrag` (renderLoop reads it; writer = Phase-5 tileops),
+  `auditTileId` (`stop` clears it; writer = tileops), `exporting` + `exportingStems`
+  (`updateTransportButtons` reads them; writers = Phase-9 exportui). `passBase`/`lastCurBeat`/`rafId`
+  stayed transport-local, as the plan intends; `resumeBeat`/`resumeStartTime` were already ctx (P3).
+- **DOM-ref duplication (per §3):** every transport button is also flashed by the Phase-10 keyboard
+  handler (and tempo by projectio, the export buttons by exportui), so `transport.js` re-acquires its
+  own `getElementById` refs while main.js keeps its own. `modClockEl`/`modLoopBtn`/`liteBox` were
+  transport-only and moved.
+- **`LOOP_MAX`/`LOOP_STEP` became exported consts** from transport.js (imported by main.js; the
+  Phase-5 audition code at the tile-inspector still uses them).
+- **Registered `ctx.setActive`/`ctx.applyLaneGains`/`ctx.syncInspectorTransport`** (main.js residents
+  transport calls). `fmtClock` is now `ctx.fmtClock` (exportui's range readout uses it).
+- **Transport was scattered across three regions** (fmtClock+scheduler ~260, auto-scroll ~1720, the
+  bulk ~3020–3380) threaded through project-bar/export/inspector code — consolidated into one module.
+- **Tooling:** all scripts EOL-aware from the first line (per user note); assertions caught two
+  mistakes safely before any write (an off-by-one range end, and `let ctx.exporting` being a prefix of
+  `let ctx.exportingStems` in the decl-fix).
