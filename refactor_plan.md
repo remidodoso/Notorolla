@@ -6,9 +6,10 @@ lines — scheduler wiring, render loop, playhead/buttons, tempo, mod-clock, lit
 `app/tileops.js` (344) + `app/transformbar.js` (335) + `app/tileinspector.js` (148). P6:
 `app/patchedit.js` (459 — grid-instrument descriptors, edit pane, patch identity, catalog). P7:
 `app/lanefx.js` (228 — lane mixer/FX pushers, delay/chorus/reverb/mod modals, add-lane, reset). P8:
-`app/triadulator.js` (141) + `app/randomui.js` (325 — the New Random modal); main.js now 1415 lines.
-notch green; awaiting user in-browser smoke test before Phase 9. Update this line as phases complete
-(e.g. "Phases 1–9 done (YYYY-MM-DD)").
+`app/triadulator.js` (141) + `app/randomui.js` (325 — the New Random modal). P9: `app/projectio.js`
+(195 — project name/dirty, save/open/new, loadContent) + `app/exportui.js` (357 — MIDI/audio/stem
+export + dialogs); main.js now 896 lines. notch green; awaiting user in-browser smoke test before
+Phase 10 (keyboard + final sweep + docs). Update this line as phases complete.
 
 Agreed with the user 2026-07-08. This document is the **complete instruction set** for a series of
 agent sessions. Each phase is one self-contained task ending in a green verification; **the user
@@ -582,3 +583,29 @@ Noted during planning (2026-07-08); executing agents append here rather than fix
 - **~11 now-unused imports trimmed**: the whole `core/random` import, `enumerateTriadulations`/
   `chordsFor` (kept `familiesFor`/`familyLabel` — `updateScaleControls` uses them), `BASE_PITCH`/
   `DURATIONS`/`DEFAULT_ARTIC` (kept `Pattern`), and `degreeToName`/`TUNING_LIST`.
+
+**Appended during Phase 9 (2026-07-09):**
+
+- **The most scattered phase** — both modules' functions are contiguous, but their boot side-effects
+  and wiring were spread through the tail: projectio pulled from 4 ranges (state+funcs, the
+  `savedSnapshot` schema-migration block, the boot `updateProjectBar()`, the project-bar listeners),
+  exportui from 2 (funcs + export-button listeners), plus DOM-ref removals. main.js 1415 → **896**.
+- **`projectName` promoted to `ctx.projectName`** (§3-forced — exportui reads it for the download
+  filenames). `savedSnapshot`/`dirty` are read only inside projectio → module-local.
+- **Init placement — EARLY block (both), not late,** for two reasons: (a) `recomputeDirty` (registered
+  by projectio) is called by storage.js's `persist()`, whose first fire is the initial-paint
+  `refresh()` — early registration guarantees it; (b) exportui's `ctx.exporting = false` init must
+  precede transport's `updateTransportButtons`. The one behavior-timing note: projectio's
+  `savedSnapshot` migration runs earlier than its old line-1229 slot, but it only reads
+  `arrangement.lanes`' fields, which are final from construction + the P6 legacy-patch IIFE (both
+  before the early block) — so it's equivalent.
+- **`recomputeDirty` moved off main.js's `Object.assign`** into `initProjectio`; **three residents
+  `loadContent` calls got registered**: `isReferenced` (the library closure), `syncReference`,
+  `applyActiveHighlight` (both stay in main.js). **`ctx.isReferenced` needed word-form, not call-form**
+  — `loadContent` passes it as a *reference* (`PatternLibrary.fromJSON(env.lib, isReferenced)`), which
+  the call-form pass missed on the first build; caught by a post-build bare-`isReferenced` scan.
+- **exportui registers nothing** — every export function is reached only through its own button
+  listener (no keyboard trigger), and both modules re-acquire their own DOM refs (projectio the
+  `proj*` bar + `tempo`/`tempoLabel`; exportui the export buttons — transport re-acquired those too).
+- **13 imports trimmed** from main.js: the whole `export/midi`, `export/wav`, `export/zip`, and
+  `core/project` imports, plus `PROJ_KEY`.
