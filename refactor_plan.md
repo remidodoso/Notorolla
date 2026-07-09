@@ -1,11 +1,12 @@
 # Refactor plan — source-tree hierarchy + main.js split
 
-**Status: Phases 1–5 done (2026-07-09)** — P1: dir hierarchy + import repoint. P2: `ctx` stood up;
+**Status: Phases 1–6 done (2026-07-09)** — P1: dir hierarchy + import repoint. P2: `ctx` stood up;
 `storage`/`meter`/`history`/`zoom`. P3: `app/score.js` (15 score fns). P4: `app/transport.js` (~330
 lines — scheduler wiring, render loop, playhead/buttons, tempo, mod-clock, lite, auto-scroll). P5:
-`app/tileops.js` (344) + `app/transformbar.js` (335) + `app/tileinspector.js` (148); main.js now 2480
-lines. notch green; awaiting user in-browser smoke test before Phase 6. Update this line as
-phases complete (e.g. "Phases 1–6 done (YYYY-MM-DD)").
+`app/tileops.js` (344) + `app/transformbar.js` (335) + `app/tileinspector.js` (148). P6:
+`app/patchedit.js` (459 — grid-instrument descriptors, edit pane, patch identity, catalog); main.js
+now 2048 lines. notch green; awaiting user in-browser smoke test before Phase 7. Update this line as
+phases complete (e.g. "Phases 1–7 done (YYYY-MM-DD)").
 
 Agreed with the user 2026-07-08. This document is the **complete instruction set** for a series of
 agent sessions. Each phase is one self-contained task ending in a green verification; **the user
@@ -500,3 +501,37 @@ Noted during planning (2026-07-08); executing agents append here rather than fix
   The by-name caller-prefix pass on main.js surfaced **two call sites the manual analysis missed**
   (`disarmRangeTool()` and `updateTileSelectionUI()` in resident pane/selection code) — evidence the
   name-driven approach beats line-by-line.
+
+**Appended during Phase 6 (2026-07-09):**
+
+- **One module, two contiguous source regions** consolidated: grid-instrument resolution (top of
+  file) + the editor-pane/identity/catalog block (mid-file). `app/patchedit.js` = 459 lines; main.js
+  2480 → 2048.
+- **`resolveGridInstrPatch` KEPT in main.js (deviation from the plan, §3-justified):** the plan lists
+  it under patchedit, but its *only* callers are residents (`referenceDegreeFor`, `engine.patchFor`)
+  and **no** patchedit function calls it — so it lives with its callers. This also removes any
+  boot-order risk (it's needed by `engine.patchFor` from note one). It reads `ctx.gridInstr`.
+- **`gridInstr` + `parkedInstr` promoted to ctx (§3-forced):** `newOrRestore`/`clonePattern`/the
+  project-new path (residents) read *and* write them, while `setGridInstr`/`setParkedInstr`/`editGrid`
+  (movers) do too. Their initializers stay in main.js as boot ctx-state (like `gridPatchMeta`/
+  `editTarget`, already ctx). `gridPatch` construction stays in main.js (registered early; `engine.patch`
+  wires to it) — patchedit destructures `ctx.gridPatch` and mutates it in place.
+- **`catalog` + `instrPane` kept module-local** (user-approved, mirrors P5's `tileInspector`) — every
+  reader moved into patchedit, so §3 doesn't force `ctx.catalog`. `patchClipboard` likewise private.
+- **Stable stores that straddle into Phase 7:** `patches` stays constructed in main.js (boot-loaded,
+  read by the Phase-9 `loadContent` resident) and is **registered `ctx.patches`** (patchedit
+  destructures it); `patchStash`/`stashKey` **move into patchedit and register on ctx** because
+  `resetLane`/`resetPlayer` (Phase-7 residents) clear them — they become `ctx.patchStash`/`ctx.stashKey`.
+- **Registered by `initPatchedit`:** `setGridInstr` (moved off main.js's P5 registration),
+  `setParkedInstr`, `replaceGridPatch`, `editGrid` (moved off main.js's P2 registration), `editLane`,
+  `patchInfo`, plus `patchStash`/`stashKey`. **`syncGridReference` added to main.js's ctx block** (a
+  resident that two patchedit fns call).
+- **Init placement + boot fold:** `initPatchedit` sits in the initial-paint block **before
+  `initTileinspector`** (so `createCatalog` still appends before the inspector — stacking preserved),
+  and its tail runs the boot `editGrid()` (moved off line ~1081), which sets the pane's initial target.
+  **Boot-order verified:** the tail registers `ctx.patchInfo` *before* its `editGrid()` triggers the
+  first `tilePlayer.render()` (whose `patchDisplay` callback calls `ctx.patchInfo`); no other render
+  fires between boot-start and `initPatchedit` (the first is `refresh()`, right after).
+- **6 now-unused imports trimmed** from main.js: `createCatalog`, `buildInstrumentPane`,
+  `defaultPatch`, `clonePatch`, `instrumentKinds`, `laneColor` (plus `insertPoint`/`deletePoint`, left
+  unused since P5's transformbar move).
