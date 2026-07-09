@@ -2,8 +2,8 @@
 // context — its width, pitch context (tuning/scale/root) AND per-column
 // performance lanes (duration/accent/articulation, a groove stencil) — clearing
 // only the pitches, instead of snapping back to a default 12-ET chromatic blank.
-import { PatternLibrary } from '../src/library.js';
-import { BASE_PITCH } from '../src/grid.js';
+import { PatternLibrary } from '../src/js/core/library.js';
+import { BASE_PITCH } from '../src/js/core/grid.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

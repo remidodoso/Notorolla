@@ -1,8 +1,8 @@
 // Per-lane playback modulators: waveforms, normalization, target filtering,
 // position-space application, time anchoring, and the engine seam.
-import { modWave, normalizeMod, normalizeModsByKind, modTargetsFor, applyMods, modsActive, MOD_SLOTS, DEFAULT_MOD } from '../src/mods.js';
-import { normalizePatch, paramsFor, toPos } from '../src/instrument.js';
-import { AudioEngine } from '../src/audio.js';
+import { modWave, normalizeMod, normalizeModsByKind, modTargetsFor, applyMods, modsActive, MOD_SLOTS, DEFAULT_MOD } from '../src/js/audio/mods.js';
+import { normalizePatch, paramsFor, toPos } from '../src/js/audio/instrument.js';
+import { AudioEngine } from '../src/js/audio/audio.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

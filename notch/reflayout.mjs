@@ -1,6 +1,6 @@
 // Merged engraving-time layout (grid.js mergedLayout) — the shared beat→x map both
 // the edited pattern and a reference render through (future_directions.md §16).
-import { mergedLayout, widthForBeats, stretchWidth, DURATIONS } from '../src/grid.js';
+import { mergedLayout, widthForBeats, stretchWidth, DURATIONS } from '../src/js/core/grid.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

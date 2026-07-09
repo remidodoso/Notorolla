@@ -26,11 +26,11 @@
 //   shift-click ........... toggle accent (notes only)
 //   right-click ........... toggle note <-> rest
 
-import { Pattern, PALETTE, DEFAULT_DUR, MIN_COLS, MAX_COLS, BASE_PITCH, DURATIONS, durationLabel, swapNotePayload, swapLanes, stretchWidth, mergedLayout, nextAccent, nextArtic, ARTICULATIONS, DEFAULT_ARTIC } from './grid.js';
-import { isBlackKey } from './model.js';
-import { degreeToName, pitchClassName, edoOf, degreeBounds, hasEquave, tuningFreq } from './tuning.js';
-import { inScale, nearestInScale, stepInScale } from './scales.js';
-import { classifyTriad } from './triads.js';
+import { Pattern, PALETTE, DEFAULT_DUR, MIN_COLS, MAX_COLS, BASE_PITCH, DURATIONS, durationLabel, swapNotePayload, swapLanes, stretchWidth, mergedLayout, nextAccent, nextArtic, ARTICULATIONS, DEFAULT_ARTIC } from '../core/grid.js';
+import { isBlackKey } from '../core/model.js';
+import { degreeToName, pitchClassName, edoOf, degreeBounds, hasEquave, tuningFreq } from '../core/tuning.js';
+import { inScale, nearestInScale, stepInScale } from '../core/scales.js';
+import { classifyTriad } from '../core/triads.js';
 import { PAD_LEFT as ROLL_PAD_LEFT } from './pianoroll.js';
 
 const PAD_LEFT = ROLL_PAD_LEFT;  // share the roll's gutter so Stretch lines up

@@ -1,4 +1,4 @@
-import { scalesFor, scaleValidForEdo, inScale, nearestInScale, stepInScale } from '../src/scales.js';
+import { scalesFor, scaleValidForEdo, inScale, nearestInScale, stepInScale } from '../src/js/core/scales.js';
 let pass=0, fail=0;
 const ok=(c,m)=>{ if(c){pass++;}else{fail++;console.log('FAIL:',m);} };
 const ids = (arr) => arr.map(s=>s.id);

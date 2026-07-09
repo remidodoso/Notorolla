@@ -1,6 +1,6 @@
 // Insert reverb: config normalization, decay-length model, and lane persistence.
-import { defaultReverb, normalizeReverb, reverbSeconds, REVERB_MODES, MAX_PREDELAY, DEFAULT_REVERB } from '../src/reverb.js';
-import { Arrangement } from '../src/library.js';
+import { defaultReverb, normalizeReverb, reverbSeconds, REVERB_MODES, MAX_PREDELAY, DEFAULT_REVERB } from '../src/js/audio/reverb.js';
+import { Arrangement } from '../src/js/core/library.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

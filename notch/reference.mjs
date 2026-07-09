@@ -1,8 +1,8 @@
 // The grid editor's frozen reference backdrop (reference.js): bake a self-contained
 // snapshot, apply its first-class transform on use, and round-trip through JSON.
-import { bakeReference, referenceScore, referenceDisplay, mergeAudition, referenceToJSON, referenceFromJSON } from '../src/reference.js';
-import { Pattern, DURATIONS } from '../src/grid.js';
-import { transposeTransform, reverseTransform } from '../src/transforms.js';
+import { bakeReference, referenceScore, referenceDisplay, mergeAudition, referenceToJSON, referenceFromJSON } from '../src/js/core/reference.js';
+import { Pattern, DURATIONS } from '../src/js/core/grid.js';
+import { transposeTransform, reverseTransform } from '../src/js/core/transforms.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

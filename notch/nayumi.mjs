@@ -1,6 +1,6 @@
 // Nayumi: breathy formant-voice patch plumbing + the source–filter voice graph.
-import { AudioEngine } from '../src/audio.js';
-import { defaultPatch, normalizePatch, paramsFor } from '../src/instrument.js';
+import { AudioEngine } from '../src/js/audio/audio.js';
+import { defaultPatch, normalizePatch, paramsFor } from '../src/js/audio/instrument.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

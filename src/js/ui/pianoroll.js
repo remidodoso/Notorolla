@@ -5,8 +5,8 @@
 // resolved `freq`). The lane backdrop stays a 12-ET reference ruler, and 12-ET
 // notes map exactly as before, pixel-for-pixel. Redrawn every frame.
 
-import { noteName, isBlackKey, noteToFreq } from './model.js';
-import { degreeToFreq, tuningFreq, degreeToName, edoOf, degreeBounds, hasEquave } from './tuning.js';
+import { noteName, isBlackKey, noteToFreq } from '../core/model.js';
+import { degreeToFreq, tuningFreq, degreeToName, edoOf, degreeBounds, hasEquave } from '../core/tuning.js';
 
 // PAD_LEFT and BEAT_WIDTH are exported so the grid's "Stretch" mode can share
 // the roll's horizontal origin and DEFAULT scale (the two views line up at the

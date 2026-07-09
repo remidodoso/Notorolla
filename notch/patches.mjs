@@ -1,7 +1,7 @@
 // Patch store — the user-global patch catalog's backing store (Phase B).
-import { PatchStore, factoryInitId, newPatchId } from '../src/patches.js';
-import { instrumentKinds } from '../src/instrument.js';
-import { Arrangement } from '../src/library.js';
+import { PatchStore, factoryInitId, newPatchId } from '../src/js/audio/patches.js';
+import { instrumentKinds } from '../src/js/audio/instrument.js';
+import { Arrangement } from '../src/js/core/library.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

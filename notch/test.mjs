@@ -1,8 +1,8 @@
 // Headless test of the Juno chorus insert + insert-chain wiring + serialization.
 // Uses a fake AudioContext that records nodes and connections.
-import { AudioEngine } from '../src/audio.js';
-import { Arrangement } from '../src/library.js';
-import { normalizeChorus, defaultChorus } from '../src/chorus.js';
+import { AudioEngine } from '../src/js/audio/audio.js';
+import { Arrangement } from '../src/js/core/library.js';
+import { normalizeChorus, defaultChorus } from '../src/js/audio/chorus.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

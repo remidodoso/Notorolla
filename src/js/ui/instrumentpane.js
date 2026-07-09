@@ -13,7 +13,7 @@
 // host to switch instruments (onKindChange). Params flagged `bar` (Zindel's
 // drawbars) render as a row of parallel vertical faders; the rest as sliders.
 
-import { paramsFor, toPos, fromPos, instrumentKinds, instrument, nearestStep } from './instrument.js';
+import { paramsFor, toPos, fromPos, instrumentKinds, instrument, nearestStep } from '../audio/instrument.js';
 import { makeKnob } from './knob.js';
 
 // cb: onChange() after any edit, onKindChange(kind) to switch instrument,

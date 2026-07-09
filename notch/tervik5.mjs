@@ -1,7 +1,7 @@
 // Tervik coarse/fine ratio: defaults shape, snapping, legacy migration, and the
 // effective ratio = coarse + fine reaching the oscillators.
-import { AudioEngine } from '../src/audio.js';
-import { defaultPatch, normalizePatch, nearestStep, TERVIK_RATIOS } from '../src/instrument.js';
+import { AudioEngine } from '../src/js/audio/audio.js';
+import { defaultPatch, normalizePatch, nearestStep, TERVIK_RATIOS } from '../src/js/audio/instrument.js';
 
 let pass=0, fail=0;
 const ok=(c,m)=>{ if(c){pass++;}else{fail++;console.log('FAIL:',m);} };

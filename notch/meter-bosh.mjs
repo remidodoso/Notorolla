@@ -1,8 +1,8 @@
 // meter-bosh.mjs — render each Boshwick type through the simulator and compare
 // its peak/RMS to a default Vesperia note (the loudness reference).
 import { makeSimCtx, meter } from './wasim.mjs';
-import { AudioEngine } from '../src/audio.js';
-import { normalizePatch } from '../src/instrument.js';
+import { AudioEngine } from '../src/js/audio/audio.js';
+import { normalizePatch } from '../src/js/audio/instrument.js';
 
 function renderNote(patch, { freq = 261.6256, vel = 0.78, dur = 0.5, secs = 2.0 } = {}) {
   const ctx = makeSimCtx(44100);

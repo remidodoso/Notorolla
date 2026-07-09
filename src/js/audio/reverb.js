@@ -8,7 +8,7 @@
 // in the IR: a dense burst hard-cut with a 2 ms anti-click fade). The shared
 // send-bus reverb ("the communal wash") remains a separate, future feature.
 
-import { makeKnob } from './knob.js';
+import { makeKnob } from '../ui/knob.js';
 
 export const REVERB_MODES = [
   { id: 'gated', label: 'Gated' },

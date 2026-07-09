@@ -1,6 +1,6 @@
 // library.cloneOf: deep-copy an arbitrary pattern by name without touching the
 // current/parked editor state (the tile player's Clone tool).
-import { PatternLibrary } from '../src/library.js';
+import { PatternLibrary } from '../src/js/core/library.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

@@ -1,8 +1,8 @@
 // New Random generator: window placement, scale masking, uniqueness, runs, triads.
-import { scaleWindow, generateRandom, applyDurationBias, applyAccentBias, runStaircase, RANDOM_DEFAULTS } from '../src/random.js';
-import { inScale } from '../src/scales.js';
-import { chordsFor, familiesFor, classifyTriad } from '../src/triads.js';
-import { degreeBounds } from '../src/tuning.js';
+import { scaleWindow, generateRandom, applyDurationBias, applyAccentBias, runStaircase, RANDOM_DEFAULTS } from '../src/js/core/random.js';
+import { inScale } from '../src/js/core/scales.js';
+import { chordsFor, familiesFor, classifyTriad } from '../src/js/core/triads.js';
+import { degreeBounds } from '../src/js/core/tuning.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

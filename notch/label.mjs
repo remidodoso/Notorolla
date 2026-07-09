@@ -4,8 +4,8 @@
 //   - is backward-safe (older saves without a label load as empty)
 //   - is NOT inherited by clone()/stencil() (a clone keeps the canonical
 //     naming sequence with no label — the Tile Inspector rename spec)
-import { PatternLibrary } from '../src/library.js';
-import { Pattern } from '../src/grid.js';
+import { PatternLibrary } from '../src/js/core/library.js';
+import { Pattern } from '../src/js/core/grid.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

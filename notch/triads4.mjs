@@ -1,5 +1,5 @@
 // Step 4: the septimal Triadulator for 16-ET + per-tuning family populating.
-import { classifyTriad, enumerateTriadulations, familiesFor, familyLabel } from '../src/triads.js';
+import { classifyTriad, enumerateTriadulations, familiesFor, familyLabel } from '../src/js/core/triads.js';
 
 let pass=0, fail=0;
 const ok=(c,m)=>{ if(c){pass++;}else{fail++;console.log('FAIL:',m);} };

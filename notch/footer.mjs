@@ -1,7 +1,7 @@
 // Duration-footer refactor: the pure column helpers that back the two grid drags.
 // swapNotePayload = body drag (swap pitch/rest/accent, KEEP durations);
 // swapColumn = footer drag (swap the whole column); durationLabel = the footer text.
-import { swapNotePayload, swapColumn, swapLanes, LANE_FIELDS, durationLabel, nextDurIndex, stretchWidth, nextAccent, accentVelocity, nextArtic, articBeats, ARTICULATIONS, DEFAULT_ARTIC, Pattern, DURATIONS, DUR_ORDER } from '../src/grid.js';
+import { swapNotePayload, swapColumn, swapLanes, LANE_FIELDS, durationLabel, nextDurIndex, stretchWidth, nextAccent, accentVelocity, nextArtic, articBeats, ARTICULATIONS, DEFAULT_ARTIC, Pattern, DURATIONS, DUR_ORDER } from '../src/js/core/grid.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

@@ -1,5 +1,5 @@
-import { Pattern, DEFAULT_COLS, MIN_COLS, MAX_COLS } from '../src/grid.js';
-import { PatternLibrary } from '../src/library.js';
+import { Pattern, DEFAULT_COLS, MIN_COLS, MAX_COLS } from '../src/js/core/grid.js';
+import { PatternLibrary } from '../src/js/core/library.js';
 let pass=0, fail=0;
 const ok=(c,m)=>{ if(c){pass++;}else{fail++;console.log('FAIL:',m);} };
 

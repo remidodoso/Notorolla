@@ -1,8 +1,8 @@
 // Lite Instruments: the CPU-relief switch (engine.lite) that swaps the heavy
 // voices (Wendelhorn, Nayumi) for a cheaper LIVE graph, while the offline export
 // paths always build the full voice. Counts nodes through a fake Web Audio ctx.
-import { AudioEngine } from '../src/audio.js';
-import { normalizePatch } from '../src/instrument.js';
+import { AudioEngine } from '../src/js/audio/audio.js';
+import { normalizePatch } from '../src/js/audio/instrument.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

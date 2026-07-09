@@ -1,6 +1,9 @@
 # Refactor plan — source-tree hierarchy + main.js split
 
-**Status: NOT STARTED.** Update this line as phases complete (e.g. "Phases 1–3 done (YYYY-MM-DD)").
+**Status: Phases 1–2 done (2026-07-08)** — Phase 1: directory hierarchy + import repoint. Phase 2:
+`ctx` stood up; `app/storage.js` + `meter.js` + `history.js` + `zoom.js` extracted; main.js 3961→3661
+lines. notch green; awaiting user in-browser smoke test before Phase 3. Update this line as phases
+complete (e.g. "Phases 1–3 done (YYYY-MM-DD)").
 
 Agreed with the user 2026-07-08. This document is the **complete instruction set** for a series of
 agent sessions. Each phase is one self-contained task ending in a green verification; **the user
@@ -367,3 +370,43 @@ Noted during planning (2026-07-08); executing agents append here rather than fix
 - **The wasm seam module** (`src/js/core/wasm.js` + JS fallback) — build when Rust lands, per §2.
 - Known pre-existing bug (already in notes_and_status → Deferred work): `loadContent` doesn't
   restore `playStart`/`playEnd`. Moves as-is in Phase 9.
+
+**Appended during Phase 1 (2026-07-08):**
+
+- **`.claude/settings.json` + `settings.local.json`** carry stale permission-allowlist entries
+  pinned to old flat paths (`Bash(node --check src/inspector.js)`, `…src/main.js`, `…src/audio.js`,
+  `…src/project.js`, and a `curl …/src/tileplayer.js`). Harmless (dead allow-entries), left as-is
+  this phase — candidate for a settings cleanup.
+- **Tooling note for future phases (this Node is old — v17.3.0):** `node --check <file>.js` does
+  **not** honor the root `package.json` `"type":"module"`, so it parses ESM `.js` as CommonJS and
+  false-fails on `import`/`export`. Use `node --check --input-type=module < file.js` (stdin) for a
+  module-aware syntax check, and treat a green `node notch/run.mjs` as the real parse gate for any
+  module notch imports. A whole-graph resolver check (every relative specifier → existing file) is
+  cheap and worth keeping as a per-phase static sweep.
+- **Doc-link policy used:** rewrote only the markdown link **target** `](src/X.js)` →
+  `](src/js/<dir>/X.js)`; left display text (e.g. `[src/tuning.js]`) and all prose untouched, per
+  the "no prose edits" rule. The File map's display text is fully rewritten in Phase 10 anyway.
+
+**Appended during Phase 2 (2026-07-08):**
+
+- **FORCED RENAME (necessary deviation from §4):** `runRandomModal` had a pre-existing function-local
+  `const ctx = { tuningId, scaleId, root }` (a generator context). The plan's shared object is also
+  `ctx`, so the local one shadowed it and broke the `ctx.pushHistory` / `ctx.safeSet` calls the phase
+  introduced inside that function. Renamed the **local** to `tctx` (decl + 15 property reads); the
+  module `ctx` is untouched. This also pre-empts the identical shadow in Phase 8 (randomui's
+  `initRandomUI(ctx)` parameter). Any future local named `ctx` must avoid the shared name.
+- **`storageOK` promoted to `ctx.storageOK`** (not spelled out in the Phase-2 symbol list): it moves
+  into storage.js (written by `safeSet`) but is **read by main.js's `beforeunload` handler**, so per
+  §3 it becomes a ctx field — same rationale as `editTarget`.
+- **`editTarget` promoted to `ctx.editTarget`** (30 sites) as agreed, because `arrApply` (moved to
+  history.js) reads it; writers stay in main.js until Phase 6. Comments mentioning `editTarget` were
+  left unmodified.
+- **`readJSON` is imported, not on ctx:** it's pure, so main.js imports it directly from storage.js
+  (like a constant) and its call sites are unchanged — only stateful `persist`/`safeSet` go via ctx.
+- **`histories` (the grid-undo Map) registered on ctx** so `loadContent`'s `histories.clear()` (a
+  Phase-9 resident) still reaches it.
+- **Tooling:** the ctx-prefixing was scripted with word/call-boundary regexes; the word-form pass
+  wrongly hit `undo`/`redo` inside **string literals and trailing comments** (`case 'undo'`,
+  `getElementById('arrUndo')`, button `.title` text) — caught by logging every change and reverting
+  14 lines. Lesson for later phases: a bare-identifier regex must exclude strings + trailing
+  comments, not just full-line comments.

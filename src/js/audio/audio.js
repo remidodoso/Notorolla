@@ -9,7 +9,7 @@
 // noteToFreq directly, so alternate tunings/microtonal scales are audible by
 // swapping that one mapping. Today degreeToFreq is identity 12-ET, so this is a
 // no-op for the current sound.
-import { degreeToFreq } from './tuning.js';
+import { degreeToFreq } from '../core/tuning.js';
 import { defaultPatch } from './instrument.js';
 import { applyMods } from './mods.js';
 import { reverbSeconds, MAX_PREDELAY } from './reverb.js';

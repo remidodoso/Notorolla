@@ -1,9 +1,9 @@
 // Step 1 verification: the EDO seam-widening must leave 12-ET bit-identical, and
 // a non-12 EDO (16) must cleanly yield "no chords yet" + correct modular logic.
-import { edoOf } from '../src/tuning.js';
-import { inScale, nearestInScale, stepInScale } from '../src/scales.js';
-import { classifyTriad, enumerateTriadulations } from '../src/triads.js';
-import { applyTransforms, transposeTransform } from '../src/transforms.js';
+import { edoOf } from '../src/js/core/tuning.js';
+import { inScale, nearestInScale, stepInScale } from '../src/js/core/scales.js';
+import { classifyTriad, enumerateTriadulations } from '../src/js/core/triads.js';
+import { applyTransforms, transposeTransform } from '../src/js/core/transforms.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

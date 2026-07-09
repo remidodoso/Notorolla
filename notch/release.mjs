@@ -1,7 +1,7 @@
 // patchRelease: every kind yields a finite tail value, so the export's
 // Math.max(... releases) can't go NaN (the OfflineAudioContext "Length must be
 // nonzero" bug when a Tervik lane has no top-level `release`).
-import { defaultPatch, patchRelease } from '../src/instrument.js';
+import { defaultPatch, patchRelease } from '../src/js/audio/instrument.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

@@ -1,7 +1,7 @@
 // clampGrip: the normalized drag-grip rule (center small tiles, edge-margin big
 // ones). (segmentHits and its tests left with the brushes — removed when the
 // transform brushes became selection actions.)
-import { clampGrip } from '../src/tileplayer.js';
+import { clampGrip } from '../src/js/ui/tileplayer.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

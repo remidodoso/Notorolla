@@ -13,7 +13,7 @@
 import { Pattern } from './grid.js';
 import { Note } from './model.js';
 import { applyTransforms } from './transforms.js';
-import { clonePatch } from './instrument.js';
+import { clonePatch } from '../audio/instrument.js';
 
 // Snapshot a source (pattern + its lane's patch + the tile's transforms) into the
 // immutable bundle. `opts.name` overrides the display label; quieter defaults on.

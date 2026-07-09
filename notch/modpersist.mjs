@@ -1,5 +1,5 @@
 ﻿// Round-trip check: do lane modulators survive arrangement toJSON -> JSON -> fromJSON?
-import { Arrangement } from '../src/library.js';
+import { Arrangement } from '../src/js/core/library.js';
 
 const a = new Arrangement();
 a.lanes[0].modsByKind = {

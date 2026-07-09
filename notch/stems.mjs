@@ -1,8 +1,8 @@
 // Stem export: BWF (bext) writer, the STORE zip writer, and per-lane renderStem.
-import { encodeWav, encodeBwf } from '../src/wav.js';
-import { zipStore } from '../src/zip.js';
-import { AudioEngine } from '../src/audio.js';
-import { normalizePatch } from '../src/instrument.js';
+import { encodeWav, encodeBwf } from '../src/js/export/wav.js';
+import { zipStore } from '../src/js/export/zip.js';
+import { AudioEngine } from '../src/js/audio/audio.js';
+import { normalizePatch } from '../src/js/audio/instrument.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

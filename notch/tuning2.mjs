@@ -1,5 +1,5 @@
-import { edoOf, tuningFreq, degreeToName, pitchClassName, TUNING_LIST, nearestDegreeToFreq } from '../src/tuning.js';
-import { FREF } from '../src/audio.js';
+import { edoOf, tuningFreq, degreeToName, pitchClassName, TUNING_LIST, nearestDegreeToFreq } from '../src/js/core/tuning.js';
+import { FREF } from '../src/js/audio/audio.js';
 let pass=0, fail=0;
 const ok=(c,m)=>{ if(c){pass++;}else{fail++;console.log('FAIL:',m);} };
 const near=(a,b,e=0.01)=>Math.abs(a-b)<=e;

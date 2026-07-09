@@ -4,7 +4,7 @@
 // on the lane and save with the project. The audio graph is built in audio.js
 // (buildDelayInsert); this module owns the data shape and the editor form.
 
-import { makeKnob } from './knob.js';
+import { makeKnob } from '../ui/knob.js';
 
 // Tempo-synced delay times, as note values → length in beats (× 60/bpm = seconds).
 export const DELAY_TIMES = [

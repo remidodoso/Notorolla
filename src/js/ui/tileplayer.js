@@ -8,12 +8,12 @@
 // stays pinned when scrolled. Thumbnails are a self-contained recap of each
 // tile's contents, drawn at the current scale.
 
-import { PALETTE, DURATIONS } from './grid.js';
-import { laneColor, rippleInsertInto, rippleRemoveFrom } from './library.js';
+import { PALETTE, DURATIONS } from '../core/grid.js';
+import { laneColor, rippleInsertInto, rippleRemoveFrom } from '../core/library.js';
 import { makeKnob, PAN_MAP, GAIN_MAP } from './knob.js';
-import { instrument } from './instrument.js';
-import { modsActive } from './mods.js';
-import { transformKindLabel } from './transforms.js';
+import { instrument } from '../audio/instrument.js';
+import { modsActive } from '../audio/mods.js';
+import { transformKindLabel } from '../core/transforms.js';
 
 // Quantized horizontal-scale notches (px per beat), smaller → bigger. The old
 // fixed scale (6) sits near the low end; most of the ladder is zoom-in headroom.

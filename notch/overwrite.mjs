@@ -1,6 +1,6 @@
 // Non-ripple tile placement: overwriteInsertInto + the Arrangement's mode-aware
 // move/copy/remove/insertAt (ripple=false = exact placement, overwrite, gaps).
-import { Arrangement, overwriteInsertInto, rippleInsertInto } from '../src/library.js';
+import { Arrangement, overwriteInsertInto, rippleInsertInto } from '../src/js/core/library.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

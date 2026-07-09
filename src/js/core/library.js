@@ -11,13 +11,13 @@
 // letting unsaved patterns pile up invisibly.
 
 import { Pattern } from './grid.js';
-import { defaultPatch, normalizePatch } from './instrument.js';
-import { factoryInitId } from './patches.js';
+import { defaultPatch, normalizePatch } from '../audio/instrument.js';
+import { factoryInitId } from '../audio/patches.js';
 import { normalizeTransforms } from './transforms.js';
-import { defaultDelay, normalizeDelay } from './delay.js';
-import { defaultChorus, normalizeChorus } from './chorus.js';
-import { defaultReverb, normalizeReverb } from './reverb.js';
-import { normalizeModsByKind } from './mods.js';
+import { defaultDelay, normalizeDelay } from '../audio/delay.js';
+import { defaultChorus, normalizeChorus } from '../audio/chorus.js';
+import { defaultReverb, normalizeReverb } from '../audio/reverb.js';
+import { normalizeModsByKind } from '../audio/mods.js';
 
 export class PatternLibrary {
   // isReferenced(name) -> bool, supplied by the arrangement.

@@ -1,7 +1,7 @@
 // Range edits: insertTime / clearRange / deleteTime on the Arrangement, plus
 // the pure timeline-point mappers (insertPoint/deletePoint) that carry the
 // playhead and region markers through them.
-import { Arrangement, insertPoint, deletePoint } from '../src/library.js';
+import { Arrangement, insertPoint, deletePoint } from '../src/js/core/library.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

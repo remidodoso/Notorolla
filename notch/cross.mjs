@@ -2,8 +2,8 @@
 // middle C), comma-pairs kept, degree = index into the sorted pitch list. Validates
 // the generator, the middle-C anchor at degree 60, nearest-12-ET+cents labels, the
 // A0..C8 range resolution, and the equave-less flags. See future_directions.md §15.
-import { tuningFreq, degreeToName, degreeBounds, edoOf, equaveOf, hasEquave, LOW_HZ, HIGH_HZ } from '../src/tuning.js';
-import { noteToFreq } from '../src/model.js';
+import { tuningFreq, degreeToName, degreeBounds, edoOf, equaveOf, hasEquave, LOW_HZ, HIGH_HZ } from '../src/js/core/tuning.js';
+import { noteToFreq } from '../src/js/core/model.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

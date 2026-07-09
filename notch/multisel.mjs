@@ -1,6 +1,6 @@
 // Multi-selection on the Arrangement: select / toggleSelect / selectRange /
 // selectMarquee / pruneSelection — the one-lane set with an anchor.
-import { Arrangement } from '../src/library.js';
+import { Arrangement } from '../src/js/core/library.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

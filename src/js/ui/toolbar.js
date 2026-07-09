@@ -5,9 +5,9 @@
 // and never feed back here. Also hosts the Audition, Grid/Stretch, and cursor
 // toggles. Mutates the shared `state`; calls onChange(what) after any change.
 
-import { DURATIONS, PALETTE, DUR_ORDER, MIN_COLS, MAX_COLS } from './grid.js';
-import { TUNING_LIST } from './tuning.js';
-import { SCALES } from './scales.js';
+import { DURATIONS, PALETTE, DUR_ORDER, MIN_COLS, MAX_COLS } from '../core/grid.js';
+import { TUNING_LIST } from '../core/tuning.js';
+import { SCALES } from '../core/scales.js';
 
 const ROOT_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 

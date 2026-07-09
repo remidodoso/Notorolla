@@ -1,7 +1,7 @@
 // Selection block ops: planSelectionDrop / moveSelection / copySelection
 // (rigid translation, per-tile ignore-collisions) and planRepeat /
 // repeatSelection (the fill handle's whole-block stamps).
-import { Arrangement } from '../src/library.js';
+import { Arrangement } from '../src/js/core/library.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };

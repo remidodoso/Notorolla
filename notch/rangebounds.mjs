@@ -1,5 +1,5 @@
 // Per-tuning navigable range = the A0..C8 piano band → nearest degrees per EDO.
-import { degreeBounds, tuningFreq, degreeToName, LOW_HZ, HIGH_HZ } from '../src/tuning.js';
+import { degreeBounds, tuningFreq, degreeToName, LOW_HZ, HIGH_HZ } from '../src/js/core/tuning.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL:', m); } };
