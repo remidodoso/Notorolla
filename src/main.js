@@ -8,12 +8,13 @@ import { Pattern, BASE_PITCH, DURATIONS, DEFAULT_ARTIC } from './grid.js';
 import { PatternLibrary, Arrangement, laneColor, insertPoint, deletePoint } from './library.js';
 import { enumerateTriadulations, familiesFor, familyLabel, chordsFor } from './triads.js';
 import { generateRandom, applyDurationBias, applyAccentBias, scaleWindow, RANDOM_DEFAULTS } from './random.js';
-import { edoOf, tuningFreq, pitchClassName, degreeBounds, nearestDegreeToFreq, degreeToName, TUNING_LIST } from './tuning.js';
+import { edoOf, equaveOf, hasEquave, tuningFreq, pitchClassName, degreeBounds, nearestDegreeToFreq, degreeToName, TUNING_LIST } from './tuning.js';
 import { scalesFor, scaleValidForEdo, scaleById } from './scales.js';
 import { notesToMidi } from './midi.js';
 import { encodeWav, encodeBwf } from './wav.js';
 import { zipStore } from './zip.js';
 import { GridView } from './gridview.js';
+import { bakeReference, referenceDisplay, mergeAudition, referenceToJSON, referenceFromJSON } from './reference.js';
 import { TilePlayer, TILE_SCALES, DEFAULT_SCALE_IDX } from './tileplayer.js';
 import { buildToolbar } from './toolbar.js';
 import { buildInstrumentPane } from './instrumentpane.js';
@@ -71,8 +72,14 @@ const state = {
   tileScrollX: 0,     // tile player's horizontal scroll (px; restored on reload as-is)
   rollVIdx: ROLL_V_DEFAULT, // piano-roll zoom notches (view-only)
   rollHIdx: ROLL_H_DEFAULT,
+  reference: null,    // the frozen grid-editor reference backdrop (a workspace pref; cleared on project Open/New)
+  refPrevMode: null,  // the layout mode to restore when the reference is cleared
 };
 Object.assign(state, readJSON(UI_KEY) || {});
+// The reference rides the workspace UI state as its compact JSON; rehydrate it
+// (self-contained, so it never dangles) and honor its forced Stretch layout.
+state.reference = state.reference ? referenceFromJSON(state.reference) : null;
+if (state.reference) state.mode = 'stretch';
 // Migrate older persisted UI state (top-level trad/sus booleans) to the per-id
 // families map, and make sure the map exists and seeds new families on.
 if (!state.families || typeof state.families !== 'object') {
@@ -289,6 +296,24 @@ function maxReverbTail() {
   return tail;
 }
 
+// The default export tail (seconds): let the longest-releasing lane + reverb ring
+// out, but CEILING it at 8s. A long delay/feedback wash can ring for many more
+// seconds; we deliberately don't chase that (the mixer usually rolls it off) — the
+// export dialogs pre-fill this value in an editable field, so a user who wants a
+// longer (or shorter) tail just types it.
+const TAIL_CEILING = 8;
+function computeTail() {
+  const maxRelease = Math.max(patchRelease(gridPatch), ...arrangement.lanes.map((l) => patchRelease(l.patch)));
+  return Math.min(TAIL_CEILING, Math.max(2.5, maxRelease * 6 + 0.5) + maxReverbTail());
+}
+
+// Beat position → "m:ss" wall-clock at the current tempo (for the range readout).
+function fmtClock(beats) {
+  const sec = Math.round(beats * (60 / state.bpm));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
 const scheduler = new Scheduler(engine);
 // Natural finish (one-shot ended, loop passes exhausted): the playhead rewinds
 // to the beginning. A manual Stop parks it in place instead (see stop()).
@@ -325,6 +350,19 @@ function buildScore() {
   const tmp = new Pattern(cols, cur.name);
   tmp.tuningId = cur.tuningId; tmp.scaleId = cur.scaleId; tmp.root = cur.root; // resolve in the same tuning
   return tmp.toScore(state.bpm, state.articulation);
+}
+
+// The grid transport's provider: the pattern PLUS the reference backdrop merged in
+// (audition only — the roll's static view stays grid-only via buildScore).
+function buildAuditionScore() { return withReference(buildScore()); }
+
+// Merge the reference backdrop into a grid score for AUDITION (never the export —
+// the reference isn't part of the composition). The tiling/attenuation/patch-tag
+// math is pure in reference.js (mergeAudition); here we wrap it in a Score.
+function withReference(gridScore) {
+  if (!state.reference || state.reference.muted) return gridScore;
+  const { notes, total } = mergeAudition(state.reference, gridScore.notes, gridScore.lengthBeats, state.bpm, state.articulation, REF_QUIET);
+  return new Score(notes, state.bpm, state.articulation, total);
 }
 
 function patternLen(name) {
@@ -467,6 +505,7 @@ const grid = new GridView(document.getElementById('grid'), library.current(), {
   getHighlightRows: () => state.highlightRows,
   getShowTriads: () => state.showTriads,
   getViewport: () => ({ top: state.topDegree, rows: state.visibleRows }),
+  getReference: () => refDisplay,
   onViewport: (top, rows) => { state.topDegree = top; state.visibleRows = rows; grid.draw(); persist(); },
   onAudition: (pitch) => audition(pitch),
   onChange: () => { setActive('grid'); clearProposal(); refresh(); },
@@ -478,6 +517,68 @@ const grid = new GridView(document.getElementById('grid'), library.current(), {
 });
 
 const tb = buildToolbar(document.getElementById('toolbar'), state, onToolbarChange);
+
+// --- reference backdrop (grid editor) ---------------------------------
+// A frozen, self-contained snapshot of a tile overlaid behind the edited pattern
+// (see-together / hear-together; the New-Counterpoint on-ramp — §16). Bpm-agnostic
+// display info (dot positions + shared onset beats) is derived once per set/toggle.
+let refDisplay = null; // { notes, onsets, len } | null — pulled by the grid view
+const REF_QUIET = 0.4; // reference velocity multiplier when "Soft" is on (~ −8 dB)
+
+// Recompute the derived display + reflect the reference into the toolbar chrome.
+// The chip/controls update is GUARDED so a display hiccup can never leave the UI
+// stuck on "(none)" while a reference is actually set.
+function syncReference() {
+  try {
+    refDisplay = state.reference ? referenceDisplay(state.reference) : null;
+  } catch (e) {
+    console.error('reference display failed — ghost hidden, reference still set:', e);
+    refDisplay = null;
+  }
+  tb.setReference(state.reference
+    ? { name: state.reference.name, quieter: state.reference.quieter, muted: state.reference.muted }
+    : null);
+}
+
+// Set-Reference is enabled only when EXACTLY one tile is selected.
+function updateReferenceEnable() { tb.setRefEnabled(arrangement.selectedIds.size === 1); }
+
+// Freeze the single selected tile (pattern + its lane's patch + the tile's
+// transforms) as the reference, and switch to the merged-time (Stretch) layout.
+function setReferenceFromSelection(tiles) {
+  if (!tiles || tiles.length !== 1) return;
+  const tile = tiles[0];
+  const pat = library.patterns.get(tile.name);
+  if (!pat) return;
+  const lane = arrangement.laneOfTile(tile.id);
+  const patch = lane ? lane.patch : null; // future: a lane-less catalog pattern falls back to the grid patch
+  if (!state.reference) state.refPrevMode = state.mode; // remember the layout to restore on Clear
+  try {
+    state.reference = bakeReference(pat, patch, tile.transforms || null, { name: pat.label || pat.name });
+  } catch (e) { console.error('bakeReference threw:', e); return; }
+  state.mode = 'stretch';
+  syncReference();
+  refresh();
+}
+function clearReference() {
+  if (!state.reference) return;
+  state.reference = null;
+  state.mode = state.refPrevMode || 'grid';
+  state.refPrevMode = null;
+  syncReference();
+  refresh();
+}
+// One 3-way level control: full → soft (quieter) → mute → full.
+function cycleRefLevel() {
+  const r = state.reference;
+  if (!r) return;
+  if (r.muted) { r.muted = false; r.quieter = false; }      // mute → full
+  else if (r.quieter) { r.muted = true; }                   // soft → mute
+  else { r.quieter = true; }                                // full → soft
+  syncReference();
+  refresh();
+}
+syncReference(); // reflect a reference restored from the workspace on load
 
 let marqueeBefore = null; // selection snapshot for Esc-cancelling a marquee
 
@@ -924,6 +1025,7 @@ function selectedTiles() { return arrangement.selectedTiles(); }
 function updateTileSelectionUI() {
   tileDeleteBtn.disabled = arrangement.selectedIds.size === 0;
   refreshTransformBar();
+  updateReferenceEnable();
 }
 
 // --- transform ACTIONS: select tiles, then click the button ---------------
@@ -2411,6 +2513,7 @@ function runRandomModal(mode) {
 // the pattern's pitch classes (its tuning's EDO) regardless of grid height.
 function triadulationState() {
   const pattern = library.current();
+  if (!hasEquave(pattern.tuningId)) return { enabled: false, list: [] }; // no pitch-classes: no pc-set triads
   const cols = pattern.columns;
   const edo = edoOf(pattern.tuningId);
   const used = new Set();
@@ -2534,6 +2637,9 @@ async function audition(pitch) {
 // --- refresh / persist ------------------------------------------------
 
 function onToolbarChange(what) {
+  // Set Reference reads the tile-player selection, but setActive('grid') below
+  // clears it — so snapshot it first.
+  const refTiles = what === 'setRef' ? selectedTiles() : null;
   setActive('grid'); // the toolbar belongs to the grid pane
   switch (what) {
     case 'undo': undo(); return;
@@ -2555,6 +2661,9 @@ function onToolbarChange(what) {
     case 'transposeDown': grid.transposeScalar(-1); return;
     case 'colsInc': grid.setColumns(grid.columnCount() + 1); return;
     case 'colsDec': grid.setColumns(grid.columnCount() - 1); return;
+    case 'setRef': setReferenceFromSelection(refTiles); return;
+    case 'clearRef': clearReference(); return;
+    case 'refCycle': cycleRefLevel(); return;
     case 'duration': // brush duration set in toolbar; apply to a selection if there is one
       grid.updateCursor();
       if (!grid.applyDuration(state.brush.durIndex)) refresh();
@@ -2568,6 +2677,7 @@ function onToolbarChange(what) {
       // Drop a scale mask that doesn't belong to the new tuning's EDO (e.g. a 12-ET
       // pentatonic when switching to 16-ET) back to Chromatic, which is universal.
       if (!scaleValidForEdo(cur.scaleId, edoOf(cur.tuningId))) cur.scaleId = 'chromatic';
+      if (!hasEquave(cur.tuningId)) cur.root = 0; // no equave → root pinned to the middle-C anchor
       refresh(); return;
     }
     case 'scale': library.current().scaleId = tb.scaleSel.value; refresh(); return;
@@ -2597,6 +2707,7 @@ function refresh() {
   updateEditButtons();
   updateTriadulateButtons();
   updateSelectionTools();
+  updateReferenceEnable();
   updateScaleControls();
   updateTransportButtons();
   refreshTransformBar();
@@ -2617,7 +2728,10 @@ const FAMILY_TITLES = {
 function updateScaleControls() {
   const cur = library.current();
   const edo = edoOf(cur.tuningId);
-  tb.setRootOptions(Array.from({ length: edo }, (_, i) => ({ value: String(i), label: pitchClassName(i, cur.tuningId) })));
+  const rootOpts = hasEquave(cur.tuningId)
+    ? Array.from({ length: edo }, (_, i) => ({ value: String(i), label: pitchClassName(i, cur.tuningId) }))
+    : [{ value: '0', label: 'C (fixed)' }]; // no equave → the root is the fixed middle-C anchor
+  tb.setRootOptions(rootOpts);
   tb.setScaleOptions(scalesFor(edo).map((s) => ({ value: s.id, label: s.name })));
   tb.setFamilyButtons(familiesFor(edo).map((id) => ({ id, label: familyLabel(id), title: FAMILY_TITLES[id] })));
   tb.setCols(cur.columns.length);
@@ -2684,6 +2798,7 @@ function persist() {
     gridInstr: state.gridInstr, parkedInstr: state.parkedInstr,
     ripple: state.ripple, playheadBeat: state.playheadBeat, tileScrollX: state.tileScrollX,
     rollVIdx: state.rollVIdx, rollHIdx: state.rollHIdx,
+    reference: referenceToJSON(state.reference), refPrevMode: state.refPrevMode,
   }));
   recomputeDirty();
 }
@@ -2774,6 +2889,9 @@ function loadContent(env) {
   arrFuture.length = 0;
   clearProposal();
   grid.clearSelection();
+  // A reference points into THIS session's arrangement — a fresh document clears it
+  // (a workspace pref, so it survives a plain reload but not an Open/New).
+  if (state.reference) { state.reference = null; state.mode = state.refPrevMode || 'grid'; state.refPrevMode = null; syncReference(); }
   ensureTileStarts(); // derive positions for tiles loaded from an old gapless file
   centerGridOn(library.current()); // bring the loaded pattern into view
   activePane = 'grid';
@@ -2863,17 +2981,29 @@ function exportMidi() {
 // an OfflineAudioContext, plus a release tail, then encode + download. Faster
 // than realtime; an indeterminate "Rendering…" bar shows while it works (offline
 // rendering has no portable progress event — Firefox lacks `suspend()`).
+// Mixdown to a single stereo WAV. `opts` (all optional; Quick Export passes none):
+//   sampleRate  render rate in Hz (default 48000)
+//   startBeat   region start; notes triggering before it are dropped (default 0)
+//   endBeat     region end; notes at/after it are dropped (default project end)
+//   tailSec     ring-out after the region end (default computeTail())
+// The region is always shifted so its start is file time 0 (a mixdown has no
+// notion of an offset — plain WAV, no BWF metadata).
 let exporting = false;
-async function exportAudio() {
+async function exportAudio(opts = {}) {
   if (exporting || arrangement.allTiles().length === 0) return;
   const score = arrangementScore();
   const spb = 60 / state.bpm;
+  const sampleRate = opts.sampleRate || 48000;
+  const startBeat = opts.startBeat || 0;
+  const endBeat = opts.endBeat != null ? opts.endBeat : score.lengthBeats;
+  const tail = opts.tailSec != null ? opts.tailSec : computeTail();
   const notes = [];
   for (const n of score.notes) {
     if (n.muted) continue; // silenced lanes (mute / solo) aren't rendered
+    if (n.start < startBeat || n.start >= endBeat) continue; // outside the export range
     notes.push({
       pitch: n.pitch,
-      time: n.start * spb,
+      time: (n.start - startBeat) * spb, // shift region start to file time 0
       duration: (n.artDur != null ? n.artDur : n.duration * state.articulation) * spb,
       velocity: n.velocity,
       freq: n.freq,
@@ -2881,14 +3011,11 @@ async function exportAudio() {
     });
   }
   if (!notes.length) return;
-  // Release tail: let the longest-releasing lane ring out fully.
-  const maxRelease = Math.max(patchRelease(gridPatch), ...arrangement.lanes.map((l) => patchRelease(l.patch)));
-  const tail = Math.max(2.5, maxRelease * 6 + 0.5) + maxReverbTail(); // reverb rings past the release
-  const durSec = score.lengthBeats * spb + tail;
+  const durSec = (endBeat - startBeat) * spb + tail;
 
   setExporting(true);
   try {
-    const buffer = await engine.renderToBuffer(notes, durSec);
+    const buffer = await engine.renderToBuffer(notes, durSec, sampleRate);
     downloadBytes(`${projectName || defaultName()}.wav`, encodeWav(buffer), 'audio/wav');
   } catch (err) {
     alert(`Audio export failed: ${err.message}`);
@@ -2897,11 +3024,16 @@ async function exportAudio() {
   }
 }
 
+// Quick Export and Export Audio… share the `exporting` flag, so both disable and
+// read "Rendering…" while a mixdown runs.
 function setExporting(on) {
   exporting = on;
   exportProgEl.classList.toggle('on', on);
-  audioExportBtn.textContent = on ? 'Rendering…' : 'Export Audio';
-  audioExportBtn.disabled = on || arrangement.allTiles().length === 0;
+  const haveTiles = arrangement.allTiles().length > 0;
+  quickExportBtn.textContent = on ? 'Rendering…' : 'Quick Export';
+  quickExportBtn.disabled = on || !haveTiles;
+  audioExportBtn.textContent = on ? 'Rendering…' : 'Export Audio…';
+  audioExportBtn.disabled = on || !haveTiles;
 }
 
 // Make a string safe as a filename across OSes (no \ / : * ? " < > |, no control
@@ -2915,26 +3047,37 @@ function safeFileName(s) {
 // a zip. Every lane with notes is rendered (mute/solo ignored — you mute in the
 // DAW), all sharing one length + TimeReference 0 so they import aligned. The
 // bus mode (how much of the lane strip is baked in) is chosen in the dialog.
+// `opts`: busMode ('dry'|'postfader'|'baked'), sampleRate, startBeat, endBeat,
+// tailSec (as exportAudio), plus timeRefSamples — the BWF TimeReference written
+// into every stem. 0 = "region start is time 0" (stems align to each other);
+// a nonzero value = the region's absolute sample offset, so the DAW re-places the
+// set at its true project position on Import-at-Origin.
 let exportingStems = false;
-async function exportStems(busMode) {
+async function exportStems(opts = {}) {
   if (exportingStems || arrangement.allTiles().length === 0) return;
+  const busMode = opts.busMode || 'dry';
   const score = arrangementScore();
   const spb = 60 / state.bpm;
-  // Group every note by lane (ignore n.muted: stems include muted lanes too).
+  const sampleRate = opts.sampleRate || 48000;
+  const startBeat = opts.startBeat || 0;
+  const endBeat = opts.endBeat != null ? opts.endBeat : score.lengthBeats;
+  const tail = opts.tailSec != null ? opts.tailSec : computeTail();
+  const timeRefSamples = opts.timeRefSamples != null ? opts.timeRefSamples : 0;
+  // Group each lane's in-range notes (ignore n.muted: stems include muted lanes),
+  // shifting the region start to file time 0.
   const byLane = new Map();
   for (const n of score.notes) {
+    if (n.start < startBeat || n.start >= endBeat) continue;
     let arr = byLane.get(n.laneId);
     if (!arr) { arr = []; byLane.set(n.laneId, arr); }
     arr.push({
-      pitch: n.pitch, time: n.start * spb, duration: (n.artDur != null ? n.artDur : n.duration * state.articulation) * spb,
+      pitch: n.pitch, time: (n.start - startBeat) * spb, duration: (n.artDur != null ? n.artDur : n.duration * state.articulation) * spb,
       velocity: n.velocity, freq: n.freq, laneId: n.laneId,
     });
   }
   if (byLane.size === 0) return;
-  // One shared duration (mix length + release tail) so all stems are equal-length.
-  const maxRelease = Math.max(patchRelease(gridPatch), ...arrangement.lanes.map((l) => patchRelease(l.patch)));
-  const tail = Math.max(2.5, maxRelease * 6 + 0.5) + maxReverbTail(); // reverb rings past the release
-  const durSec = score.lengthBeats * spb + tail;
+  // One shared duration (region length + tail) so all stems are equal-length.
+  const durSec = (endBeat - startBeat) * spb + tail;
   const proj = projectName || defaultName();
 
   setExportingStems(true);
@@ -2946,7 +3089,7 @@ async function exportStems(busMode) {
       const lane = arrangement.lanes[li];
       const notes = byLane.get(lane.id);
       if (!notes || !notes.length) continue;   // skip empty lanes
-      const buffer = await engine.renderStem(notes, durSec, lane.id, busMode);
+      const buffer = await engine.renderStem(notes, durSec, lane.id, busMode, sampleRate);
       const label = instrument(lane.patch && lane.patch.kind).label;
       let base = safeFileName(`${String(li + 1).padStart(2, '0')} ${label}`);
       let name = base, k = 2;                   // de-dup same-instrument lanes
@@ -2954,7 +3097,7 @@ async function exportStems(busMode) {
       used.add(name.toLowerCase());
       const meta = {
         description: `${proj} - lane ${li + 1} (${label})`,
-        originator: 'Notorolla', date: now, timeReferenceSamples: 0,
+        originator: 'Notorolla', date: now, timeReferenceSamples: timeRefSamples,
       };
       files.push({ name: `${name}.wav`, bytes: encodeBwf(buffer, meta) });
     }
@@ -2970,11 +3113,101 @@ async function exportStems(busMode) {
 function setExportingStems(on) {
   exportingStems = on;
   exportProgEl.classList.toggle('on', on);
-  stemExportBtn.textContent = on ? 'Rendering…' : 'Export Stems';
+  stemExportBtn.textContent = on ? 'Rendering…' : 'Export Stems…';
   stemExportBtn.disabled = on || arrangement.allTiles().length === 0;
 }
 
-// The stem-export dialog: pick the bus mode, then render. Defaults to Dry.
+// Build the shared rate / range / tail controls into `body` (appends a .export-sec).
+// Returns accessors the dialog reads on Export, plus onRange(fn) so a caller can
+// react to the range choice (the stems dialog uses it to reveal the align option).
+function exportRangeControls(body) {
+  const sec = document.createElement('div');
+  sec.className = 'export-sec';
+
+  // Sample rate — default 48 kHz, independent of the live device rate.
+  const rateRow = document.createElement('div'); rateRow.className = 'export-row';
+  const rateLbl = document.createElement('span'); rateLbl.className = 'export-lbl'; rateLbl.textContent = 'Sample rate';
+  const rateSel = document.createElement('select');
+  for (const [v, t] of [[44100, '44.1 kHz'], [48000, '48 kHz'], [96000, '96 kHz']]) {
+    const o = document.createElement('option'); o.value = String(v); o.textContent = t; if (v === 48000) o.selected = true; rateSel.append(o);
+  }
+  rateRow.append(rateLbl, rateSel); sec.append(rateRow);
+
+  // Range — whole project vs the marked region (offered only when markers narrow it).
+  const startBeat = playStartBeat();
+  const endBeat = playEndBeat();
+  const fullEnd = arrangementEndBeat();
+  const markersSet = startBeat > 0 || endBeat < fullEnd;
+  let rangeChoice = 'entire';
+  const rangeCbs = [];
+  const rangeWrap = document.createElement('div'); rangeWrap.className = 'export-range';
+  const mkRange = (id, text, detail, disabled) => {
+    const lab = document.createElement('label');
+    if (disabled) lab.className = 'disabled';
+    const radio = document.createElement('input');
+    radio.type = 'radio'; radio.name = 'exportRange'; radio.value = id; radio.disabled = !!disabled;
+    if (id === 'entire') radio.checked = true;
+    radio.addEventListener('change', () => { if (radio.checked) { rangeChoice = id; rangeCbs.forEach((f) => f(id)); } });
+    const span = document.createElement('span'); span.textContent = text;
+    if (detail) { const d = document.createElement('span'); d.className = 'export-range-detail'; d.textContent = detail; span.append(' ', d); }
+    lab.append(radio, span);
+    return lab;
+  };
+  rangeWrap.append(mkRange('entire', 'Entire project', `(end beat ${+fullEnd.toFixed(2)} · ${fmtClock(fullEnd)})`, false));
+  const markerDetail = markersSet
+    ? `Start beat ${+startBeat.toFixed(2)} (${fmtClock(startBeat)}) — End beat ${+endBeat.toFixed(2)} (${fmtClock(endBeat)})`
+    : '(no markers set)';
+  rangeWrap.append(mkRange('markers', 'Between markers', markerDetail, !markersSet));
+  const rangeRow = document.createElement('div'); rangeRow.className = 'export-row';
+  const rangeLbl = document.createElement('span'); rangeLbl.className = 'export-lbl'; rangeLbl.textContent = 'Range';
+  rangeRow.append(rangeLbl, rangeWrap); sec.append(rangeRow);
+
+  // Tail (seconds) — pre-filled with the computed default; free to override up or down.
+  const tailRow = document.createElement('div'); tailRow.className = 'export-row';
+  const tailLbl = document.createElement('span'); tailLbl.className = 'export-lbl'; tailLbl.textContent = 'Tail (sec)';
+  const tailInput = document.createElement('input');
+  tailInput.type = 'number'; tailInput.min = '0'; tailInput.step = '0.5'; tailInput.value = String(+computeTail().toFixed(1));
+  tailRow.append(tailLbl, tailInput); sec.append(tailRow);
+
+  body.append(sec);
+
+  return {
+    startBeat, markersSet,
+    readRate: () => parseInt(rateSel.value, 10) || 48000,
+    readRange: () => (rangeChoice === 'markers' ? { startBeat, endBeat } : { startBeat: 0, endBeat: null }),
+    readTail: () => { const v = parseFloat(tailInput.value); return isFinite(v) && v >= 0 ? v : computeTail(); },
+    onRange: (fn) => rangeCbs.push(fn),
+  };
+}
+
+// The Export Audio… dialog: rate / range / tail, then a single-file mixdown.
+function openAudioModal() {
+  if (exporting || arrangement.allTiles().length === 0) return;
+  const body = document.createElement('div');
+  body.className = 'stem-export';
+  const intro = document.createElement('p');
+  intro.className = 'stem-intro';
+  intro.textContent = 'Render the arrangement to a single stereo WAV. The export always begins at time 0.';
+  body.append(intro);
+
+  const ctrls = exportRangeControls(body);
+
+  const actions = document.createElement('div');
+  actions.className = 'stem-actions';
+  const go = document.createElement('button');
+  go.className = 'stem-go'; go.textContent = 'Export';
+  go.addEventListener('click', () => {
+    modal.close();
+    const r = ctrls.readRange();
+    exportAudio({ sampleRate: ctrls.readRate(), startBeat: r.startBeat, endBeat: r.endBeat, tailSec: ctrls.readTail() });
+  });
+  actions.append(go);
+  body.append(actions);
+
+  const modal = openModal({ title: 'Export Audio', body });
+}
+
+// The stem-export dialog: pick the bus mode + rate/range/tail, then render. Dry default.
 const STEM_MODES = [
   { id: 'dry', label: 'Dry — pre-insert, pre-fader',
     desc: 'Voice only: no volume, pan, chorus or delay. The driest stems — process them in the DAW.' },
@@ -2989,7 +3222,7 @@ function openStemModal() {
   body.className = 'stem-export';
   const intro = document.createElement('p');
   intro.className = 'stem-intro';
-  intro.textContent = 'One Broadcast Wave (BWF) per lane, bundled in a zip. All stems share a start (TimeReference 0) so they import aligned. Choose how much of each lane’s strip to bake in:';
+  intro.textContent = 'One Broadcast Wave (BWF) per lane, bundled in a zip — all equal-length and aligned. Choose how much of each lane’s strip to bake in:';
   body.append(intro);
 
   let chosen = 'dry';
@@ -3009,11 +3242,38 @@ function openStemModal() {
     body.append(row);
   }
 
+  const ctrls = exportRangeControls(body);
+
+  // "Treat Start marker as time 0" — only meaningful for a marker range starting
+  // past beat 0. Checked → TimeReference 0 (each stem is its own clip at zero);
+  // unchecked → TimeReference = the region's absolute sample offset, so the set
+  // re-lands at its project position on Import-at-Origin.
+  const alignWrap = document.createElement('div');
+  const alignLab = document.createElement('label'); alignLab.className = 'export-check';
+  const alignBox = document.createElement('input'); alignBox.type = 'checkbox'; alignBox.checked = true;
+  const alignText = document.createElement('span'); alignText.textContent = 'Treat Start marker as time 0';
+  alignLab.append(alignBox, alignText);
+  const alignDesc = document.createElement('p'); alignDesc.className = 'export-check-desc';
+  alignDesc.textContent = 'Off: stamp each stem’s BWF TimeReference with the marker’s offset, so the set re-lands at its project position on Import-at-Origin.';
+  alignWrap.append(alignLab, alignDesc);
+  body.append(alignWrap);
+  const syncAlign = (id) => { alignWrap.style.display = (id === 'markers' && ctrls.startBeat > 0) ? '' : 'none'; };
+  ctrls.onRange(syncAlign); syncAlign('entire');
+
   const actions = document.createElement('div');
   actions.className = 'stem-actions';
   const go = document.createElement('button');
   go.className = 'stem-go'; go.textContent = 'Export';
-  go.addEventListener('click', () => { modal.close(); exportStems(chosen); });
+  go.addEventListener('click', () => {
+    modal.close();
+    const r = ctrls.readRange();
+    const rate = ctrls.readRate();
+    const spb = 60 / state.bpm;
+    // Region-to-zero (checked, or no offset) → TimeReference 0; else the region's
+    // absolute sample offset at the chosen rate.
+    const timeRefSamples = (!alignBox.checked && r.startBeat > 0) ? Math.round(r.startBeat * spb * rate) : 0;
+    exportStems({ busMode: chosen, sampleRate: rate, startBeat: r.startBeat, endBeat: r.endBeat, tailSec: ctrls.readTail(), timeRefSamples });
+  });
   actions.append(go);
   body.append(actions);
 
@@ -3087,6 +3347,7 @@ const arrUndoBtn = document.getElementById('arrUndo');
 const arrRedoBtn = document.getElementById('arrRedo');
 const tileDeleteBtn = document.getElementById('tileDelete');
 const midiExportBtn = document.getElementById('midiExport');
+const quickExportBtn = document.getElementById('quickExport');
 const audioExportBtn = document.getElementById('audioExport');
 const stemExportBtn = document.getElementById('stemExport');
 const tileInspectorBtn = document.getElementById('tileInspector');
@@ -3142,7 +3403,8 @@ setInterval(() => {
 }, 50);
 
 midiExportBtn.addEventListener('click', exportMidi);
-audioExportBtn.addEventListener('click', exportAudio);
+quickExportBtn.addEventListener('click', () => exportAudio()); // one-click defaults
+audioExportBtn.addEventListener('click', openAudioModal);
 stemExportBtn.addEventListener('click', openStemModal);
 document.getElementById('resetPlayer').addEventListener('click', resetPlayer);
 
@@ -3298,7 +3560,7 @@ async function startTransport(source, loop, fromBeat = null) {
   // and instantly reset passBase, drawing a resumed pass's playhead at the start.
   lastCurBeat = -Infinity;
   if (source === 'tiles') applyLaneGains(0); // set mute/solo before the first note
-  const provider = source === 'tiles' ? windowedArrangementScore : buildScore;
+  const provider = source === 'tiles' ? windowedArrangementScore : buildAuditionScore;
   scheduler.start(provider, now + 0.1, loop ? LOOP_STEP : 1, loop);
   startRender();
   updateTransportButtons();
@@ -3377,6 +3639,7 @@ function updateTransportButtons() {
   tileLoopBtn.disabled = !haveTiles;
   phHomeBtn.disabled = phEndBtn.disabled = playing; // playhead parks only while stopped
   midiExportBtn.disabled = !haveTiles;
+  quickExportBtn.disabled = exporting || !haveTiles;
   audioExportBtn.disabled = exporting || !haveTiles;
   stemExportBtn.disabled = exportingStems || !haveTiles;
 
@@ -3668,7 +3931,7 @@ window.addEventListener('keydown', (e) => {
   if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !tiles) {
     e.preventDefault(); // scale-step within the active mask; Shift = a literal octave (equave)
     const up = e.key === 'ArrowUp';
-    if (e.shiftKey) grid.transpose((up ? 1 : -1) * edoOf(library.current().tuningId));
+    if (e.shiftKey) { const eq = equaveOf(library.current().tuningId); if (eq != null) grid.transpose((up ? 1 : -1) * eq); } // no equave → no octave jump
     else grid.transposeScalar(up ? 1 : -1);
     flash(up ? tb.transUpBtn : tb.transDownBtn);
   }
@@ -3694,3 +3957,5 @@ function readJSON(key) {
   try { return JSON.parse(localStorage.getItem(key) || 'null'); }
   catch { return null; }
 }
+
+

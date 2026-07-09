@@ -109,13 +109,95 @@ export const PALETTE = DURATIONS.map((d) => durationColor(d.beats));
 // matters). Shortest duration → minW, longest → maxW, the rest log-spaced.
 const STRETCH_LOG_MIN = Math.log2(Math.min(...DURATIONS.map((d) => d.beats)));
 const STRETCH_LOG_MAX = Math.log2(Math.max(...DURATIONS.map((d) => d.beats)));
-export function stretchWidth(durIndex, minW, maxW) {
-  const d = DURATIONS[durIndex];
-  const b = d ? d.beats : 1;
+// The engraving curve as a continuous function of a beat-length (not a durIndex),
+// so merged-timeline SEGMENTS — arbitrary gaps between two patterns' onsets — get a
+// width too. Clamped to [minW,maxW] (the legibility floor/ceiling, like engraving's
+// minimum note spacing). widthForBeats(DURATIONS[i].beats) === the old stretchWidth(i).
+export function widthForBeats(beats, minW, maxW) {
+  const b = beats > 0 ? beats : 1;
   const t = STRETCH_LOG_MAX > STRETCH_LOG_MIN
     ? (Math.log2(b) - STRETCH_LOG_MIN) / (STRETCH_LOG_MAX - STRETCH_LOG_MIN)
     : 0.5;
-  return minW + (maxW - minW) * t;
+  return minW + (maxW - minW) * Math.min(1, Math.max(0, t));
+}
+export function stretchWidth(durIndex, minW, maxW) {
+  const d = DURATIONS[durIndex];
+  return widthForBeats(d ? d.beats : 1, minW, maxW);
+}
+
+// The merged, engraving-style TIME layout that both the edited pattern and a
+// reference pattern render through — a single `beat → x` map so simultaneous
+// events line up regardless of each pattern's own column widths. Both patterns
+// contribute their (looped) column boundaries to one sorted set; each gap becomes a
+// segment sized by `widthForBeats`; a note that a foreign onset carves therefore
+// spans several segments (and gets a little wider — engraving makes room for
+// activity). With `refCols` null it degenerates to exactly today's Stretch (the
+// edited pattern's own boundaries). Pure & headless-testable (notch/reflayout.mjs).
+//   total     — timeline length in beats = max(edited, reference); shorter loops to fill
+//   width     — total pixel width
+//   beatToX   — linear-within-segment map (exact at boundaries; notes sit on boundaries)
+//   editedColX— per FIRST-INSTANCE edited column {x,w} (the editable spans)
+//   xToEditedCol(px) — which editable column an x hits, or -1 in a ghost-repeat zone
+const Q = (b) => Math.round(b * 1e6) / 1e6; // quantize beats so float onsets dedupe
+// `refInfo` (a reference pattern's transformed rhythm) = { onsets:[beats], len } or
+// null — onsets are its note start/end beats (a reversed reference has no clean
+// column grid, so we work from the note events). editedCols stays a columns array
+// because its FIRST-INSTANCE spans are the editable slots.
+export function mergedLayout(editedCols, refInfo, minW, maxW) {
+  const beatsOf = (c) => DURATIONS[c.durIndex].beats;
+  const lenOf = (cols) => cols.reduce((s, c) => s + beatsOf(c), 0);
+  const editedLen = lenOf(editedCols);
+  const refLen = refInfo && refInfo.len > 0 ? refInfo.len : 0;
+  const total = Math.max(editedLen, refLen) || editedLen || 1;
+
+  const set = new Set([0, Q(total)]);
+  const addTiled = (cols) => {
+    const L = lenOf(cols);
+    if (L <= 0) return;
+    for (let base = 0; base < total - 1e-9; base += L) {
+      let t = base;
+      for (const c of cols) {
+        if (t > total + 1e-9) break;
+        if (t >= -1e-9) set.add(Q(t));
+        t += beatsOf(c);
+      }
+    }
+  };
+  const addTiledBeats = (onsets, L) => {
+    if (!(L > 0)) return;
+    for (let base = 0; base < total - 1e-9; base += L) {
+      for (const o of onsets) { const t = base + o; if (t >= -1e-9 && t <= total + 1e-9) set.add(Q(t)); }
+    }
+  };
+  addTiled(editedCols);
+  if (refLen) addTiledBeats(refInfo.onsets, refLen);
+
+  const boundaries = [...set].sort((a, b) => a - b);
+  const xs = [0];
+  for (let i = 1; i < boundaries.length; i++) {
+    xs.push(xs[i - 1] + widthForBeats(boundaries[i] - boundaries[i - 1], minW, maxW));
+  }
+  const width = xs[xs.length - 1];
+
+  const beatToX = (beat) => {
+    if (beat <= boundaries[0]) return xs[0];
+    if (beat >= boundaries[boundaries.length - 1]) return width;
+    let i = 1;
+    while (i < boundaries.length && boundaries[i] < beat) i++;
+    const b0 = boundaries[i - 1], b1 = boundaries[i];
+    const f = b1 > b0 ? (beat - b0) / (b1 - b0) : 0;
+    return xs[i - 1] + (xs[i] - xs[i - 1]) * f;
+  };
+
+  const editedColX = [];
+  { let t = 0; for (const c of editedCols) { const x0 = beatToX(t); t += beatsOf(c); editedColX.push({ x: x0, w: beatToX(t) - x0 }); } }
+  const xToEditedCol = (px) => {
+    if (px < 0) return editedColX.length ? 0 : -1;
+    for (let i = 0; i < editedColX.length; i++) { const g = editedColX[i]; if (px < g.x + g.w) return i; }
+    return -1; // beyond the first instance → a ghost-repeat zone (inert)
+  };
+
+  return { total, width, boundaries, beatToX, editedColX, xToEditedCol, editedLen, refLen };
 }
 
 // Accent LEVEL per column (a groove attribute): 0 = normal, 1 = accent, 2 = ghost.

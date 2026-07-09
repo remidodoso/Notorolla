@@ -55,6 +55,8 @@ a shared enabler. Rough read before the details:
 | **12. Tile inspector** (per-tile modifiers) — *shell + facts + transport + rename BUILT; per-tile modifiers ahead* | pure model + UI | no | composes with 1 & 7 |
 | **13. Instrument cleanup pass** (levels, weak controls, shared labels) | audio metering + DSP tuning | no | — |
 | **14. Patch catalog** (named patches + modeless catalog windows) — *Phases A–C BUILT; D (groups/tags) & E (drag-to-lane) ahead* | pure model + UI + a user-global store | no | reuses the inspector's pane shell (12); catalogs generalize |
+| **15. Tuning ⇄ timbre platform** (Sethares matching; generalized non-EDO tunings; analysis-based harmony) | pure model + a dissonance-curve analysis | no | tunings generalize `edoOf`; the timbre side leans on 8 (modal) & 4 (PadSynth) |
+| **16. New Counterpoint** (reference-aware generation + hocket redistribution) | pure model — a shared beat-timeline + a bias source + a time-proportional overlay | no | reuses New Random (`random.js` Steer); consonance predicate sharpens with 15; voices generalize with 7 |
 
 Two corrections to flag up front, because they change sequencing:
 
@@ -192,6 +194,31 @@ that targets that group is a **pure pattern generator** in the exact mold of
 pure, and it delivers "generate/mutate a beat" immediately. Defer **(b)** until polyphony
 lands, then it's a drum-map view over a poly pattern rather than new machinery.
 
+### Rhythm overlays & named grooves (absorbed from the notes wishlist)
+
+The **duration-template overlay** — tile a repeating rhythm across a grid, reshaping the rhythm
+while keeping pitches — is *mostly there already* now that duration is set in the performance
+lanes; the speculative rest lives here as generator/preset material:
+
+- **Named-groove presets** — Tresillo, Habanera, Gallop, Charleston, Son/Rumba clave, Bo Diddley,
+  etc., applied to the grid or the selected columns. Store as a **step pattern** at a stated
+  resolution (`{ name, pulses, steps:[1,0,0,…] }`, 1 = onset / 0 = rest — the universal clave / 808
+  notation), so it's data-driven and trivial to extend. "Apply" derives durations from the onset
+  gaps, puts pitches on the onsets, rests on the silences.
+- **Two limits decide which grooves fit today:** (1) **resolution ceiling = the eighth note** —
+  Tresillo / Gallop / Charleston / Habanera are 8-pulse and fit; **Son/Rumba clave** and **Bo
+  Diddley** are 16-pulse and need `1/16` (and `3/16`) added to `DURATIONS` (a contained model change:
+  eighth-grid assumption, Stretch widths). (2) **Length** — claves are 16-step / often two bars, so
+  the full clave family also waits on **variable column counts**. The 8-pulse grooves map onto ≤12
+  columns now.
+- **Pitch ↔ onset mapping** (sub-decision): when a rhythm has K onsets and the target has M notes,
+  **cycle** the M pitches through the K onsets (default; melody wraps onto the groove) vs. keep
+  pitches positionally and only re-rhythm / insert rests.
+
+Net: ship the **8-pulse grooves now** (real and fun), and let the iconic 16-step claves be the
+carrot for adding sixteenth resolution + variable grid length. All pure (template + column count →
+`durIndex` list), one `_commit`, beside the permute tools.
+
 ---
 
 ## 4. More instruments — PadSynth in particular
@@ -258,7 +285,7 @@ sequence, and phase (1) is the on-ramp.
 
 ---
 
-## 6. Etuderator
+## 6. Fuguenator/Etuderator
 
 **The idea (yours):** generate random études / exercises via transformations of smaller
 patterns — possibly with notation, if a simple-but-suitable methodology can be found.
@@ -301,6 +328,26 @@ avoids the dependency *and* the ambiguity, and it suits the aesthetic.
 **My recommendation:** build the serial-transform + sequence-engine primitives (pure
 functions, drop into the Permute group), have them **emit subsequences**, and start notation
 with integer/interval notation. Mostly pure-function work; a strong differentiator.
+
+### The Fuguenator — companion-voice generation (same section, multi-pattern half)
+
+The Etuderator spins one line into a sequence; the **Fuguenator** spins one pattern into a
+**companion** (or a pair) that harmonizes with / relates to it. Both live here because both are
+**multi-pattern generators** (they emit new patterns) — as opposed to **New Counterpoint (§16)**,
+which is a *single-pattern* reference-aware tool. Spectrum, cheap → deep:
+
+- **Canon / answer (cheap, do first):** copy the subject into a second voice **transposed** (e.g.
+  +7 = answer at the fifth) and/or **time-delayed** (stretto). This is literally the serial
+  transforms (transpose / invert / retrograde) feeding a second voice — reuses the Etuderator
+  primitives.
+- **Serial answer:** the companion as an I / R / RI / Tn form of the subject row.
+- **Harmonization:** generate triads / chords under a melody — ties to the Triadulator + the triad
+  objects (§15c).
+- **Species counterpoint (deep):** rule-following consonant line(s) against a cantus firmus
+  (1:1, 2:1, …) with voice-leading constraints — research-grade; defer.
+
+Lands as new patterns / tiles (the two-lane tile player is where a generated pair goes), and pairs
+with the A/B audition now built as the **Reference backdrop**.
 
 ---
 
@@ -638,7 +685,7 @@ no WASM.
 
 ---
 
-## 12. Tile inspector — the per-tile modifier stack
+## 12. Tile Attributes and Tile Inspector — the per-tile modifier stack
 
 **First cut BUILT (2026-07-05):** the modeless-window shell + a read-only facts dump + a play/stop/loop
 transport cluster ([src/inspector.js](src/inspector.js), a "Tile Inspector" button in the tile-player top
@@ -979,5 +1026,376 @@ Then, ordered by *leverage per unit cost*, respecting the dependency edges above
 None of 1–6 require WASM, and even 8's worklet is plain JS (no build step). The only genuinely
 WASM-flavored work is the spectral DSP in item 8-of-sequencing above, and even there the offline
 drone path has a plain-JS fallback.
+
+## 15. Tuning ⇄ timbre matching — the Sethares platform
+
+**The idea (yours):** treat Notorolla as a **sandbox for matching tunings and timbres** in the
+spirit of Sethares' *Tuning, Timbre, Spectrum, Scale*. Consonance is not fundamentally about
+small-integer *frequency* ratios — it's about *partials not beating*; small-integer ratios only
+feel consonant because a **harmonic** timbre's partials line up at them. Move the partials and the
+consonances move with them. You've heard this directly: squeezing a voice's partials so the 7th
+harmonic lands elsewhere makes matched intervals sound "bell-like but unusually consonant."
+Zindel's **Spread** (partials off the integer harmonics) is a first version of the timbre knob;
+the tuning system is the pitch knob; the goal is to **close the loop both ways** — design a timbre
+to fit a tuning, or a tuning to fit a timbre.
+
+**Why Notorolla is unusually suited.** Almost no tool has *both* a flexible synthesis engine *and*
+a flexible tuning system wired to one analysis. We nearly do — movable-partial voices, a tuning
+seam, and the missing piece: a consonance analysis. The science is old (Sethares '93; gamelan and
+bell tunings are the real-world instances); the fresh part is an **interactive** loop where you
+slide partials and *watch* the consonances migrate.
+
+### 15a. Generalized, non-EDO tunings (the foundation)
+
+Today's stack assumes **octave-periodic EDOs**: a tuning is degrees-per-octave (`edoOf`),
+pitch-classes repeat every octave, and grid / Triadulator / scales / MIDI-export all lean on that.
+The platform needs the generalization the notes already flag as deferred ("true size ≠ 12 scales —
+no-octave, lattices, the viewport rework"):
+
+- **`tuning = { anchor, generators:[(ratio,dir)…], range }` → a sorted list of
+  `{ freq, provenance:(generator,step), label }`.** An **EDO is the one-generator special case**
+  (one step ratio, extended both ways). The familiar case falls out of the general one — the same
+  "general subsumes familiar" shape as the sus/EDO Triadulator work.
+- **All tunings fill the piano range (A0..C8), both directions** from the anchor (generalizes the
+  per-tuning frequency-band range already built via `degreeBounds`).
+- **No octave-equivalence except in labeling.** A "degree" becomes an **index into the sorted
+  list**; the octave appears only as an **independent true-2:1 visual ruler** (decided — *not*
+  pinned to any tuning note, because in a non-octave tuning they don't coincide). Labels =
+  **nearest-12-TET + cents offset** (decided).
+- **"Pitch class" → "provenance class."** With no repeating pitches, the analogue of an
+  octave-equivalence class is *same generator* (all the m3-chain notes; all the P4-chain notes).
+- **Ripple to finalize (known debts, none block a first scale):** Triadulator / sus-labeler /
+  octave-mate highlight (12-pc assumptions), EDO-aware New Random, and 12-TET MIDI export all need
+  a non-octave story.
+
+**Many tunings, eventually user-created.** It's a fair assumption that **many** tunings will be
+implemented over time (7-limit JI sets, historical temperaments, xenharmonic scales, …). The
+`{ anchor, generators, range }` model above is the substrate; a natural end point is **user-facing
+tooling to define their own tuning** (enter generators/ratios/cents, or edit a scale, and save it
+alongside patches) — the tuning analogue of the patch catalog.
+
+### 15b. The concrete first target — the "cross" tuning (minor-native) — BUILT (2026-07-06)
+
+**BUILT** as the first non-octave tuning — the scale-first path (a generated sorted pitch list on the
+existing `freq` seam, equave-less gating via new `hasEquave`, nearest-12-ET+cents labels, a true-2:1 grid
+ruler). Mechanics + the confirmed model decisions are in [notes_and_status.md](notes_and_status.md)
+("The cross tuning"); `notch/cross.mjs`. The general `{anchor, generators, range}` engine (15a) and the
+analysis predicate (15c/15d) remain ahead.
+
+The scale that started this: **two generators from middle C — a minor third 6/5 and a perfect
+fourth 4/3 — extended both directions to fill the keyboard, keeping the comma-pairs (not
+merging/tempering them).** Notes from C up: C, Eb (6/5), F (4/3), Gb (36/25), A (216/125), Bb
+(16/9)… A **"cross"** — two independent chains, *not* the full 2-D lattice. Properties worth
+remembering:
+
+- **It doesn't close the octave** (pure 6/5s never do) — intended.
+- **It's minor-native:** C–Eb–G = **10:12:15** (just minor) is available; a **4:5:6 major is not**
+  (5/4 is unreachable from 6/5 & 4/3). A tuning of minor thirds and fourths is intrinsically a
+  minor harmonic world — the kind of fact only *analysis* (15c) surfaces, not templates.
+- **Retained near-pairs drift:** the two incommensurate chains (~316¢, ~498¢ steps) slide past each
+  other, so kept pairs range **~14–90¢ apart** across the range (a shifting microtonal texture, not
+  a fixed comma; A/Bb ≈ 49¢ is the first).
+
+This is the immediate implementation candidate once the model in 15a is settled enough to carry it.
+
+### 15c. Analysis-based harmony (the "ratio-based triad definer," finally)
+
+Chord selection should be **two complementary methods, both**:
+
+1. **Heuristic templates** — the named, culturally-anchored chords we already have
+   (maj/min/dim/aug/sus, per-EDO). These include *deliberately non-consonant* sets (aug ≈
+   16:20:25, dim ≈ 25:30:36) — which is exactly why analysis can't replace them.
+2. **Analysis** — a general **`consonance(pitchSet) → score`** predicate. This *is* the long-
+   deferred "ratio-based triad definer." It plugs straight into the Triadulator's existing search:
+   **the candidate pool changes (score ≥ threshold), the enumeration doesn't** — the same
+   "membership changes, search stays" principle as the sus/EDO generalizations. Chords with no
+   template name are **labeled by ratio** (`10:12:15`, `≈6:7:9`), riding the nearest-12-TET+cents
+   labeling layer.
+
+**Two tiers of the predicate, general subsumes familiar:**
+
+- **Ratio-based** (start here): rationalize each interval to the simplest `n:d` within ε cents →
+  score by **Tenney height** `log₂(n·d)` + a mistuning penalty; score a triad by best fit to a
+  low-integer **a:b:c** (otonal) with a pairwise fallback. **Exact on JI** (the cross's ratios are
+  5-limit rationals), and it auto-flags the drifting comma-pairs as dissonant (beating clusters,
+  not chord material).
+- **Spectrum-based (Sethares)** — the real generalization: the same score over the **actual
+  partials** via a Plomp–Levelt/Sethares **dissonance curve**. Ratio-based is just this assuming a
+  *harmonic* timbre — so once partials are squeezed, **only** the spectrum-based analysis is
+  correct (it's the only one that sees the bell-consonances). **Harmonic entropy** (Erlich) is the
+  psychoacoustic upgrade that handles the ε tolerance natively.
+
+Once the ratio-based definer exists, **triad-object operations** compose with it: identify a chord
+anywhere (a selection or the whole pattern), then **change inversion** (re-voice), **swap quality**
+(maj↔min↔dim↔aug), **transpose**, or **arpeggiate** it — all pure functions over a set of degrees,
+tuning-general because the definer is.
+
+### 15d. The dissonance curve — the one primitive everything hangs on
+
+`dissonanceCurve(spectrum) : interval → dissonance` (Plomp–Levelt summed over all partial pairs;
+triads = the same sum over three notes' partials). Its **local minima are that timbre's consonant
+intervals.** From this one object you get **both** directions of the loop: *timbre → tuning* (drop
+scale steps on the minima) and *tuning → timbre* (solve the partial-stretch that lands minima on
+your scale). Partials are **known for additive/modal** voices (the oscillator/mode bank *is* the
+spectrum) and **computable for FM** (`fc ± k·fm`, Bessel amplitudes) — so any voice feeds the same
+analysis.
+
+**Smallest thing that proves the platform:** the dissonance curve computed live from a Zindel
+patch's partials, plotted, with a draggable interval marker — **squeeze the partials and watch the
+minima move.** Everything else (the analysis-fed Triadulator, tuning suggestion) hangs off it.
+
+### 15e. Which engine is the timbre knob
+
+- **Modal synthesis** (the native-modal-resonator branch of §8) is the **strongest** tool here:
+  **per-mode frequency + amplitude + decay**, so you can **construct a resonator whose modes *are* a
+  tuning's ratios** — the timbre literally embodies the scale (construct, not approximate), and the
+  per-mode decay is what actually reads as "bell-like." Modes are a known list → feeds the analysis
+  directly. **A strong reason to prioritize §8's modal branch.**
+- **Additive** (Zindel / a future **PadSynth**, §4) = the spectrum **pixel-editor**: any partial
+  anywhere, fully known; Zindel's **Spread** is a first version of the knob.
+- **FM** (Tervik / Zindel's Modulation) = a cheap **idea generator**: rich inharmonic spectra from
+  ~two parameters, but a **constrained reachable set** (an arithmetic comb you shift/scale, not
+  place per-partial). Good for stumbling onto spectra, poor for targeting.
+
+**Composes with:** §4 PadSynth (stretch-to-match partials — already flagged), §8 modal/physical
+(resonator-from-a-tuning), §11 scales (Scala import, non-octave scales, the equave/viewport
+rework), and the Triadulator/labeler (the analysis pool + ratio labels).
+
+**Open questions to settle before building:**
+
+- **Model:** confirm `{anchor, generators, range}` → sorted-list as *the* tuning representation
+  (EDO retrofitted), and how far it reworks the current `edoOf`/degree machinery vs. lives beside
+  it for a first non-octave scale.
+- **Scale-first or model-first?** Can the cross tuning be prototyped as a bespoke pitch list on the
+  existing grid (the way Just is today), deferring the full non-octave viewport/pitch-class rework
+  — or does "no octave" force that rework up front?
+- **Analysis metric:** whole-triad otonal fit vs. pairwise; ratio-based first vs. straight to
+  spectrum-based.
+- **Discovery scope:** does analysis first only *score/rank the existing pool*, or
+  *enumerate-and-discover* new consonant sets (needs span + complexity bounds)?
+
+## 16. New Counterpoint — reference-aware generation & hocket redistribution
+
+> **Status — the BASIS for New Counterpoint is BUILT (2026-07-08).** The **reference backdrop** is
+> done: designate a tile → a frozen, self-contained snapshot overlays behind the edited pattern via
+> the **shared merged-time layout** (both patterns on one engraving `beat→x` map) and plays along
+> (Soft/Mute, dry through its baked patch). **This is the keystone the rest of §16 hangs on** — the
+> beat-indexed "what is the reference doing here" substrate + the aligned overlay now exist, so New
+> Counterpoint generation is "read the reference at each generated slot and bias the pick," not new
+> plumbing. Mechanics in [notes_and_status.md](notes_and_status.md) ("Reference backdrop"). Still
+> ahead: **New Counterpoint** generation (the species fork + consonance bias, riding `random.js`'s
+> Steer), the **Split/Steal/Blend** redistribution family, drag-to-steal, and multiple/arrangement-
+> context references.
+
+**The idea (yours):** while editing one pattern, display **another pattern as a "ghostly" reference
+backdrop**, and let that reference **influence how the new pattern is built** — a **"New Counterpoint"**
+button beside New Random that generates a voice *against* the reference (consonance, motion, interlock),
+plus a family of **conservative redistributions** that hocket/steal/blend material between two patterns
+rather than inventing it. The reference-overlay view and the generator are two hats on **one substrate.**
+
+**The keystone — a shared beat timeline + one query.** Everything here rests on a single primitive:
+lay both patterns on **one `beat → x` map** (not per-column widths), and expose **"what is the reference
+sounding at beat *b*?"** Grid columns own *variable* durations, so column-index overlay is meaningless —
+two different rhythms cover the same time in different pixels. The fix is that **X must be a function of
+beats, driven through the same map for both layers.** Compression is fine *as long as it's compression of
+the shared timeline applied once to both* — today's **Stretch is per-column and independent, so it does
+NOT align** two different rhythms (log-compressed *and* laid out per pattern). So overlay needs a
+**time-proportional layout** (a cousin of Stretch): either **linear beats** (honest, but long notes
+sprawl — the very thing Stretch's log curve avoids) or a **shared-timeline compression** (compact *and*
+aligned). Uniform Grid can't host a meaningful overlay (it throws time away — only aligns *identical*
+rhythms). **Same-tuning first**; cross-tuning pitch alignment is the roll's true-cents job (Stage 2),
+left for later. This beat-indexed query is the thing to build first — the ghost render is then a small
+pass, and every generator below is a consumer of it.
+
+**The visual — a ghost backdrop.** The reference draws faintly *behind* the edited pattern on the shared
+time layout: ghosted dots (reuse the Triadulator **`setProspective`** path already in gridview — `alpha
+0.5` + dashed ring), read-only, visibly not-yours. A reference note generally lands **mid-column** over
+your grid — that's correct, not a bug (it sounds partway through your beat). Same degree-rows when the
+tunings match; the roll handles the mixed-tuning case.
+
+**New Counterpoint — the *creative* generator.** It is **New Random with one extra, conditional bias
+source**: at each new-pattern slot, query the reference at that beat and, **when the reference sounds**,
+feed consonant-interval **`biasTargets`** into the existing **Steer** `biasedPick` ([src/random.js](src/random.js))
+— Steer, not Sort, because it preserves Run/Triad/arpeggio contour. **Where the reference rests, it
+degrades gracefully to plain New Random** (no constraint). So it inherits every New Random knob and adds
+a consonance pull; small surface area.
+
+- **The species fork (this *is* the timing-mismatch, turned into a knob).** How the new voice's rhythm
+  relates to the reference's is the one unavoidable choice, and it maps onto the classical species:
+  - **Free / florid** *(keep your rhythm)* — leave the groove you laid down; only bias pitches toward
+    consonance on the overlaps. Accepts the mismatch; simplest; **default + first cut.**
+  - **First species (1:1)** *(adopt the reference's rhythm)* — the new pattern **takes the reference's
+    onset/duration structure**, note-against-note, then picks a consonant pitch per slot. **Dissolves**
+    the mismatch by construction; the textbook exercise; here the button *sets your rhythm.*
+  - **Hocket** *(fill the reference's rests)* — onsets/durations go into the reference's gaps so the
+    voices interlock (the **Auto-hocket** entry in Minor weird ideas is this case). Rides the Duration Bias
+    machinery. Very on-brand for the ostinato/interlock aesthetic.
+- **Consonance predicate** — ship a **heuristic interval-class table**; it's **tuning-aware** (consonance
+  differs in 16-ET / the cross), so this is a natural first consumer of §15's **dissonance curve**
+  (the dual heuristic-then-analysis harmony selection already framed there). The button doesn't change;
+  the predicate behind it sharpens.
+- **Deferred counterpoint niceties:** motion preference (favor contrary motion), parallel-perfect
+  avoidance (down-weight consecutive 5ths/octaves — one step of memory), cadential start/end-on-perfect
+  rules.
+
+**Redistribution — the *conservative* family (steal / give / blend).** Distinct from generation: these
+**don't create notes, they rechoreograph existing material** — total notes in ≈ out. One model: **events
+on the shared timeline, dealt into buckets (voices).** **Steal** = move an event A→B (A gets a rest — the
+rest is the gift; that *is* hocket). **Blend** = merge two buckets onto one timeline. **Split** = deal one
+line's events into two by a rule (the inverse of blend — turn a melody into interlocking parts). The
+interest is all in the **deal rule**: by time (alternate / on-vs-off-beat / every Nth), **by register**
+(high→v1, low→v2 — melodic hocket / klangfarben), by duration/accent, or **probabilistic with a "hocket
+amount" density knob** — a **structural crossfade** (fade *which material comes from where*, not volume),
+automatable per-repeat via the `mods.js`/§11 evolving-transposition cousin. A **manual counterpart**: with
+the ghost overlay up, **drag a ghost note into your grid to "steal" it** — the overlay becomes a *surface
+you pull material off of*. Notes: **blend must pick a winner per slot in mono** (a collision rule — higher
+wins? A-priority?); poly (§7) keeps both as a stack. Split/Steal never collide (they only *move* notes).
+Emit **new patterns** (A′/B′ or a blended C), not in-place mutation — the "patterns as reusable material"
+instinct; at minimum undoable. **Lead with single-source Split** (one timeline → no mismatch at all); the
+two-pattern steal/blend is the richer follow-on once the merged-timeline machinery exists.
+
+**Multiple references (deferred — NOT first pass).** The reference is one pattern to start, but could be
+**several** — **stacked** (a chord/backdrop of simultaneous reference voices — consonance is then against
+a *set*, which is where the Triadulator / analysis-based harmony earns its keep) or **consecutive** (a
+reference *sequence* spanning the timeline). Both are pure extensions of "what is the reference sounding
+at beat *b*" (it returns a set / a longer line); explicitly a later pass.
+
+**Recommended first pass (to be scoped when we implement):** the beat-indexed reference query + a
+time-proportional overlay of **one** same-tuning reference; **New Counterpoint** in **Free** species with a
+single **consonance-strength** (Steer) knob and a heuristic table, result shown as **prospective ghosts**
+before committing; then **Split** as the first redistribution. First/Hocket species, two-pattern
+steal/blend, drag-to-steal, multiple references, and the §15 dissonance curve all layer on after.
+
+**Two-voice analysis aids (absorbed from the notes "Counterpoint aids" wishlist).** Now that the
+A/B audition itself is built (the Reference backdrop), the *analysis* half of that wishlist lives
+here as future work over the same two-voice picture: an **interval / consonance readout** between
+the edited voice and the reference over time, and **forbidden-parallels detection** (parallel
+5ths/8ves) — the "naughty analysis" the composer wants, riding the §15 consonance predicate.
+
+**Composes with:** New Random (`random.js`, the host engine), the Triadulator (chord-tone targets;
+stacked-reference consonance), §7 polyphony (more voices; poly-blend union), §11 scale-space
+(scale-diatonic consonance), §15 (the analysis-based consonance predicate), and §1 subsequences /
+arrangement-context (the reference could be "what's playing under this tile"). **Cost:** pure model + UI —
+the merged/shared beat-timeline, a bias source on the existing generator, and a time-proportional render.
+No WASM, no new sound-generating code.
+
+## 17. MIDI and microtonal export
+
+Captured from a design discussion (2026-06-24); **no code written**, the user parked it ("audio
+export is fine at the moment"). The **built, working** plain-MIDI exporter is described in notes &
+status (`Export to MIDI`); what follows is the *unbuilt* microtonal side. Decisions reached + open
+questions, so we can pick it back up cold.
+
+- **The current export is wrong for non-12-ET.** It writes `n.pitch` (the scale **degree**) as
+  the note number. In 12-ET degree == MIDI note, so it's fine. But a 16-ET pattern stores
+  degrees in **16-steps-per-octave** space anchored at 60 ([grid.js](src/grid.js):
+  `freq = noteToFreq(60)·2^((degree−60)/16)`), so degree 76 is an octave up yet we'd emit MIDI
+  76 (E5) — a 16-ET piece currently exports **transposed/compressed gibberish**.
+- **Chosen direction: two separate export options, NO pitch bend.** The user finds pitch-bend /
+  MPE "grotesque" and explicitly rejected it (its only real upsides — tuning-ignorant synths +
+  the Dorico-notation hack — don't matter for a Surge-centric workflow).
+  - **Plain MIDI** — for `edo === 12` pieces. This is *exactly today's output* (degree == MIDI
+    note), no change needed. The dividing line is the **EDO, not the scale's "feel"**: a Mavila
+    scale is 16-EDO → Scala, even though it sounds diatonic-ish.
+  - **Scala (microtonal)** — the **degree IS the interchange unit, no pitch math**. Emit the
+    same degree-MIDI **plus a generated `.scl` + `.kbm`**, zipped (reuse [src/zip.js](src/zip.js)),
+    loaded into a tuning-aware synth (Surge XT, Pianoteq, Vital, anything Scala/MTS-ESP). The
+    synth retunes per key → exact pitch, **full polyphony, lane tracks intact, one channel**.
+- **Why Scala fits Notorolla naturally:** our internal degree space (EDO steps anchored at
+  degree 60) is *exactly* what a **linear `.kbm`** expects. `.kbm` anchor = middle note 60,
+  reference note 60, **261.6256 Hz** (`noteToFreq(60)`), period = EDO size; `.scl` = `edo` equal
+  lines (16 × 75¢ → 1200¢). Because our `freq` is defined off that same anchor, Surge reproduces
+  our pitches to the cent. Non-octave tunings would just change the `.scl`'s last (period) line.
+- **How Surge-family microtonality works (for reference):** two philosophies — *tuning baked in
+  the MIDI* (pitch bend/MPE; rejected) vs *tuning held by the synth* (what we want). The latter
+  via **Scala `.scl`/`.kbm`** files (static, what we'd export), **MTS-ESP** (Oddsound real-time
+  broadcast; needs a master plugin, not a file we emit), or **MTS SysEx** (old, patchy support).
+- **Open wrinkles to resolve before building:**
+  1. **Plain MIDI invoked on non-12 content** — refuse-with-a-nudge ("use Scala") [leaning] vs
+     quantize-to-nearest-12 (deliberate lossy reduction).
+  2. **Mixed-tuning pieces** (per-pattern tuning means a lane can mix EDOs across tiles). A `.scl`
+     is one scale per synth instance. Proposed general design: **one MIDI track per (lane ×
+     tuning)** actually present + **one `.scl`/`.kbm` per distinct tuning** (12-EDO file shared,
+     not duplicated) + a `README.txt`. Collapses to "tracks = lanes, one scale file" for a
+     single-tuning piece. Open: do this splitting in v1, or require single-tuning lanes (warn)
+     and defer the split.
+  3. **MIDI 0–127 range** — degree-as-note-number must fit. 16-EDO over its A0..C8 grid (degree
+     8–124) is fine; a future high EDO (e.g. 31) over several octaves would clip 127 (escape hatch: Surge's
+     "channel for octave" mode — avoid until forced).
+- **Real microtonal *notation* (Dorico) is out of scope for MIDI entirely** — Dorico won't turn
+  imported pitch-bend into notated microtones; that path wants a future **MusicXML** export.
+
+## 18. Notation
+
+Not given up on, but low priority. Two tiers:
+
+- **Pragmatic path — export to Dorico (the composer has it).** A **Standard MIDI File** is trivial
+  to generate (already built, §17) and routes the arrangement straight in — the current answer for
+  "real notation." Real microtonal notation goes further and wants a **MusicXML** export (§17), the
+  format Dorico can turn into notated microtones (pitch-bend MIDI won't).
+- **In-app, read-only, someday.** Standard staff notation in an atonal context is a rabbit hole —
+  the hard part is **pitch spelling** (C♯ vs D♭ is genuinely ambiguous with no tonal anchor), plus
+  clefs / accidentals / beaming / multi-voice (lanes). Our rhythms are friendly (1/8, 1/4,
+  3/8 = dotted-quarter, 1/2). If ever wanted, a **read-only** staff via **VexFlow** (bundles SMuFL
+  fonts) — but it's a dependency *and* still needs spelling decisions.
+- **The honest post-tonal alternative** (see §6): **pitch-class / integer** and **interval / contour**
+  notation sidestep spelling entirely and suit the aesthetic — the better place to start than a staff.
+
+## 19. Note attributes
+
+An **extensible per-note (per-column) attribute model** and the **note-transform tools** that read
+and write it — the note-level counterpart to Tile Attributes (§12).
+
+- **The attribute model.** The performance lanes already carry duration / accent / articulation per
+  column; generalize that into an **open set of note attributes** (probability, ratchet/repeat,
+  micro-timing, glide, per-note instrument-param nudges, …), stored on the column, edited in the
+  lanes, honored by the scheduler and the offline bounce. The four-lane "attribute rack" is the seed.
+- **"MIDI-filter"-style note-transforms** (absorbed from the notes wishlist) — MIDI-insert-style
+  **note → more-notes** transforms over Notorolla's **pattern** model rather than a live event stream.
+  Canonical: a **pattern echo** — repeat notes at a delay with **per-repeat transposition** (each echo
+  +N degrees, quieter). Family: **chord-ize** (add intervals/triads above each note — ties to the
+  Triadulator / triad objects §15c), velocity/accent shapers, humanize, note-length filters, range
+  fold/clamp. Two realizations, decide per tool: **(a) offline expansion** (bake into the
+  pattern/score — pure `Pattern → Pattern`, undoable, beside the permute tools) or **(b) a
+  playback-time layer** that generates events live without altering the stored pattern.
+- **The arpeggiator** (a first-class composer want — Cubase's dozen arp methods all feel
+  "peripheral"; Notorolla wants arpeggiation **central and experimentation-friendly**). It's the
+  flagship note→more-notes tool and belongs here — the same offline-vs-playback-layer choice applies.
+
+All pure data-in/data-out, so they slot beside the existing permute/transform pipeline.
+
+## Minor weird ideas
+
+A bucket for small / offbeat notions that don't (yet) warrant a full numbered direction —
+kept here so they aren't lost.
+
+- **Live-mutating tunings** — the tuning itself **changes during playback**, so sounding
+  pitches slide or shift over time rather than being fixed for the piece. Two flavors: a
+  **per-cycle** re-tune (the tuning re-quantizes each loop pass — a cousin of §11's
+  evolving/per-repeat scale transposition and the per-lane `mods.js` modulators, and cheap
+  because the scheduler already **re-reads frequency per note each cycle** via `onCycle`), and
+  a **continuous** drift (the anchor, a generator ratio, or an interpolation between two whole
+  tunings animates smoothly — a "tuning LFO," or morphing tuning A → tuning B). Continuous
+  *mid-note* pitch motion needs per-note pitch automation (fire-and-forget voices don't glide),
+  but it's **bakeable from the lookahead** exactly like the mono-synth glide in §10. On brand
+  for loop-with-live-mutation; mostly a **playback-time modulator, not a model change** — the
+  stored pattern is fixed, the tuning seam is what breathes (labels/roll heights become
+  time-varying, which is the point).
+
+- **Auto-hocket** — a generator/transform that fills the **rests/gaps of a reference pattern**
+  with the pattern being built, so two mono voices interlock (hocket / call-and-response) rather
+  than collide. The **Hocket species** of **New Counterpoint (§16)** — a reference pattern
+  influencing how the new one is built: the same beat-indexed "what is the
+  reference doing at beat *b*" query that drives a ghost-overlay view also tells the generator
+  *where the reference is silent*, and rhythmic complementarity biases onsets/durations into
+  those holes. Rides the existing **Duration Bias** machinery in [src/random.js](src/random.js);
+  naturally two-voice while the grid is mono, generalizes with polyphony (§7). Very on-brand for
+  the ostinato/interlock aesthetic.
+
+- **Pre-beat scheduling** (surfaced from the rejected Boshwick "preverb" idea) — schedule a note's
+  lead-in audio at `time − preT` so the **hit stays on the grid** while the lead-in eats into the
+  previous beat. Works because the scheduler commits whole cycles ahead and playback starts at
+  now+100 ms (clamp at audition / t=0). Useful for swells, grace notes, reverse builds — a general
+  timing technique, not a drum thing.
 
 <!-- add below -->

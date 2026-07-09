@@ -458,12 +458,16 @@ export class AudioEngine {
    *                  lane's gain bus (for Mute/Solo). Omit/null for un-laned
    *                  sound (grid playback, audition) → straight to master.
    */
-  playNote(pitch, time, duration, velocity = 0.8, freq = null, laneId = null, rulerSec = null) {
+  playNote(pitch, time, duration, velocity = 0.8, freq = null, laneId = null, rulerSec = null, patchOverride = null) {
     // Elapsed anchor = this note's start relative to the session's first Play;
     // ruler anchor = its position on the timeline (caller supplies; falls back
     // to elapsed for un-laned sound, which has no mods anyway).
     const elSec = this.modEpoch != null ? time - this.modEpoch : 0;
-    buildVoice(this.ctx, this.laneBus(laneId), this.moddedPatch(laneId, elSec, rulerSec != null ? rulerSec : elSec), pitch, time, duration, velocity, freq, this.lite);
+    // A per-note patch override (the grid's reference backdrop) plays DRY through
+    // its own baked patch — straight to master, no lane bus, no mods.
+    const patch = patchOverride || this.moddedPatch(laneId, elSec, rulerSec != null ? rulerSec : elSec);
+    const bus = patchOverride ? this.laneBus(null) : this.laneBus(laneId);
+    buildVoice(this.ctx, bus, patch, pitch, time, duration, velocity, freq, this.lite);
   }
 
   /**
@@ -475,8 +479,11 @@ export class AudioEngine {
    * that lane's instrument patch — the WAV matches what each lane sounds like.
    * Returns a Promise<AudioBuffer>.
    */
-  renderToBuffer(notes, durationSec) {
-    const sampleRate = this.ctx ? this.ctx.sampleRate : 44100;
+  renderToBuffer(notes, durationSec, sampleRate) {
+    // Export rate is caller-chosen (48 kHz default), independent of the live
+    // device rate: OfflineAudioContext synthesizes natively at any rate, and the
+    // WAV header stamps whatever we render at, so the file is genuinely that rate.
+    sampleRate = sampleRate || (this.ctx ? this.ctx.sampleRate : 44100);
     // Guard a non-finite/zero duration (e.g. a NaN slipping through from upstream
     // beat math): OfflineAudioContext rejects a NaN/0 length with an opaque
     // "Length must be nonzero", so floor at one frame.
@@ -536,8 +543,8 @@ export class AudioEngine {
    * Mirrors renderToBuffer's graph for one lane. Returns Promise<AudioBuffer>.
    * All stems share `durationSec` so they're equal-length and align at sample 0.
    */
-  renderStem(notes, durationSec, laneId, busMode = 'dry') {
-    const sampleRate = this.ctx ? this.ctx.sampleRate : 44100;
+  renderStem(notes, durationSec, laneId, busMode = 'dry', sampleRate) {
+    sampleRate = sampleRate || (this.ctx ? this.ctx.sampleRate : 44100);
     const secs = isFinite(durationSec) && durationSec > 0 ? durationSec : 0;
     const frames = Math.max(1, Math.ceil(secs * sampleRate));
     const oac = new OfflineAudioContext(2, frames, sampleRate); // stereo

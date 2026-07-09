@@ -132,7 +132,7 @@ export class Scheduler {
         // the global articulation applied to its value.
         const gate = (note.artDur != null ? note.artDur : note.duration * this.articulation) * this.spb;
         this.engine.playNote(note.pitch, noteTime, gate, note.velocity, note.freq, note.laneId,
-          (note.rulerBeat != null ? note.rulerBeat : note.start) * this.spb);
+          (note.rulerBeat != null ? note.rulerBeat : note.start) * this.spb, note.patch);
         this.nextIndex++;
       }
 

@@ -6,7 +6,7 @@
 // notes map exactly as before, pixel-for-pixel. Redrawn every frame.
 
 import { noteName, isBlackKey, noteToFreq } from './model.js';
-import { degreeToFreq, tuningFreq, degreeToName, edoOf } from './tuning.js';
+import { degreeToFreq, tuningFreq, degreeToName, edoOf, degreeBounds, hasEquave } from './tuning.js';
 
 // PAD_LEFT and BEAT_WIDTH are exported so the grid's "Stretch" mode can share
 // the roll's horizontal origin and DEFAULT scale (the two views line up at the
@@ -201,26 +201,49 @@ export class PianoRoll {
       g.lineTo(x0 + 0.5, gh);
       g.stroke();
 
+      const eq = hasEquave(t.id);
       const edo = edoOf(t.id);
       g.fillStyle = COLORS.labelC;
-      g.fillText(`${edo}`, x0 + 4, PAD_TOP / 2); // column header: the division
+      g.fillText(eq ? `${edo}` : 'cx', x0 + 4, PAD_TOP / 2); // header: the EDO, or "cx" for the non-octave cross
 
-      const stepCents = 1200 / edo;
-      const dStep = this._labelStep((this.noteH * stepCents) / 100, edo);
-      const base = this._cents(tuningFreq(0, t.id, t.root)); // cents of degree 0
-      const dLo = Math.ceil((100 * this.minPitch - base) / stepCents);
-      const dHi = Math.floor((this.maxCents - base) / stepCents);
       g.textAlign = 'right';
-      for (let d = dLo; d <= dHi; d++) {
-        if (((d % dStep) + dStep) % dStep !== 0) continue;
-        const y = this.yForCents(base + d * stepCents);
-        g.strokeStyle = COLORS.gutterTick;
-        g.beginPath();
-        g.moveTo(x0 + 1, y + 0.5);
-        g.lineTo(x0 + 6, y + 0.5);
-        g.stroke();
-        g.fillStyle = (((d % edo) + edo) % edo) === 0 ? COLORS.labelC : COLORS.label;
-        g.fillText(degreeToName(d, t.id), x0 + TUNING_COL_W - 4, y);
+      if (eq) {
+        // Octave-periodic tuning: step the even EDO grid, C rows popped.
+        const stepCents = 1200 / edo;
+        const dStep = this._labelStep((this.noteH * stepCents) / 100, edo);
+        const base = this._cents(tuningFreq(0, t.id, t.root)); // cents of degree 0
+        const dLo = Math.ceil((100 * this.minPitch - base) / stepCents);
+        const dHi = Math.floor((this.maxCents - base) / stepCents);
+        for (let d = dLo; d <= dHi; d++) {
+          if (((d % dStep) + dStep) % dStep !== 0) continue;
+          const y = this.yForCents(base + d * stepCents);
+          g.strokeStyle = COLORS.gutterTick;
+          g.beginPath();
+          g.moveTo(x0 + 1, y + 0.5);
+          g.lineTo(x0 + 6, y + 0.5);
+          g.stroke();
+          g.fillStyle = (((d % edo) + edo) % edo) === 0 ? COLORS.labelC : COLORS.label;
+          g.fillText(degreeToName(d, t.id), x0 + TUNING_COL_W - 4, y);
+        }
+      } else {
+        // Non-octave tuning: no even grid to step — label the actual degrees at their
+        // true pitch heights, thinned so labels don't collide.
+        const b = degreeBounds(t.id, t.root);
+        let lastY = Infinity;
+        for (let d = b.min; d <= b.max; d++) {
+          const c = this._cents(tuningFreq(d, t.id, t.root));
+          if (c < 100 * this.minPitch || c > this.maxCents) continue;
+          const y = this.yForCents(c);
+          if (Math.abs(y - lastY) < 11) continue;
+          lastY = y;
+          g.strokeStyle = COLORS.gutterTick;
+          g.beginPath();
+          g.moveTo(x0 + 1, y + 0.5);
+          g.lineTo(x0 + 6, y + 0.5);
+          g.stroke();
+          g.fillStyle = COLORS.label;
+          g.fillText(degreeToName(d, t.id), x0 + TUNING_COL_W - 4, y);
+        }
       }
       g.textAlign = 'left';
     });

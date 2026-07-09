@@ -26,9 +26,9 @@
 //   shift-click ........... toggle accent (notes only)
 //   right-click ........... toggle note <-> rest
 
-import { Pattern, PALETTE, DEFAULT_DUR, MIN_COLS, MAX_COLS, BASE_PITCH, durationLabel, swapNotePayload, swapLanes, stretchWidth, nextAccent, nextArtic, ARTICULATIONS, DEFAULT_ARTIC } from './grid.js';
+import { Pattern, PALETTE, DEFAULT_DUR, MIN_COLS, MAX_COLS, BASE_PITCH, DURATIONS, durationLabel, swapNotePayload, swapLanes, stretchWidth, mergedLayout, nextAccent, nextArtic, ARTICULATIONS, DEFAULT_ARTIC } from './grid.js';
 import { isBlackKey } from './model.js';
-import { degreeToName, pitchClassName, edoOf, degreeBounds } from './tuning.js';
+import { degreeToName, pitchClassName, edoOf, degreeBounds, hasEquave, tuningFreq } from './tuning.js';
 import { inScale, nearestInScale, stepInScale } from './scales.js';
 import { classifyTriad } from './triads.js';
 import { PAD_LEFT as ROLL_PAD_LEFT } from './pianoroll.js';
@@ -56,6 +56,8 @@ const UNIFORM_COL_W = 48;        // Grid mode: every column the same width (~120
 const STRETCH_MIN_W = 31;        // Stretch mode: log-compressed width band (by-eye tunable, ~120%)
 const STRETCH_MAX_W = 72;
 const DOT_R = 8;
+const GHOST_SHIFT = DOT_R; // reference ghost sits this far LEFT of its centred position,
+                           // so the edited note overlaps its right half (it peeks out left)
 const DRAG_THRESHOLD = 4;        // px of movement that turns a click into a drag
 const TRIAD_BAND = 30;           // px reserved above the lanes for two label rows
 const QUALITY = { maj: 'Maj', min: 'min', dim: 'dim', aug: 'aug', sus: 'sus', sept: '4:5:7', sup: 'sup' };
@@ -101,6 +103,7 @@ export class GridView {
   set pattern(p) {
     if (this._pattern && this._pattern !== p) { this._flushPendingClick(); this._clearArm(); }
     this._pattern = p;
+    this._layout = null; // a new pattern → rebuild the merged-time layout
   }
 
   // Set the prospective (Triadulator) notes overlaid on empty columns. They're
@@ -374,8 +377,25 @@ export class GridView {
     else { this.selection.delete(b); this.selection.add(a); }
   }
 
-  get mode() { return this.opts.getMode(); }
+  // A reference is active ⇒ force the Stretch (merged-time) layout: uniform Grid
+  // can't align two different rhythms.
+  get mode() { return this._ref() ? 'stretch' : this.opts.getMode(); }
   get _vp() { return this.opts.getViewport(); } // { top, rows }
+
+  // The read-only reference backdrop, or null: { notes:[{start,pitch,duration}],
+  // onsets:[beats], len }. Pulled live from the host so Set/Clear just redraws.
+  _ref() { return (this.opts.getReference && this.opts.getReference()) || null; }
+
+  // The merged engraving-time layout both patterns render through (see grid.js
+  // mergedLayout). Built from `cols` (default: the live pattern) + the reference's
+  // rhythm; cached per draw, rebuilt when `cols` differ (a footer drag passes the
+  // pristine base so the drop target stays stable).
+  _layoutFor(cols) {
+    const r = this._ref();
+    const refInfo = r && r.len > 0 ? { onsets: r.onsets, len: r.len } : null;
+    return mergedLayout(cols, refInfo, STRETCH_MIN_W, STRETCH_MAX_W);
+  }
+  _layoutNow() { return this._layout || (this._layout = this._layoutFor(this.pattern.columns)); }
 
   // --- pitch <-> screen ------------------------------------------------
 
@@ -403,15 +423,59 @@ export class GridView {
     return nearestInScale(this.pattern.scaleId, this.pattern.root, d, edoOf(this.pattern.tuningId));
   }
 
+  // Map a raw frequency to a y on the grid by interpolating (in log-frequency)
+  // between the two bracketing degree rows. Used to draw the true-2:1 octave ruler on
+  // non-octave tunings, where an octave falls between degrees, not on one. null if
+  // off-window.
+  _yForFreq(freq) {
+    const tun = this.pattern.tuningId;
+    const lf = Math.log(freq);
+    for (let d = this._topDegree; d > this._bottomDegree; d--) {
+      const fHi = tuningFreq(d, tun), fLo = tuningFreq(d - 1, tun);
+      if (freq <= fHi && freq >= fLo) {
+        const frac = (lf - Math.log(fLo)) / (Math.log(fHi) - Math.log(fLo));
+        const yHi = this._yForDegree(d) + ROW_H / 2;      // higher degree → higher up (smaller y)
+        const yLo = this._yForDegree(d - 1) + ROW_H / 2;
+        return yLo + (yHi - yLo) * frac;
+      }
+    }
+    return null;
+  }
+
+  // The independent true-2:1 octave ruler for equave-less tunings (the cross): faint
+  // dashed lines at real frequency doublings of middle C, labelled C4/C5/…. An
+  // orientation aid, deliberately NOT tied to any tuning degree (in a non-octave
+  // tuning they don't coincide). See future_directions.md §15.
+  _drawOctaveRuler(ctx, W) {
+    const tun = this.pattern.tuningId;
+    const cFreq = tuningFreq(60, tun);                    // middle C anchor (the default pivot)
+    const loF = tuningFreq(this._bottomDegree, tun), hiF = tuningFreq(this._topDegree, tun);
+    const nLo = Math.ceil(Math.log2(loF / cFreq)), nHi = Math.floor(Math.log2(hiF / cFreq));
+    ctx.save();
+    for (let n = nLo; n <= nHi; n++) {
+      const y = this._yForFreq(cFreq * Math.pow(2, n));
+      if (y == null) continue;
+      ctx.strokeStyle = 'rgba(120, 170, 255, 0.28)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(W, y + 0.5); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(150, 190, 255, 0.65)';
+      ctx.font = '10px system-ui, sans-serif';
+      ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+      ctx.fillText(`C${4 + n}`, W - 4, y - 1);
+    }
+    ctx.restore();
+  }
+
   // --- column geometry (time axis) -------------------------------------
 
   _stretchW(durIndex) { return stretchWidth(durIndex, STRETCH_MIN_W, STRETCH_MAX_W); }
 
   _colGeom(i) {
     if (this.mode === 'stretch') {
-      let x = PAD_LEFT;
-      for (let k = 0; k < i; k++) x += this._stretchW(this.pattern.columns[k].durIndex);
-      return { x, w: this._stretchW(this.pattern.columns[i].durIndex) };
+      const g = this._layoutNow().editedColX[i];
+      return g ? { x: PAD_LEFT + g.x, w: g.w } : { x: PAD_LEFT, w: UNIFORM_COL_W };
     }
     return { x: PAD_LEFT + i * UNIFORM_COL_W, w: UNIFORM_COL_W };
   }
@@ -421,15 +485,19 @@ export class GridView {
   _columnAt(px, cols = this.pattern.columns) {
     const n = cols.length;
     if (this.mode === 'stretch') {
-      let x = PAD_LEFT;
-      for (let i = 0; i < n; i++) {
-        const w = this._stretchW(cols[i].durIndex);
-        if (px < x + w) return i;
-        x += w;
-      }
-      return n - 1;
+      const layout = cols === this.pattern.columns ? this._layoutNow() : this._layoutFor(cols);
+      const i = layout.xToEditedCol(px - PAD_LEFT);
+      if (i >= 0) return i;
+      // past the first instance (a ghost-repeat zone) → clamp to the nearer edge.
+      return (px - PAD_LEFT) <= (layout.editedColX[0] ? layout.editedColX[0].x : 0) ? 0 : n - 1;
     }
     return clamp(Math.floor((px - PAD_LEFT) / UNIFORM_COL_W), 0, n - 1);
+  }
+  // Is this x in a ghost-repeat zone (right of the editable first instance)? Body
+  // gestures there are inert (the repeats are ornamental).
+  _inGhostZone(px) {
+    if (this.mode !== 'stretch') return false;
+    return this._layoutNow().xToEditedCol(px - PAD_LEFT) < 0;
   }
 
   // Which performance lane a screen y falls in (only valid when _inFooter).
@@ -440,6 +508,68 @@ export class GridView {
       top += lane.h;
     }
     return PERF_LANES[PERF_LANES.length - 1].id;
+  }
+
+  // The read-only reference pattern's notes, ghosted, positioned by the shared
+  // merged-time layout (so they line up with the edited pattern's onsets). Rows are
+  // by degree number (best-approximation across differing tunings — true-cents is
+  // the roll's job). Looped to fill the timeline. A distinct cool steel-blue so it
+  // reads as backdrop, not a Triadulator proposal (which is warm/dashed).
+  _drawReferenceGhosts(ctx, top, bottom) {
+    const r = this._ref();
+    if (!r || !r.notes || !r.notes.length || !(r.len > 0)) return;
+    const layout = this._layoutNow();
+    ctx.save();
+    for (let base = 0; base < layout.total - 1e-9; base += r.len) {
+      for (const n of r.notes) {
+        const b0 = base + n.start;
+        if (b0 > layout.total + 1e-9) continue;
+        const b1 = Math.min(b0 + n.duration, layout.total);
+        // Centre the ghost on its own time-span (like a real note on its column),
+        // then nudge it LEFT by GHOST_SHIFT so the edited note overlaps it and the
+        // ghost peeks out on the left — consistent whether or not the grids align.
+        const cx = PAD_LEFT + (layout.beatToX(b0) + layout.beatToX(b1)) / 2 - GHOST_SHIFT;
+        if (n.pitch > top) { ctx.globalAlpha = 0.5; this._edgeHint(cx, this._topPad(), -1, '#7f95c0'); continue; }
+        if (n.pitch < bottom) { ctx.globalAlpha = 0.5; this._edgeHint(cx, this._topPad() + this._rows * ROW_H, 1, '#7f95c0'); continue; }
+        const cy = this._yForDegree(n.pitch) + ROW_H / 2;
+        ctx.globalAlpha = 0.5;
+        ctx.beginPath(); ctx.arc(cx, cy, DOT_R - 1, 0, Math.PI * 2);
+        ctx.fillStyle = '#8fa9d6'; ctx.fill();
+        ctx.globalAlpha = 0.85;
+        ctx.beginPath(); ctx.arc(cx, cy, DOT_R + 1.5, 0, Math.PI * 2);
+        ctx.setLineDash([2, 2]); ctx.lineWidth = 1; ctx.strokeStyle = '#a6bce4'; ctx.stroke(); ctx.setLineDash([]);
+      }
+    }
+    ctx.restore();
+  }
+
+  // When the edited pattern is SHORTER than the reference, draw its own content
+  // looped past its real length as faint, non-editable "ornamental" repeats (they
+  // echo edits live because they re-read the columns each draw). Centred on each
+  // column's span, matching the real (first-instance) notes. No-op otherwise.
+  _drawEditedRepeats(ctx, top, bottom) {
+    if (this.mode !== 'stretch') return; // repeats only exist against a (Stretch-forcing) reference
+    const layout = this._layoutNow();
+    if (layout.editedLen >= layout.total - 1e-9) return;
+    ctx.save();
+    ctx.globalAlpha = 0.26;
+    for (let base = layout.editedLen; base < layout.total - 1e-9; base += layout.editedLen) {
+      let t = 0;
+      for (const c of this.pattern.columns) {
+        const beats = DURATIONS[c.durIndex].beats;
+        if (!c.isRest && c.degree <= top && c.degree >= bottom) {
+          const b = base + t;
+          if (b <= layout.total + 1e-9) {
+            const cx = PAD_LEFT + (layout.beatToX(b) + layout.beatToX(b + beats)) / 2;
+            const cy = this._yForDegree(c.degree) + ROW_H / 2;
+            ctx.beginPath(); ctx.arc(cx, cy, DOT_R, 0, Math.PI * 2);
+            ctx.fillStyle = PALETTE[c.durIndex]; ctx.fill();
+          }
+        }
+        t += beats;
+      }
+    }
+    ctx.restore();
   }
 
   // Draw one lane's chit for `col` in the box (x, y, w, h). Shared by the footer
@@ -522,7 +652,7 @@ export class GridView {
 
   _resizeCanvas() {
     const w = this.mode === 'stretch'
-      ? PAD_LEFT + this.pattern.columns.reduce((s, c) => s + this._stretchW(c.durIndex), 0) + PAD_RIGHT
+      ? PAD_LEFT + this._layoutNow().width + PAD_RIGHT
       : PAD_LEFT + this.pattern.columns.length * UNIFORM_COL_W + PAD_RIGHT;
     const h = this._topPad() + this._rows * ROW_H + PAD_BOTTOM + FOOTER_H;
     // Assign only on a real change: a same-value write still invalidates layout,
@@ -532,6 +662,7 @@ export class GridView {
   }
 
   draw() {
+    this._layout = null; // rebuild the merged-time layout for this frame
     this._resizeCanvas();
     const ctx = this.ctx;
     const W = this.canvas.width;
@@ -544,6 +675,7 @@ export class GridView {
     // labels in that tuning's naming (12-ET letters, 16-ET hex).
     const tuningId = this.pattern.tuningId;
     const edo = edoOf(tuningId);
+    const eq = hasEquave(tuningId); // false = no octave (cross): octave-mate/tint/tonic gate off
 
     // Which pitches carry a note (exact degree = strong highlight; the same
     // pitch-class in other octaves = soft highlight).
@@ -560,7 +692,7 @@ export class GridView {
     // The root (tonic) is marked when it actually matters — i.e. a just/xen tuning
     // or a non-chromatic mask. In plain 12-ET chromatic there's no tonic to show.
     const rootPc = ((this.pattern.root % edo) + edo) % edo;
-    const rootShown = tuningId !== '12-et' || this.pattern.scaleId !== 'chromatic';
+    const rootShown = eq && (tuningId !== '12-et' || this.pattern.scaleId !== 'chromatic');
 
     // Pitch lanes + labels w/ octave. 12-ET shades the piano black keys; non-12
     // tunings have no black keys, so the octave-home row (class 0) is tinted instead
@@ -571,9 +703,9 @@ export class GridView {
       const y = topPad + k * ROW_H;
       const pc = ((d % edo) + edo) % edo;
       const isActive = active.has(d);
-      const isOctave = !isActive && activePC.has(pc);
+      const isOctave = eq && !isActive && activePC.has(pc);
       const isRoot = rootShown && pc === rootPc;
-      ctx.fillStyle = edo === 12 ? (isBlackKey(d) ? '#13151c' : '#171a22') : (pc === 0 ? '#1b2030' : '#171a22');
+      ctx.fillStyle = edo === 12 ? (isBlackKey(d) ? '#13151c' : '#171a22') : (eq && pc === 0 ? '#1b2030' : '#171a22');
       ctx.fillRect(0, y, W, ROW_H);
       // In-scale rows get a faint cool wash (only when a non-chromatic mask is on).
       if (this.pattern.scaleId !== 'chromatic' && inScale(this.pattern.scaleId, this.pattern.root, d, edo)) {
@@ -604,6 +736,9 @@ export class GridView {
       ctx.fillText(degreeToName(d, tuningId), 6, y + ROW_H / 2);
     }
 
+    // Non-octave tunings: the octave lives only in this independent 2:1 ruler.
+    if (!eq) this._drawOctaveRuler(ctx, W);
+
     // Column separators (including the right edge).
     ctx.strokeStyle = '#262a35';
     ctx.lineWidth = 1;
@@ -611,6 +746,11 @@ export class GridView {
     for (let i = 0; i < cols; i++) this._vline(this._colGeom(i).x, H);
     const last = this._colGeom(cols - 1);
     this._vline(last.x + last.w, H);
+
+    // Reference backdrop + the edited pattern's own loop-repeats — both ghosted and
+    // drawn UNDER the real notes.
+    this._drawReferenceGhosts(ctx, top, bottom);
+    this._drawEditedRepeats(ctx, top, bottom);
 
     // Dots: filled = note, open circle = rest; off-window notes get an edge hint.
     const hideSelForDrag = (this.drag && this.drag.moved && this.drag.axis === 'h')
@@ -730,7 +870,8 @@ export class GridView {
       if (fd.cursorX != null && fd.base && fd.lanes) {
         const laneH = (id) => (PERF_LANES.find((l) => l.id === id) || PERF_LANES[0]).h;
         const stackH = fd.lanes.reduce((s, id) => s + laneH(id), 0);
-        const gw = this.mode === 'stretch' ? this._stretchW(fd.base[fd.col].durIndex) : UNIFORM_COL_W;
+        const gcol = this.mode === 'stretch' ? this._colGeom(fd.col) : null;
+        const gw = gcol ? gcol.w : UNIFORM_COL_W;
         const gx = clamp(fd.cursorX, PAD_LEFT + gw / 2, W - gw / 2) - gw / 2;
         let gy = fyTop - stackH - 6;
         ctx.save();
@@ -775,6 +916,7 @@ export class GridView {
   // Triads found in adjacent note-triples (12-ET only; three notes in a row, no
   // rest between). Returns { x: center over the middle column, text } for each.
   _triadLabels() {
+    if (!hasEquave(this.pattern.tuningId)) return []; // no repeating pitch-classes to classify
     const cols = this._labelColumns();
     const out = [];
     for (let i = 0; i + 2 < cols.length; i++) {
@@ -982,6 +1124,9 @@ export class GridView {
   _down(e) {
     if (e.button === 2) return; // right-click handled by contextmenu
     const { x, y } = this._pos(e);
+    // A ghost-repeat zone (right of the editable first instance, when a longer
+    // reference is set) is ornamental — ignore all presses there.
+    if (x >= PAD_LEFT && this._inGhostZone(x)) return;
     const willFooterDrag = this._inFooter(y) && x >= PAD_LEFT && !(e.ctrlKey || e.metaKey);
     // Anything that isn't a footer-chit press dismisses a held arm and flushes a
     // pending single-click edit (its undo entry settles now).

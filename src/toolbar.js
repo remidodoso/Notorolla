@@ -162,6 +162,49 @@ export function buildToolbar(el, state, onChange) {
     el.append(b);
   });
 
+  // Reference: freeze a selected tile as a read-only backdrop to edit/hear against
+  // (the New-Counterpoint on-ramp — future_directions.md §16). Set is enabled only
+  // when exactly one tile is selected; the rest of the group appears once one is set.
+  el.append(sep(), label('Reference'));
+  const setRefBtn = button('Set Reference');
+  setRefBtn.title = 'Freeze the selected tile as a read-only backdrop to edit against '
+    + '(overlay + play-along). Needs exactly one tile selected in the Tile player. '
+    + 'A frozen copy — later edits to that tile don’t change it.';
+  // Fire on POINTERDOWN, not click: the grid pane's own pointerdown handler switches
+  // the active pane on press — which clears the tile selection and disables this
+  // button — before a click could fire. Pointerdown reaches this button (the event
+  // target) before that ancestor handler, so we grab the selection while it's live.
+  setRefBtn.addEventListener('pointerdown', (e) => {
+    if (setRefBtn.disabled) return;
+    e.preventDefault();
+    onChange('setRef');
+  });
+  const refChip = document.createElement('span');
+  refChip.className = 'tb-ref-chip';
+  const clearRefBtn = button('✕');
+  clearRefBtn.title = 'Clear the reference (restores your previous layout)';
+  clearRefBtn.onclick = () => onChange('clearRef');
+  // One 3-way control for the reference's level: green = full, yellow = Soft
+  // (quieter), red = Muted. Click cycles full → soft → mute → full.
+  const softMuteBtn = button('Soft/Mute');
+  softMuteBtn.title = 'Reference level — click to cycle: green = full, yellow = Soft (quieter), red = Muted';
+  softMuteBtn.onclick = () => onChange('refCycle');
+  el.append(setRefBtn, refChip, clearRefBtn, softMuteBtn);
+  // Reflect the reference's presence + 3-way level. The group stays VISIBLE with a
+  // reference set or not (Clear/Soft-Mute greyed when none) so its state reads.
+  function setReferenceUI(info) {
+    const active = !!info;
+    refChip.textContent = active ? `❄ ${info.name}` : '(none)';
+    refChip.classList.toggle('inactive', !active);
+    clearRefBtn.disabled = !active;
+    softMuteBtn.disabled = !active;
+    const level = !active ? 'full' : info.muted ? 'mute' : info.quieter ? 'soft' : 'full';
+    softMuteBtn.classList.remove('ref-full', 'ref-soft', 'ref-mute');
+    softMuteBtn.classList.add('ref-' + level);
+  }
+  const setRefEnabled = (on) => { setRefBtn.disabled = !on; };
+  setReferenceUI(null);
+
   // Per-pattern column count: a "Cols  − N +" stepper (the pattern's own width).
   el.append(sep(), label('Cols'));
   const colsDec = button('−');
@@ -234,7 +277,8 @@ export function buildToolbar(el, state, onChange) {
   function refresh() {
     durBtns.forEach((b) => b.classList.toggle('active', state.brush.durIndex === b._dur));
     artBtns.forEach((b) => b.classList.toggle('active', b._accent === state.brush.accent));
-    modeBtns.forEach((b) => b.classList.toggle('active', b._mode === state.mode));
+    const refActive = !!state.reference;
+    modeBtns.forEach((b) => { b.classList.toggle('active', b._mode === state.mode); b.disabled = refActive && b._mode === 'grid'; });
     curBtns.forEach((b) => b.classList.toggle('active', b._cursor === state.cursor));
     aud.classList.toggle('active', state.audition);
     hl.classList.toggle('active', state.highlightRows);
@@ -243,7 +287,7 @@ export function buildToolbar(el, state, onChange) {
     for (const b of familyBox.children) b.classList.toggle('active', !!state.families[b._family]);
   }
   refresh();
-  return { refresh, setRootOptions, setScaleOptions, setFamilyButtons, setCols, grabHandle, newBtn, cloneBtn, randomBtn, undoBtn, redoBtn, clearBtn, triadBtn, confirmBtn, properBtn, rotateBtn, reverseBtn, sortAscBtn, sortDescBtn, shuffleBtn, shuffleNoRepBtn, transUpBtn, transDownBtn, tuningSel, scaleSel, rootSel };
+  return { refresh, setRootOptions, setScaleOptions, setFamilyButtons, setCols, setReference: setReferenceUI, setRefEnabled, grabHandle, newBtn, cloneBtn, randomBtn, undoBtn, redoBtn, clearBtn, triadBtn, confirmBtn, properBtn, rotateBtn, reverseBtn, sortAscBtn, sortDescBtn, shuffleBtn, shuffleNoRepBtn, transUpBtn, transDownBtn, tuningSel, scaleSel, rootSel };
 }
 
 function button(text) {
