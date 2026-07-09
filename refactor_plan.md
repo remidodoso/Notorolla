@@ -1,10 +1,11 @@
 # Refactor plan — source-tree hierarchy + main.js split
 
-**Status: Phases 1–4 done (2026-07-09)** — P1: dir hierarchy + import repoint. P2: `ctx` stood up;
+**Status: Phases 1–5 done (2026-07-09)** — P1: dir hierarchy + import repoint. P2: `ctx` stood up;
 `storage`/`meter`/`history`/`zoom`. P3: `app/score.js` (15 score fns). P4: `app/transport.js` (~330
-lines — scheduler wiring, render loop, playhead/buttons, tempo, mod-clock, lite, auto-scroll); main.js
-now 3209 lines. notch green; awaiting user in-browser smoke test before Phase 5. Update this line as
-phases complete (e.g. "Phases 1–5 done (YYYY-MM-DD)").
+lines — scheduler wiring, render loop, playhead/buttons, tempo, mod-clock, lite, auto-scroll). P5:
+`app/tileops.js` (344) + `app/transformbar.js` (335) + `app/tileinspector.js` (148); main.js now 2480
+lines. notch green; awaiting user in-browser smoke test before Phase 6. Update this line as
+phases complete (e.g. "Phases 1–6 done (YYYY-MM-DD)").
 
 Agreed with the user 2026-07-08. This document is the **complete instruction set** for a series of
 agent sessions. Each phase is one self-contained task ending in a green verification; **the user
@@ -460,3 +461,42 @@ Noted during planning (2026-07-08); executing agents append here rather than fix
 - **Tooling:** all scripts EOL-aware from the first line (per user note); assertions caught two
   mistakes safely before any write (an off-by-one range end, and `let ctx.exporting` being a prefix of
   `let ctx.exportingStems` in the decl-fix).
+
+**Appended during Phase 5 (2026-07-09):**
+
+- **Three interlocking modules, one phase:** `tileops` (344), `transformbar` (335), `tileinspector`
+  (148). They call each other (selection → transform bar + inspector), so the split is really one
+  cluster registered three ways. main.js 3211 → 2480.
+- **`tileInspector` kept module-local (deviation from the plan's literal "becomes `ctx.tileInspector`",
+  user-approved):** the plan's note predated moving the `createInspector` construction into
+  tileinspector.js. With that move every reader (construction, `syncInspectorTransport`,
+  `refreshTileInspector`, the `onToggle`/button wiring) lives in the module, so §3 does **not** force a
+  promotion — it stays a private `let`. `transposeOpts` and the whole drag lifecycle likewise stayed
+  module-private.
+- **`rangeMode` promoted to `ctx.rangeMode`** (per plan — the Phase-10 keyboard handler reads it).
+- **`gridPatchMeta` promoted to `ctx.gridPatchMeta` (§3, 16 sites):** `dropCurrentTile` (a tileops
+  mover) reads it when a fresh lane adopts the grid patch's identity; its writers are Phase-6 patchedit
+  residents. A Phase-6 mutable promoted early, same pattern as `editTarget` in P2.
+- **Residents newly registered on ctx** (main.js keeps them; moved code calls `ctx.`): `onMixEnd`
+  (setPlayMarkers), `clearProposal`, `centerGridOn`, `updateRollContent`, `scrollRollToSelected`,
+  `setGridInstr`, `updateReferenceEnable`, and the `grid` view instance. **`syncInspectorTransport`
+  moved out of main.js** into tileinspector.js (dropped from the early Object.assign; re-registered by
+  `initTileinspector`).
+- **Init placement — the three inits go in the *initial-paint* block, not the early init block, to
+  keep two zero-behavior invariants:** (a) `initTileinspector` runs the `createInspector` construction
+  where it still appends *after* the catalog pane, so floating-pane stacking is unchanged (panel.js has
+  no bring-to-front; append order is permanent); (b) `initTransformbar`'s tail `buildTransformBar()`
+  runs *after* `ctx.ensureTileStarts()`, as before. Order among them: tileops → tileinspector →
+  transformbar (the bar reads `ctx.selectedTiles` + `ctx.refreshTileInspector`). Verified nothing calls
+  the moved ctx functions at boot before this point (notably `updateTransportButtons`, which fans out
+  to `ctx.syncInspectorTransport`, is first reached via `refresh()` right after the inits).
+- **The `tileDelete` button wiring moved into `initTileops`** (it owns `deleteSelectedTile` + the
+  button's disabled state); main.js keeps its own `tileDeleteBtn` ref for the keyboard flash (per §3
+  DOM-ref duplication).
+- **`createInspector` import removed** from main.js (sole use moved); `LOOP_MAX`/`LOOP_STEP` dropped
+  from main.js's transport import (now used only inside the modules).
+- **Tooling:** modules were built by extracting *exact source line ranges* (byte-identical bodies,
+  only cross-boundary refs prefixed) rather than hand-transcribing — safest for a zero-behavior move.
+  The by-name caller-prefix pass on main.js surfaced **two call sites the manual analysis missed**
+  (`disarmRangeTool()` and `updateTileSelectionUI()` in resident pane/selection code) — evidence the
+  name-driven approach beats line-by-line.
