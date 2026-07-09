@@ -1,8 +1,9 @@
 // storage.js — persistence layer: localStorage keys, the persisted-UI `state`
 // object, and the read/write helpers. initStorage runs FIRST (main.js consumes
 // state / readJSON at the very top), registering ctx.state / ctx.persist /
-// ctx.safeSet / ctx.readJSON. persist() reads ctx.library / ctx.arrangement /
-// ctx.recomputeDirty lazily — they don't exist yet when initStorage runs.
+// ctx.safeSet (readJSON is a pure export, imported directly). persist() reads
+// ctx.library / ctx.arrangement / ctx.recomputeDirty lazily — they don't exist
+// yet when initStorage runs.
 
 import { referenceToJSON, referenceFromJSON } from '../core/reference.js';
 import { DEFAULT_SCALE_IDX } from '../ui/tileplayer.js';

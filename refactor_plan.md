@@ -1,9 +1,9 @@
 # Refactor plan — source-tree hierarchy + main.js split
 
-**Status: Phases 1–2 done (2026-07-08)** — Phase 1: directory hierarchy + import repoint. Phase 2:
-`ctx` stood up; `app/storage.js` + `meter.js` + `history.js` + `zoom.js` extracted; main.js 3961→3661
-lines. notch green; awaiting user in-browser smoke test before Phase 3. Update this line as phases
-complete (e.g. "Phases 1–3 done (YYYY-MM-DD)").
+**Status: Phases 1–3 done (2026-07-09)** — P1: directory hierarchy + import repoint. P2: `ctx` stood
+up; `storage`/`meter`/`history`/`zoom` extracted. P3: `app/score.js` extracted (15 score fns); main.js
+now 3495 lines. notch green; awaiting user in-browser smoke test before Phase 4. Update this line as
+phases complete (e.g. "Phases 1–4 done (YYYY-MM-DD)").
 
 Agreed with the user 2026-07-08. This document is the **complete instruction set** for a series of
 agent sessions. Each phase is one self-contained task ending in a green verification; **the user
@@ -410,3 +410,26 @@ Noted during planning (2026-07-08); executing agents append here rather than fix
   `getElementById('arrUndo')`, button `.title` text) — caught by logging every change and reverting
   14 lines. Lesson for later phases: a bare-identifier regex must exclude strings + trailing
   comments, not just full-line comments.
+
+**Appended during Phase 3 (2026-07-09):**
+
+- **Four mutables promoted to ctx (forced by §3 — moved reader, writer stays in main.js):**
+  `proposal` (`buildScore` reads it; writer = Phase-8 triadulator), `activePane` (`activeScore`;
+  writer = Phase-10 active-pane logic), and `resumeBeat` + `resumeStartTime`
+  (`windowedArrangementScore`; writers = Phase-4 transport). These reach into later phases' symbols,
+  same pattern as `editTarget`/Phase 2.
+- **CONFLICT with this plan's Phase-4 note:** Phase 4 says `resumeBeat`/`resumeStartTime` "stay
+  module-local". They can't — `windowedArrangementScore` (a Phase-3 mover) reads them, so §3 forces
+  ctx promotion now; Phase 4's writers will use `ctx.resumeBeat`. (`passBase`/`lastCurBeat` are
+  renderLoop-only, read by no score fn → they stay local, as Phase 4 intends.)
+- **`refDisplay` promoted to `ctx.refDisplay`** per the plan's Phase-3 instruction and the user's
+  call, though strictly no score fn reads it (only the GridView `getReference` callback + `syncReference`,
+  both still in main.js) — so §3 didn't force it. A speculative promotion; harmless.
+- **`gridPatch` registered on ctx** (stable object, no call-site churn) for `computeTail`; and the
+  `library`/`arrangement`/`engine`/`scheduler` registrations were moved **earlier** than Phase 2's
+  block, because `activeScore()` is called eagerly at roll construction and `initScore(ctx)` must run
+  before it.
+- **3 imports removed from main.js** (now used only by the moved score fns): `mergeAudition`,
+  `reverbSeconds`, `patchRelease`.
+- **Tooling win:** this phase's word-form pass was clean (no string/comment over-reach beyond one
+  self-inserted comment) — the audit-comments-and-strings-first step paid off.
