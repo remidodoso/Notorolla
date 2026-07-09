@@ -5,9 +5,10 @@
 lines — scheduler wiring, render loop, playhead/buttons, tempo, mod-clock, lite, auto-scroll). P5:
 `app/tileops.js` (344) + `app/transformbar.js` (335) + `app/tileinspector.js` (148). P6:
 `app/patchedit.js` (459 — grid-instrument descriptors, edit pane, patch identity, catalog). P7:
-`app/lanefx.js` (228 — lane mixer/FX pushers, delay/chorus/reverb/mod modals, add-lane, reset);
-main.js now 1844 lines. notch green; awaiting user in-browser smoke test before Phase 8. Update this
-line as phases complete (e.g. "Phases 1–8 done (YYYY-MM-DD)").
+`app/lanefx.js` (228 — lane mixer/FX pushers, delay/chorus/reverb/mod modals, add-lane, reset). P8:
+`app/triadulator.js` (141) + `app/randomui.js` (325 — the New Random modal); main.js now 1415 lines.
+notch green; awaiting user in-browser smoke test before Phase 9. Update this line as phases complete
+(e.g. "Phases 1–9 done (YYYY-MM-DD)").
 
 Agreed with the user 2026-07-08. This document is the **complete instruction set** for a series of
 agent sessions. Each phase is one self-contained task ending in a green verification; **the user
@@ -560,3 +561,24 @@ Noted during planning (2026-07-08); executing agents append here rather than fix
 - **11 now-unused imports trimmed** from main.js: the delay/chorus/reverb editors + normalizers, and
   `MOD_SLOTS`/`defaultMod`/`buildModEditor`/`modTargetsFor`/`normalizeModsByKind`; kept `modsActive`
   (engine `modsFor` resolver), `instrument`, `openModal`.
+
+**Appended during Phase 8 (2026-07-09):**
+
+- **Two independent controllers** (neither calls the other): `triadulator.js` (141) — the triad-proposal
+  system (`triadulationState`→`updateTriadulateButtons`) — and `randomui.js` (325) — the New Random
+  modal (`runRandomModal` moved verbatim). main.js 1844 → 1415. Both mechanical, like P7.
+- **`proposal` was already `ctx.proposal`** (P3); its init stays in main.js as boot ctx-state.
+  `triadList`/`triadIdx`/`triadSig` are read only inside the triadulator cluster → **module-local**
+  (extracted with it). `RAND_KEY` is module-local to randomui.
+- **`ctx.tb` registered** (the toolbar object, a stable object like `grid`/`roll`/`patches`) — the only
+  new wiring: triadulator's `updateTriadulateButtons` reads `tb.triadBtn`/`tb.confirmBtn`. Purely
+  additive; main.js's many bare `tb` uses are unchanged, triadulator destructures `ctx.tb`.
+- **`clearProposal` registration moved** off main.js's `Object.assign` (P5 had parked it there for
+  tileops) into `initTriadulator`, alongside new `triadulate`/`confirmTriadulation`/
+  `updateTriadulateButtons`. randomui registers only `openRandomModal`.
+- **Minimal prefixing** — inside triadulator only `setActive`/`refresh`; inside randomui only `refresh`
+  (the notorious `tctx` local was already de-shadowed in P2). Both inits go in the **early block** (no
+  eager construction; `updateTriadulateButtons` is registered before the initial-paint `refresh()`).
+- **~11 now-unused imports trimmed**: the whole `core/random` import, `enumerateTriadulations`/
+  `chordsFor` (kept `familiesFor`/`familyLabel` — `updateScaleControls` uses them), `BASE_PITCH`/
+  `DURATIONS`/`DEFAULT_ARTIC` (kept `Pattern`), and `degreeToName`/`TUNING_LIST`.
