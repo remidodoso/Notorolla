@@ -1,12 +1,13 @@
 # Refactor plan — source-tree hierarchy + main.js split
 
-**Status: Phases 1–6 done (2026-07-09)** — P1: dir hierarchy + import repoint. P2: `ctx` stood up;
+**Status: Phases 1–7 done (2026-07-09)** — P1: dir hierarchy + import repoint. P2: `ctx` stood up;
 `storage`/`meter`/`history`/`zoom`. P3: `app/score.js` (15 score fns). P4: `app/transport.js` (~330
 lines — scheduler wiring, render loop, playhead/buttons, tempo, mod-clock, lite, auto-scroll). P5:
 `app/tileops.js` (344) + `app/transformbar.js` (335) + `app/tileinspector.js` (148). P6:
-`app/patchedit.js` (459 — grid-instrument descriptors, edit pane, patch identity, catalog); main.js
-now 2048 lines. notch green; awaiting user in-browser smoke test before Phase 7. Update this line as
-phases complete (e.g. "Phases 1–7 done (YYYY-MM-DD)").
+`app/patchedit.js` (459 — grid-instrument descriptors, edit pane, patch identity, catalog). P7:
+`app/lanefx.js` (228 — lane mixer/FX pushers, delay/chorus/reverb/mod modals, add-lane, reset);
+main.js now 1844 lines. notch green; awaiting user in-browser smoke test before Phase 8. Update this
+line as phases complete (e.g. "Phases 1–8 done (YYYY-MM-DD)").
 
 Agreed with the user 2026-07-08. This document is the **complete instruction set** for a series of
 agent sessions. Each phase is one self-contained task ending in a green verification; **the user
@@ -535,3 +536,27 @@ Noted during planning (2026-07-08); executing agents append here rather than fix
 - **6 now-unused imports trimmed** from main.js: `createCatalog`, `buildInstrumentPane`,
   `defaultPatch`, `clonePatch`, `instrumentKinds`, `laneColor` (plus `insertPoint`/`deletePoint`, left
   unused since P5's transformbar move).
+
+**Appended during Phase 7 (2026-07-09):**
+
+- **The cleanest phase since P2** — no promoted mutables (`fxClip`/`mixBefore` are read only by lanefx,
+  so module-local), no eager construction / pane stacking, no boot-fold. `initLanefx` goes in the
+  **early init block** (with meter/history/zoom/transport): verified no lanefx function runs at boot
+  (the appliers' only non-internal caller, `loadContent`, is lazy). main.js 2048 → 1844.
+- **Engine RESOLVERS stay in main.js:** the `engine.laneMix`/`laneDelay`/`laneChorus`/`modsFor`/
+  `laneReverb` arrow assignments are interleaved with the `applyLane*` pushers but are engine wiring
+  (read `state.bpm`/`state.modLoop`), not lanefx — only the four `applyLane*` pushers moved. Two boot
+  lines (`state.tileScaleIdx` / `tilePlayer.ppb`) that sat inside the mixer block also stayed.
+- **ctx registration churn:** 6 registrations moved off main.js's `Object.assign` into `initLanefx`
+  (`applyLaneMix`/`applyLaneDelayAll`/`applyLaneChorusAll`/`applyLaneReverbAll`/`applyLaneGains`/
+  `onMixEnd`); 10 new ones added (`onMixStart`, `onMixChange`, `addLane`, `toggleLaneFlag`, `resetLane`,
+  `resetPlayer`, the four `open*Modal`s). Inside lanefx only `setActive`/`refresh` needed prefixing —
+  everything else was already `ctx.*` (incl. P6's `ctx.patchStash`/`ctx.editLane`/`ctx.editGrid` in the
+  reset paths).
+- **One bare-reference caller the call-form pass can't catch:** the `resetPlayer` button wiring is
+  `addEventListener('click', resetPlayer)` (a reference, not a `resetPlayer(` call), fixed with an
+  explicit edit to `ctx.resetPlayer`. All other callers (TilePlayer callbacks, `loadContent`) are
+  call-form and were auto-prefixed.
+- **11 now-unused imports trimmed** from main.js: the delay/chorus/reverb editors + normalizers, and
+  `MOD_SLOTS`/`defaultMod`/`buildModEditor`/`modTargetsFor`/`normalizeModsByKind`; kept `modsActive`
+  (engine `modsFor` resolver), `instrument`, `openModal`.

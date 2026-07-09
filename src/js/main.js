@@ -19,11 +19,7 @@ import { TilePlayer, TILE_SCALES } from './ui/tileplayer.js';
 import { buildToolbar } from './ui/toolbar.js';
 import { normalizePatch, instrument } from './audio/instrument.js';
 import { PatchStore, factoryInitId } from './audio/patches.js';
-import { normalizeDelay } from './audio/delay.js';
-import { buildDelayEditor } from './audio/delay.js';
-import { normalizeChorus, buildChorusEditor } from './audio/chorus.js';
-import { normalizeReverb, buildReverbEditor } from './audio/reverb.js';
-import { MOD_SLOTS, defaultMod, buildModEditor, modTargetsFor, modsActive, normalizeModsByKind } from './audio/mods.js';
+import { modsActive } from './audio/mods.js';
 import { applyTransforms, setTileTranspose, setTileReverse, hasReverse, describeTransform, transformKindLabel, normalizeTransforms } from './core/transforms.js';
 import { openModal } from './ui/modal.js';
 import { setupPanes } from './ui/panes.js';
@@ -37,6 +33,7 @@ import { initHistory } from './app/history.js';
 import { initZoom } from './app/zoom.js';
 import { initScore } from './app/score.js';
 import { initTransport } from './app/transport.js';
+import { initLanefx } from './app/lanefx.js';
 import { initTileops } from './app/tileops.js';
 import { initTileinspector } from './app/tileinspector.js';
 import { initTransformbar } from './app/transformbar.js';
@@ -170,14 +167,6 @@ engine.laneMix = (laneId) => {
   return lane ? { gain: lane.gain, pan: lane.pan } : { gain: 1, pan: 0 };
 };
 
-// Push every lane's volume + pan onto its bus (after undo/redo or a load, where
-// values change under existing strips; new strips read the resolver themselves).
-function applyLaneMix(rampSec = 0.012) {
-  for (const lane of arrangement.lanes) {
-    engine.setLaneVolume(lane.id, lane.gain, rampSec);
-    engine.setLanePan(lane.id, lane.pan, rampSec);
-  }
-}
 
 // Resolve a lane's delay insert config for the engine — time follows the tempo
 // (beats × 60/bpm → seconds). { on:false } when the lane has no/disabled delay.
@@ -188,11 +177,6 @@ engine.laneDelay = (laneId) => {
   return { on: true, mode: d.mode, timeSec: d.time * 60 / state.bpm, wet: d.wet, feedback: d.feedback };
 };
 
-// (Re)apply every lane's delay to the engine — after a modal edit, a tempo
-// change (delay time is tempo-synced), or a load/undo.
-function applyLaneDelayAll() {
-  for (const lane of arrangement.lanes) engine.applyLaneDelay(lane.id);
-}
 
 // Resolve a lane's chorus insert config for the engine. { on:false } when the lane
 // has no/disabled chorus; rate/depth are fixed presets, so only the mode crosses.
@@ -215,10 +199,6 @@ engine.modsFor = (laneId) => {
   return lane.modsByKind[kind].map((m) => ({ ...m, loop: state.modLoop }));
 };
 
-// (Re)apply every lane's chorus to the engine — after a modal edit or a load/undo.
-function applyLaneChorusAll() {
-  for (const lane of arrangement.lanes) engine.applyLaneChorus(lane.id);
-}
 
 // Resolve a lane's insert-reverb config for the engine ({ on:false } = none).
 engine.laneReverb = (laneId) => {
@@ -227,10 +207,6 @@ engine.laneReverb = (laneId) => {
   return lane.reverb;
 };
 
-// (Re)apply every lane's reverb to the engine — after a modal edit or a load/undo.
-function applyLaneReverbAll() {
-  for (const lane of arrangement.lanes) engine.applyLaneReverb(lane.id);
-}
 
 // The scheduler is constructed here (like the view instances) and registered on
 // ctx; app/transport.js drives it (onEnded/onCycle wiring, start/stop). It stays
@@ -387,17 +363,17 @@ const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, 
     refresh();
   },
   onRepeatCancel: () => tilePlayer.clearStamps(),
-  onMute: (laneId) => toggleLaneFlag('mute', laneId),
-  onSolo: (laneId) => toggleLaneFlag('solo', laneId),
-  onAddLane: () => addLane(),
-  onResetLane: (laneId) => resetLane(laneId),
+  onMute: (laneId) => ctx.toggleLaneFlag('mute', laneId),
+  onSolo: (laneId) => ctx.toggleLaneFlag('solo', laneId),
+  onAddLane: () => ctx.addLane(),
+  onResetLane: (laneId) => ctx.resetLane(laneId),
   onEdit: (laneId) => ctx.editLane(laneId, true), // double-click the lane head → scroll the pane into view
   // The lane's patch display { name, dirty, imported } for the lane head.
   patchDisplay: (lane) => ctx.patchInfo(lane),
-  onMixStart: () => onMixStart(),
-  onMixChange: (laneId, key, value) => onMixChange(laneId, key, value),
-  onMixEnd: () => onMixEnd(),
-  onMarkerStart: () => onMixStart(),                // reuse the arrangement-edit bracket
+  onMixStart: () => ctx.onMixStart(),
+  onMixChange: (laneId, key, value) => ctx.onMixChange(laneId, key, value),
+  onMixEnd: () => ctx.onMixEnd(),
+  onMarkerStart: () => ctx.onMixStart(),                // reuse the arrangement-edit bracket
   onMarkers: (start, end) => ctx.setPlayMarkers(start, end),
   onRangePreview: (kind, s, e) => {                 // light the tiles the drawn range would touch
     const { doomed, shifted } = ctx.rangeAffected(kind, s, e);
@@ -405,10 +381,10 @@ const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, 
   },
   onRangeCommit: (kind, s, e, keepArmed) => ctx.commitRange(kind, s, e, keepArmed),
   onRangeCancel: () => { tilePlayer.setRangePreview(null, null); ctx.disarmRangeTool(); },
-  onDelay: (laneId) => openDelayModal(laneId),
-  onChorus: (laneId) => openChorusModal(laneId),
-  onReverb: (laneId) => openReverbModal(laneId),
-  onMods: (laneId) => openModModal(laneId),
+  onDelay: (laneId) => ctx.openDelayModal(laneId),
+  onChorus: (laneId) => ctx.openChorusModal(laneId),
+  onReverb: (laneId) => ctx.openReverbModal(laneId),
+  onMods: (laneId) => ctx.openModModal(laneId),
 });
 tilePlayer.rippleMode = state.ripple; // restore the Ripple toggle (workspace pref)
 
@@ -419,9 +395,7 @@ tilePlayer.rippleMode = state.ripple; // restore the Ripple toggle (workspace pr
 // modules in later phases, and the registration travels with them.
 Object.assign(ctx, {
   roll, tilePlayer, patches,
-  refresh, recomputeDirty, syncGridReference,
-  applyLaneMix, applyLaneDelayAll, applyLaneChorusAll, applyLaneReverbAll,
-  setActive, applyLaneGains, onMixEnd,
+  refresh, recomputeDirty, syncGridReference, setActive,
   clearProposal, centerGridOn, updateRollContent, scrollRollToSelected,
   updateReferenceEnable, grid,
 });
@@ -429,163 +403,16 @@ initMeter(ctx);
 initHistory(ctx);
 initZoom(ctx);
 initTransport(ctx);
+initLanefx(ctx); // lane mixer/FX pushers + modal editors + lane/player reset
 
 // In-memory Copy/Paste clipboards for the effect editors — one per effect type
 // (a delay can't paste onto a reverb). Cleared on reload; persists across modal
 // opens so you can copy one lane's effect and paste it onto another.
-const fxClip = { delay: null, chorus: null, reverb: null };
-
-// A standardized Copy/Paste bar for the effect modals. Copy snapshots the config
-// into the per-type clipboard; Paste overwrites the config IN PLACE (so the lane's
-// object identity holds), applies it to the audio, and rebuilds the controls.
-function fxCopyBar(kind, cfg, normalize, apply, rebuild) {
-  const bar = document.createElement('div');
-  bar.className = 'fx-copybar';
-  const copy = document.createElement('button');
-  copy.className = 'tbtn'; copy.textContent = 'Copy'; copy.title = 'Copy these settings';
-  const paste = document.createElement('button');
-  paste.className = 'tbtn'; paste.textContent = 'Paste'; paste.title = 'Paste copied settings';
-  paste.disabled = !fxClip[kind];
-  copy.addEventListener('click', () => { fxClip[kind] = normalize(cfg); paste.disabled = false; });
-  paste.addEventListener('click', () => {
-    if (!fxClip[kind]) return;
-    const next = normalize(fxClip[kind]);
-    for (const k of Object.keys(cfg)) delete cfg[k];
-    Object.assign(cfg, next);
-    apply();
-    rebuild(); // re-read the pasted values into the controls
-  });
-  bar.append(copy, paste);
-  return bar;
-}
-
-// Open one of the per-lane effect editors (delay / chorus / reverb) in a modal.
-// The whole session is ONE undo step: snapshot on open (the shared arrangement-
-// edit bracket), apply each change live, commit on close. A standardized Copy/
-// Paste bar sits atop the editor; Paste rebuilds the body to show the new values.
-function openFxModal({ title, kind, cfg, normalize, buildBody, apply, onClose }) {
-  onMixStart(); // capture the pre-edit snapshot
-  const wrap = document.createElement('div');
-  wrap.className = 'fx-modal';
-  const rebuild = () => {
-    wrap.textContent = '';
-    wrap.append(fxCopyBar(kind, cfg, normalize, apply, rebuild), buildBody());
-  };
-  rebuild();
-  openModal({ title, body: wrap, onClose });
-}
-
-function openDelayModal(laneId) {
-  const lane = arrangement.lane(laneId);
-  if (!lane) return;
-  const idx = arrangement.lanes.indexOf(lane);
-  const apply = () => engine.applyLaneDelay(laneId);
-  openFxModal({
-    title: `Delay — Lane ${idx + 1}`, kind: 'delay', cfg: lane.delay, normalize: normalizeDelay, apply,
-    buildBody: () => buildDelayEditor(lane.delay, { onChange: apply }),
-    onClose: () => { apply(); onMixEnd(); tilePlayer.render(); /* reflect the D-button lit state */ },
-  });
-}
-
-function openChorusModal(laneId) {
-  const lane = arrangement.lane(laneId);
-  if (!lane) return;
-  const idx = arrangement.lanes.indexOf(lane);
-  const apply = () => engine.applyLaneChorus(laneId);
-  openFxModal({
-    title: `Chorus — Lane ${idx + 1}`, kind: 'chorus', cfg: lane.chorus, normalize: normalizeChorus, apply,
-    buildBody: () => buildChorusEditor(lane.chorus, { onChange: apply }),
-    onClose: () => { apply(); onMixEnd(); tilePlayer.render(); /* reflect the C-button lit state */ },
-  });
-}
-
-function openReverbModal(laneId) {
-  const lane = arrangement.lane(laneId);
-  if (!lane) return;
-  const idx = arrangement.lanes.indexOf(lane);
-  if (!lane.reverb) lane.reverb = normalizeReverb(null); // older autosaves lack the field
-  const apply = () => engine.applyLaneReverb(laneId);
-  openFxModal({
-    title: `Reverb — Lane ${idx + 1}`, kind: 'reverb', cfg: lane.reverb, normalize: normalizeReverb, apply,
-    buildBody: () => buildReverbEditor(lane.reverb, { onChange: apply }),
-    onClose: () => { apply(); onMixEnd(); tilePlayer.render(); /* reflect the R-button lit state */ },
-  });
-}
-
-// Open the per-lane modulators editor in a modal — same one-undo-step bracket
-// as the delay/chorus modals. Edits need no audio rewiring (mods are evaluated
-// at each note-on from the live lane data), so onChange is a no-op until close.
-function openModModal(laneId) {
-  const lane = arrangement.lane(laneId);
-  if (!lane) return;
-  const idx = arrangement.lanes.indexOf(lane);
-  const kind = lane.patch && lane.patch.kind;
-  if (!lane.modsByKind) lane.modsByKind = {};
-  if (!lane.modsByKind[kind]) lane.modsByKind[kind] = Array.from({ length: MOD_SLOTS }, defaultMod);
-  onMixStart(); // capture the pre-edit snapshot
-  const body = buildModEditor(lane.modsByKind[kind], modTargetsFor(kind), { onChange: () => {} });
-  openModal({
-    title: `Modulators — Lane ${idx + 1} (${instrument(kind).label})`,
-    body,
-    onClose: () => {
-      onMixEnd();          // commit one undo step if changed + persist + dirty
-      tilePlayer.render(); // reflect the M-button lit state
-    },
-  });
-}
 
 
-// Pan/Gain knob drag. The knob updates itself live; we apply each move to the
-// lane bus immediately (so you hear it) but defer autosave/dirty + the single
-// undo step to release — so a continuous drag is one undoable change, not many.
-let mixBefore = null;
-function onMixStart() { mixBefore = ctx.arrSnap(); }
-function onMixChange(laneId, key, value) {
-  const lane = arrangement.lane(laneId);
-  if (!lane) return;
-  if (key === 'pan') { lane.pan = value; engine.setLanePan(laneId, value, 0.01); }
-  else { lane.gain = value; engine.setLaneVolume(laneId, value, 0.01); }
-}
-function onMixEnd() {
-  if (mixBefore != null) ctx.arrCommit(mixBefore); // a net change → one undo step
-  mixBefore = null;
-  ctx.persist(); // autosave + dirty (knobs already drove the audio live)
-  ctx.updateTransportButtons(); // reflect the new arrangement-undo entry immediately
-}
-
-// Add a lane (undoable arrangement edit) and make it active.
-function addLane() {
-  setActive('tiles');
-  ctx.arrRecord();
-  const lane = arrangement.addLane();
-  arrangement.activeLaneId = lane.id;
-  applyLaneGains(0); // give the new lane's bus the right gain under any active solo/mute
-  refresh();
-}
 state.tileScaleIdx = ctx.clampScaleIdx(state.tileScaleIdx);
 tilePlayer.ppb = TILE_SCALES[state.tileScaleIdx];
 
-// Mute / Solo: an undoable arrangement edit (so it rides tile Undo/Redo and the
-// dirty bit). The audio change is the lane gain bus (real-time, ramped); refresh
-// re-renders the lane buttons + roll hatching.
-function toggleLaneFlag(kind, laneId) {
-  setActive('tiles');
-  ctx.arrRecord();
-  if (kind === 'mute') arrangement.toggleMute(laneId);
-  else arrangement.toggleSolo(laneId);
-  applyLaneGains(0.012); // immediate (ramped) — present tails + future notes
-  refresh();
-}
-
-// Push the current mute/solo state onto the lane gain buses. rampSec 0 = instant
-// (use when starting playback so an already-muted lane is silent from note one);
-// a small ramp avoids clicks for live toggles.
-function applyLaneGains(rampSec) {
-  const audible = arrangement.audibleLaneIds();
-  for (const lane of arrangement.lanes) {
-    engine.setLaneGain(lane.id, audible.has(lane.id) ? 1 : 0, rampSec);
-  }
-}
 
 
 
@@ -604,37 +431,6 @@ function applyLaneGains(rampSec) {
 
 
 
-// Reset one lane to a blank slate (the red "R"): clear its tiles + restore the
-// default instrument / mixer / delay / mute-solo, and mark it fresh again. The
-// lane stays in the stack. Undoable as a `full` entry (so the instrument too).
-function resetLane(id) {
-  const before = ctx.arrSnap();
-  arrangement.resetLane(id);
-  ctx.arrCommit(before, true);
-  ctx.patchStash.delete(ctx.stashKey(id)); // forget stashed per-kind patches for this lane
-  applyLaneMix(0.012);  // gain/pan back to unity/center on the bus
-  applyLaneDelayAll();  // delay off → remove the insert
-  applyLaneChorusAll(); // chorus off → remove the insert
-  applyLaneReverbAll();  // reverb off → remove the insert
-  if (ctx.editTarget.laneId === id) ctx.editLane(id); // re-point the pane onto the new default patch
-  refresh();
-}
-
-// Reset the whole tile player ("Reset player"): back to two blank, fresh lanes
-// and the play region cleared. Undoable as a `full` entry.
-function resetPlayer() {
-  const before = ctx.arrSnap();
-  arrangement.resetPlayer();
-  ctx.arrCommit(before, true);
-  ctx.patchStash.clear();    // the old lanes are gone
-  engine.resetLanes();   // tear down every strip (delay tails / orphaned lanes)
-  ctx.editGrid();            // the edited lane may no longer exist → back to the grid
-  applyLaneMix(0);       // initialize the two fresh lanes' buses
-  applyLaneDelayAll();
-  applyLaneChorusAll();
-  applyLaneReverbAll();
-  refresh();
-}
 
 
 
@@ -1461,10 +1257,10 @@ function loadContent(env) {
   ctx.gridInstr = { source: 'grid' }; state.gridInstr = null; ctx.setParkedInstr(null); // fresh document → grid's own instrument
   ctx.editGrid(); // the loaded lanes have fresh patch objects; re-point the editor
   engine.resetLanes(); // drop stale strips (old delay tails / orphaned lanes) — rebuild fresh
-  applyLaneMix(0);     // push the loaded volume/pan onto the lane buses
-  applyLaneDelayAll(); // and the loaded delays
-  applyLaneChorusAll(); // and the loaded choruses
-  applyLaneReverbAll();  // and the loaded reverbs
+  ctx.applyLaneMix(0);     // push the loaded volume/pan onto the lane buses
+  ctx.applyLaneDelayAll(); // and the loaded delays
+  ctx.applyLaneChorusAll(); // and the loaded choruses
+  ctx.applyLaneReverbAll();  // and the loaded reverbs
   refresh();
 }
 
@@ -1916,7 +1712,7 @@ midiExportBtn.addEventListener('click', exportMidi);
 quickExportBtn.addEventListener('click', () => exportAudio()); // one-click defaults
 audioExportBtn.addEventListener('click', openAudioModal);
 stemExportBtn.addEventListener('click', openStemModal);
-document.getElementById('resetPlayer').addEventListener('click', resetPlayer);
+document.getElementById('resetPlayer').addEventListener('click', ctx.resetPlayer);
 
 
 
