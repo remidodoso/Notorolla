@@ -44,7 +44,7 @@ a shared enabler. Rough read before the details:
 | **1. Subsequences** (nestable arrangement tiles) | pure model — recursion over the material graph | no | — |
 | **2. PaulStretch drones** | FFT / phase-vocoder DSP | for realtime; **offline render can be plain JS** | a source to stretch (5, or a self-bounce) |
 | **3. Beat generator** | pure generators + a real multi-sound drum track | no | 7 (for true multi-sound tracks) |
-| **4. PadSynth (+ more voices)** | frequency-domain wavetable **bake** | **no** — one-time table, not realtime | — |
+| **4. PadSynth (+ more voices)** — *PadSynth BUILT (Padlington, 2026-07-09)* | frequency-domain wavetable **bake** | **no** — one-time table, not realtime | — |
 | **5. Sample player** | pool/slicer/clips + zip packaging | only for independent pitch/time | — |
 | **6. Etuderator** | serial-transform primitives + notation | no | 1 (emit études as subsequences) |
 | **7. Polyphony + expression** | model migration + per-note expression + instrument pass | no | — |
@@ -223,34 +223,18 @@ carrot for adding sixteenth resolution + variable grid length. All pure (templat
 
 ## 4. More instruments — PadSynth in particular
 
-**The idea (yours):** more instruments, PadSynth especially. Probably needs WASM.
+> **Status — PadSynth BUILT (2026-07-09) as *Padlington*.** Landed as sketched: **no WASM** —
+> a pure, seeded frequency-domain bake ([src/js/audio/padsynth.js](src/js/audio/padsynth.js)) into a looping
+> wavetable, with **generated source profiles** (Saw / Square / Choir / Tilt — the choir reuses
+> Nayumi's formant tables analytically; no samples anywhere) and a **Stretch** knob as the
+> first §15 Sethares hook. Cheapest voice in the roster. Mechanics in
+> [notes_and_status.md](notes_and_status.md). **Likely phase 2:** analyze a **self-bounce** of
+> any patch into a profile ("any Notorolla sound as a pad") — the FFT-analysis side plugs into
+> the same spectrum-builder seam.
 
-**The correction: PadSynth does not need WASM.** PadSynth (Nasca Octavian Paul,
-ZynAddSubFX) builds a rich spectrum in the *frequency domain* — each harmonic is smeared
-into a Gaussian band of bins — then does **one IFFT** to produce a long wavetable that you
-loop. The FFT is a **one-time table bake at patch/note-build time**, not a per-sample
-realtime operation. That is precisely the pattern the registry already uses: Wendelhorn and
-Tervik **bake per-context `PeriodicWave`s** and cache them. PadSynth slots into the same
-mechanism — compute the wavetable in plain JS when the patch changes, feed it as a looping
-buffer (or `PeriodicWave`). **Likely the easiest big instrument to add.**
-
-**How it maps.** It's a new **kind** in the instrument registry
-([src/js/audio/instrument.js](src/js/audio/instrument.js)): defaults + `PARAMS` editor metadata + a DSP branch
-in `buildVoice`. Params are the PadSynth naturals — harmonic profile/bandwidth (the "spread"
-that makes it lush), number of harmonics, a stretch/inharmonicity knob (ties beautifully to
-the tuning seam — Sethares-style tuning-matched partials are already on the wishlist). The
-edit pane rebuilds per-kind already.
-
-**My recommendations:**
-
-- **Next instrument, no WASM.** Reuse the per-context wave-cache pattern.
-- **Great fit for the microtonal work** — a PadSynth whose partials are stretched to match a
-  non-12 EDO is exactly the "tuning-matched `PARTIALS` per Sethares" idea already banked.
-- Other cheap-and-native voices worth queuing behind it: **Karplus-Strong pluck** (trivial,
-  native delay line), a **wavetable-scanner**, a straight **virtual-analog subtractive** (we
-  have biquads). None need WASM.
-- Watch CPU on the heavy end — Nayumi is already ~17 nodes/note; a looped-buffer PadSynth is
-  actually *cheap* per voice, which is good news for polyphony (7).
+Still ahead under "more instruments" (cheap-and-native, queued): **Karplus-Strong pluck**
+(→ §8's worklet string), a **wavetable-scanner**, a straight **virtual-analog subtractive**
+(→ §10). None need WASM.
 
 ---
 
@@ -1151,8 +1135,9 @@ minima move.** Everything else (the analysis-fed Triadulator, tuning suggestion)
   tuning's ratios** — the timbre literally embodies the scale (construct, not approximate), and the
   per-mode decay is what actually reads as "bell-like." Modes are a known list → feeds the analysis
   directly. **A strong reason to prioritize §8's modal branch.**
-- **Additive** (Zindel / a future **PadSynth**, §4) = the spectrum **pixel-editor**: any partial
-  anywhere, fully known; Zindel's **Spread** is a first version of the knob.
+- **Additive** (Zindel / **Padlington** — PadSynth, §4, now BUILT with a **Stretch** knob) = the
+  spectrum **pixel-editor**: any partial anywhere, fully known; Zindel's **Spread** and
+  Padlington's **Stretch** are first versions of the knob.
 - **FM** (Tervik / Zindel's Modulation) = a cheap **idea generator**: rich inharmonic spectra from
   ~two parameters, but a **constrained reachable set** (an arithmetic comb you shift/scale, not
   place per-partial). Good for stumbling onto spectra, poor for targeting.

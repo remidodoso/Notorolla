@@ -376,6 +376,99 @@ const BOSHWICK_PARAMS = [
     title: 'Noise↔body balance — the snare "snappy". Inert for pure types.' },
 ];
 
+// --- Padlington: a PadSynth pad (Paul Nasca's algorithm). A harmonic PROFILE
+// (Source: saw / square / choir / tilt) is smeared into Gaussian bands in the
+// frequency domain and IFFT'd into a long looping wavetable — each harmonic
+// becomes a narrow noise band, which is the lush "infinite unison" pad sound.
+// The bake is pure + seeded (audio/padsynth.js); the voice is just two
+// decorrelated read-heads over the table into Vesperia's filter + ADSR — the
+// cheapest voice in the roster. --------------------------------------------
+
+const PADLINGTON_DEFAULTS = {
+  // Source profile. Saw = the supersaw pad; Choir uses vowel formants (Nayumi's
+  // tables); Tilt is a bare 1/k^e rolloff. Vowel/Size act only for Choir, Tilt
+  // only for the Tilt source (inert otherwise, like Boshwick's per-type knobs).
+  source: 'saw',
+  vowel: 'ah',
+  size: 1.0,
+  tilt: 1.5,
+  harmonics: 64,
+
+  // The pad bake. Bandwidth = each harmonic's Gaussian smear in cents (the
+  // lushness); BW Scale = how the smear grows up the series (1 = constant
+  // cents); Stretch = partial k lands at f·k^(1+s) (0 = harmonic).
+  bandwidth: 25,
+  bwScale: 1.0,
+  stretch: 0,
+
+  // Two decorrelated read-heads pan apart by Width (0 = mono-centered).
+  width: 0.7,
+
+  // Filter (Vesperia's section) — mostly open by default; the pad's colour
+  // comes from the bake, the filter is for shaping on top.
+  cutoff: 7000,
+  reso: 0.5,
+  filterEnv: 0,
+  keyTrack: 0.3,
+
+  // Amp envelope — a slow swell + long tail, pad-shaped.
+  attack: 0.4,
+  decay: 1.0,
+  sustain: 0.9,
+  release: 1.2,
+};
+
+const PAD_SOURCE_OPTS = [
+  { id: 'saw', label: 'Saw' },
+  { id: 'square', label: 'Square' },
+  { id: 'choir', label: 'Choir' },
+  { id: 'tilt', label: 'Tilt' },
+];
+
+const stretchFmt = (v) => (Math.abs(v) < 0.0005 ? 'harmonic' : `${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(3)}`);
+
+const PADLINGTON_PARAMS = [
+  { key: 'source', group: 'Source', label: 'Source', sel: true, options: PAD_SOURCE_OPTS,
+    title: 'Harmonic profile the pad is baked from: Saw (all harmonics, 1/k), Square (odd harmonics only), Choir (vowel formants), Tilt (a bare 1/k^e rolloff).' },
+  { key: 'vowel', group: 'Source', label: 'Vowel', sel: true, options: NAYUMI_VOWEL_OPTS,
+    title: 'Choir source only: which vowel shapes the harmonic profile (ooh/oh/ah/eh/ee). Inert for other sources.' },
+  { key: 'size', group: 'Source', label: 'Size', min: 0.8, max: 1.3,
+    fmt: (v) => (v < 0.97 ? 'larger' : v > 1.03 ? 'smaller' : 'neutral'),
+    title: 'Choir source only: vocal-tract size — scales every formant. Low = larger/darker, high = smaller/brighter.' },
+  { key: 'tilt', group: 'Source', label: 'Tilt', min: 0.5, max: 3, fmt: (v) => `1/k^${v.toFixed(2)}`,
+    title: 'Tilt source only: the spectral rolloff exponent. Low = bright (slow rolloff), high = dark, nearly a pure tone.' },
+  { key: 'harmonics', group: 'Source', label: 'Harmonics', min: 8, max: 128, log: true, fmt: (v) => `${Math.round(v)}`,
+    title: 'How many harmonics the bake includes (automatically band-limited at Nyquist).' },
+
+  { key: 'bandwidth', group: 'Pad', label: 'Bandwidth', min: 1, max: 120, log: true, fmt: cents,
+    title: 'Width of each harmonic’s Gaussian smear, in cents — THE lushness knob. Narrow = clear and static; wide = thick, chorused, shimmering.' },
+  { key: 'bwScale', group: 'Pad', label: 'BW Scale', min: 0, max: 2, fmt: (v) => `k^${v.toFixed(2)}`,
+    title: 'How the smear grows up the harmonic series: 1 = constant in cents (natural), toward 0 = upper harmonics stay clearer, toward 2 = upper harmonics wash out.' },
+  { key: 'stretch', group: 'Pad', label: 'Stretch', knob: true, min: -0.05, max: 0.05, reset: 0, detents: [0], fmt: stretchFmt,
+    title: 'Inharmonicity: partial k lands at f·k^(1+s). 0 = exactly harmonic; positive stretches the partials sharp (bell/gamelan), negative compresses them flat. Double-click to reset.' },
+
+  { key: 'width', group: 'Stereo', label: 'Width', min: 0, max: 1, fmt: pct,
+    title: 'Stereo spread — the voice’s two decorrelated read-heads pan apart. 0 = mono-centered (mono-safe).' },
+
+  { key: 'cutoff', group: 'Filter', label: 'Cutoff', min: 120, max: 14000, log: true, fmt: hz,
+    title: 'Lowpass cutoff (base, before key tracking).' },
+  { key: 'reso', group: 'Filter', label: 'Resonance', min: 0.5, max: 18, fmt: (v) => `Q ${v.toFixed(1)}`,
+    title: 'Filter resonance — a peak at the cutoff. High values whistle/ring.' },
+  { key: 'filterEnv', group: 'Filter', label: 'Env Amount', min: 0, max: 4, fmt: (v) => `${v.toFixed(2)} oct`,
+    title: 'How far the filter envelope opens the cutoff above its base at the attack, then settles.' },
+  { key: 'keyTrack', group: 'Filter', label: 'Key Track', min: 0, max: 1, fmt: pct,
+    title: 'How much the cutoff follows pitch: 0 = fixed Hz, 1 = fully relative to each note.' },
+
+  { key: 'attack', group: 'Amp Envelope', label: 'Attack', min: 0.001, max: 3, log: true, fmt: secs,
+    title: 'Time from note-on to full level — a slow attack gives the pad swell.' },
+  { key: 'decay', group: 'Amp Envelope', label: 'Decay', min: 0.02, max: 5, log: true, fmt: secs,
+    title: 'How quickly the level falls toward the sustain after the attack.' },
+  { key: 'sustain', group: 'Amp Envelope', label: 'Sustain', min: 0, max: 1, fmt: pct,
+    title: 'Level the note holds at while sounding.' },
+  { key: 'release', group: 'Amp Envelope', label: 'Release', min: 0.01, max: 5, log: true, fmt: secs,
+    title: 'Fade time once the note ends — a long release lets pads overlap.' },
+];
+
 // --- The registry. Each entry: id, display label, a one-line description (shown
 // in the pane), the parameter defaults, and the editor PARAMS metadata. -------
 export const INSTRUMENTS = {
@@ -385,6 +478,7 @@ export const INSTRUMENTS = {
   tervik: { id: 'tervik', label: 'Tervik', desc: '3-op FM', defaults: TERVIK_DEFAULTS, params: TERVIK_PARAMS },
   nayumi: { id: 'nayumi', label: 'Nayumi', desc: 'breathy formant voice', defaults: NAYUMI_DEFAULTS, params: NAYUMI_PARAMS },
   boshwick: { id: 'boshwick', label: 'Boshwick', desc: '808 percussion', defaults: BOSHWICK_DEFAULTS, params: BOSHWICK_PARAMS },
+  padlington: { id: 'padlington', label: 'Padlington', desc: 'PadSynth wavetable pad', defaults: PADLINGTON_DEFAULTS, params: PADLINGTON_PARAMS },
 };
 
 export const DEFAULT_KIND = 'vesperia';

@@ -13,6 +13,7 @@ import { degreeToFreq } from '../core/tuning.js';
 import { defaultPatch } from './instrument.js';
 import { applyMods } from './mods.js';
 import { reverbSeconds, MAX_PREDELAY } from './reverb.js';
+import { bakePadTable, padTableKey, padBaseFreq } from './padsynth.js';
 
 // Relative amplitudes of the harmonic partials (1st = fundamental).
 // A gentle 1/k-ish rolloff: present enough upper harmonics for definition,
@@ -161,6 +162,18 @@ const BOSH_LVL = { kick: 0.95, tom: 1.3, snare: 1.55, hat: 3.7, clap: 4.6, cowbe
 const BOSH_METAL_RATIOS = [1.0, 1.342, 1.567, 1.896, 2.241, 2.742]; // inharmonic square cluster (hat/cymbal)
 const BOSH_COWBELL_RATIOS = [1.0, 1.565]; // two squares
 const BOSH_SNARE_TONE_RATIO = 1.78;       // snare's two shell tones (≈185 & 330 Hz)
+
+// Padlington (PadSynth pad). The bake (audio/padsynth.js) is pure + seeded; the
+// tables are cached PER CONTEXT keyed by their bake params + octave base, baked
+// lazily on the first note that needs them (~tens of ms, then free). PAD_NORM
+// levels a sustained pad against a Vesperia note (headless metering,
+// notch/meter-pad.mjs — a pad holds its level, so it's matched a touch under the
+// Vesperia attack peak). PAD_HEAD_GAIN = 1/√2: the voice sums two decorrelated
+// read-heads, which restores the table's baked RMS.
+const PAD_NORM = 2.4;            // set by metering (see meter-pad.mjs): saw-pad
+                                 // peak ≈ ref −2 dB, RMS ≈ ref (sustained voice)
+const PAD_HEAD_GAIN = Math.SQRT1_2;
+const PAD_CACHE_MAX = 16;        // LRU ceiling (~8 MB of tables per context)
 
 // Configure the master DynamicsCompressor as a near-transparent ceiling limiter:
 // a high threshold (so it does nothing at normal levels — no always-on
@@ -601,6 +614,7 @@ function buildVoice(ctx, dest, p, pitch, time, duration, velocity, freq, lite = 
     case 'tervik': return buildTervikVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
     case 'nayumi': return buildNayumiVoice(ctx, dest, p, pitch, time, duration, velocity, freq, lite);
     case 'boshwick': return buildBoshwickVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
+    case 'padlington': return buildPadlingtonVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
     default: return buildVesperiaVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
   }
 }
@@ -1405,6 +1419,84 @@ function buildWendelhornVoice(ctx, dest, p, pitch, time, duration, velocity, fre
 
   // The center saw is always present; use it to release the whole graph.
   stopOscs[stopOscs.length - 1].onended = () => { for (const n of extra) n.disconnect(); };
+}
+
+// The baked-wavetable cache for Padlington, per context (live + each offline
+// export bakes its own — the seeded bake makes them bit-identical). Keyed by
+// padTableKey (only bake-relevant params — envelope/filter/width edits reuse the
+// table), LRU-capped. Lazy: only the octaves actually played get baked.
+function padTableBuffer(ctx, p, baseFreq) {
+  const key = padTableKey(p, baseFreq, ctx.sampleRate);
+  const cache = ctx._padCache || (ctx._padCache = new Map());
+  const hit = cache.get(key);
+  if (hit) { cache.delete(key); cache.set(key, hit); return hit; } // refresh LRU order
+  const data = bakePadTable(p, baseFreq, ctx.sampleRate);
+  const buf = ctx.createBuffer(1, data.length, ctx.sampleRate);
+  buf.getChannelData(0).set(data);
+  cache.set(key, buf);
+  if (cache.size > PAD_CACHE_MAX) cache.delete(cache.keys().next().value); // evict oldest
+  return buf;
+}
+
+// Build one Padlington voice: two looping read-heads over the baked PadSynth
+// table (nearest-octave base, repitched by playbackRate) at independent random
+// start offsets — decorrelated, so panning them apart (Width) gives a wide
+// stereo pad from ONE bake — into Vesperia's amp ADSR + resonant lowpass with
+// envelope/key-tracking. ~7 nodes/note: the cheapest voice in the roster. The
+// per-note random offsets are allowed to be nondeterministic (the Wendelhorn
+// random-phase precedent); it's the TABLE that is seeded.
+function buildPadlingtonVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
+  const f0 = freq != null ? freq : degreeToFreq(pitch);
+  const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+  const releaseTime = time + duration;
+  const stop = releaseTime + Math.max(0.5, p.release * 6);
+
+  // Amp envelope -> tone (lowpass) -> dest (Vesperia's shape).
+  const env = ctx.createGain();
+  const tone = ctx.createBiquadFilter();
+  tone.type = 'lowpass';
+  tone.Q.value = p.reso;
+  env.connect(tone);
+  tone.connect(dest);
+
+  const peak = velocity * VOICE_PEAK * PAD_NORM;
+  const sustainLevel = Math.max(peak * p.sustain, 0.00001);
+  const g = env.gain;
+  g.setValueAtTime(0.0001, time);
+  g.exponentialRampToValueAtTime(Math.max(peak, 0.0002), time + p.attack);
+  g.setTargetAtTime(sustainLevel, time + p.attack, p.decay);
+  g.setTargetAtTime(0.0001, releaseTime, p.release);
+
+  // Filter envelope + key tracking (opens on attack, settles to base).
+  const nyq = ctx.sampleRate * 0.45;
+  const baseCut = clamp(p.cutoff * Math.pow(f0 / FREF, p.keyTrack), 60, nyq);
+  const peakCut = clamp(baseCut * Math.pow(2, p.filterEnv), 60, nyq);
+  tone.frequency.setValueAtTime(peakCut, time);
+  tone.frequency.setTargetAtTime(baseCut, time + p.attack, FILTER_ENV_TAU);
+
+  const base = padBaseFreq(f0);
+  const buf = padTableBuffer(ctx, p, base);
+  const lenSec = buf.length / ctx.sampleRate;
+  const nodes = [env, tone];
+  const srcs = [];
+  [-1, 1].forEach((side) => {
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    src.playbackRate.value = f0 / base;
+    const sg = ctx.createGain();
+    sg.gain.value = PAD_HEAD_GAIN;
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = clamp(side * p.width, -1, 1);
+    src.connect(sg);
+    sg.connect(pan);
+    pan.connect(env);
+    src.start(time, Math.random() * lenSec); // random head position (decorrelation)
+    src.stop(stop);
+    srcs.push(src);
+    nodes.push(sg, pan);
+  });
+  srcs[0].onended = () => { for (const n of nodes) n.disconnect(); }; // live cleanup (no-op offline)
 }
 
 const MAX_DELAY = 8; // s — delay-line length ceiling (a whole note at a very slow tempo)

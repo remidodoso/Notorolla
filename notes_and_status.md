@@ -311,8 +311,9 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 | [core/tunes.js](src/js/core/tunes.js) | *(unreferenced demo fixture — "Mary Had a Little Lamb"; slated for deletion, see Deferred work)* |
 | **audio/** | *Web Audio engine, per-lane effects, patches, scheduler* |
 | [audio/audio.js](src/js/audio/audio.js) | `AudioEngine` — additive synth voice (`buildVoice`), per-lane patch resolution (`patchFor`), per-lane **stereo mixer strips** (volume→panner→[chorus]→[delay]→mute-gate; `setLaneVolume`/`setLaneGain`/`setLanePan`, `applyLaneChorus`/`applyLaneDelay`/`applyLaneReverb`, `modsFor`), master limiter + fader + **stereo meter tap** (`getPeak`); `renderToBuffer`/`renderStem` (offline bounce), `FREF` |
-| [audio/instrument.js](src/js/audio/instrument.js) | the **instrument registry** (Vesperia/Zindel/Wendelhorn/Tervik/Nayumi/Boshwick): `defaultPatch(kind)`, `normalizePatch`, `clonePatch`, `instrument`/`instrumentKinds`, slider mapping |
+| [audio/instrument.js](src/js/audio/instrument.js) | the **instrument registry** (Vesperia/Zindel/Wendelhorn/Tervik/Nayumi/Boshwick/Padlington): `defaultPatch(kind)`, `normalizePatch`, `clonePatch`, `instrument`/`instrumentKinds`, slider mapping |
 | [audio/patches.js](src/js/audio/patches.js) | `PatchStore` — the **user-global patch catalog** backing store: id-keyed named patches, factory `Init` per kind (`factoryInitId`) + user tier, `allForKind`/`add`/`update`/`remove`/`uniqueUserName`. Pure |
+| [audio/padsynth.js](src/js/audio/padsynth.js) | the **Padlington bake** (pure, seeded): PadSynth profile generators (saw/square/choir/tilt) → Gaussian-band spectrum → random-phase IFFT wavetable; `bakePadTable`/`padTableKey`/`padBaseFreq`, radix-2 `fft` |
 | [audio/delay.js](src/js/audio/delay.js) | per-lane delay config (`normalizeDelay`, `DELAY_TIMES`/`DELAY_MODES`) + `buildDelayEditor` |
 | [audio/chorus.js](src/js/audio/chorus.js) | per-lane Juno-60 chorus config (`normalizeChorus`, `CHORUS_MODES`) + `buildChorusEditor` |
 | [audio/reverb.js](src/js/audio/reverb.js) | per-lane reverb config (`normalizeReverb`) + `buildReverbEditor` |
@@ -414,6 +415,25 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   change — see Gotchas). v1 = **808 only** (a future Model select for 909/ride/china is noted).
   *Planned:* the same variability/snap pass for the other drum types; per-type factory presets
   sanctioned if needed.
+- **Padlington (2026-07-09)** — a **PadSynth pad** (Paul Nasca's ZynAddSubFX algorithm). A harmonic
+  **profile** — **Source**: Saw (1/k, the "infinite-unison supersaw" pad), Square (odd harmonics),
+  **Choir** (vowel formants ooh/oh/ah/eh/ee + a **Size** knob, reusing Nayumi's formant tables
+  analytically — no samples, the profiles are *generated*), or **Tilt** (a bare 1/k^e) — is smeared
+  into **Gaussian bands** in the frequency domain (**Bandwidth** in cents = THE lushness knob;
+  **BW Scale** = how the smear grows up the series), given seeded random phases, and IFFT'd into a
+  **2^17-sample looping wavetable**. The bake is a pure module ([src/js/audio/padsynth.js](src/js/audio/padsynth.js)).
+  **Stretch** (partial k lands at f·k^(1+s)) is the inharmonicity knob — the first Sethares/§15 hook.
+  Tables bake **lazily per (patch, octave base C1–C8)** and are cached per context (LRU 16;
+  `playbackRate = f0/base` stays within ~[0.71, 1.41], which also keeps the choir's formants
+  anchored); the bake is **seeded from the param key**, so every `OfflineAudioContext` bakes
+  bit-identical tables — **exports match live**. The voice = **two decorrelated read-heads** over one
+  table (independent random start offsets — the Wendelhorn random-phase precedent) panned ±**Width**
+  (mono-safe at 0), into Vesperia's resonant lowpass + ADSR. **Cheapest voice in the roster**
+  (~7 nodes/note; no Lite handling needed). `PAD_NORM` set by headless metering
+  (`node notch/meter-pad.mjs`: pad RMS ≈ the Vesperia reference, peak a couple dB under — a held pad
+  at equal peak reads hot). `notch/padsynth.mjs` (44 tests); wasim grew a StereoPanner (left-channel
+  model) + buffer-source playbackRate/offset for it. *Likely phase 2:* analyze a **self-bounce** of
+  any patch into a profile ("any Notorolla sound as a pad").
 - **Multi-instrument registry** ([src/js/audio/instrument.js](src/js/audio/instrument.js)): each **kind** owns its
   defaults + `PARAMS` (editor metadata); a patch carries a `kind` tag and the engine dispatches on it
   in `buildVoice` (one DSP branch per kind). `normalizePatch` / `defaultPatch(kind)` / `clonePatch`

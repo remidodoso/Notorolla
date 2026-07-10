@@ -1,8 +1,12 @@
 // wasim.mjs — a tiny sample-accurate Web Audio simulator for headless metering.
-// Implements just what Vesperia + Boshwick voices use: oscillators (sine/tri/
-// square), gains with scheduled AudioParams (setValueAtTime / exponential &
-// linear ramps / setTargetAtTime), RBJ biquads (lowpass/highpass/bandpass),
-// looping buffer sources, and a pull-based DAG render.
+// Implements just what the metered voices (Vesperia, Boshwick, Padlington) use:
+// oscillators (sine/tri/square), gains with scheduled AudioParams
+// (setValueAtTime / exponential & linear ramps / setTargetAtTime), RBJ biquads
+// (lowpass/highpass/bandpass), looping buffer sources (with playbackRate + a
+// start offset, linear-interpolated), stereo panners, and a pull-based DAG
+// render. The graph is single-channel: a StereoPanner models the LEFT channel
+// (equal-power, out = in·cos((pan+1)·π/4)) — exact at pan 0 and −1, so meter
+// centered/mono voices (e.g. Padlington at Width 0).
 
 export function makeSimCtx(sampleRate = 44100) {
   const TWO_PI = Math.PI * 2;
@@ -134,19 +138,34 @@ export function makeSimCtx(sampleRate = 44100) {
       const n = baseNode(function (t) {
         if (t < this._start || t >= this._stop || !this.buffer) return 0;
         const d = this.buffer.getChannelData(0);
-        const i = this._idx++;
-        return this.loop ? d[i % d.length] : (i < d.length ? d[i] : 0);
+        // Advance a fractional read position by playbackRate per output sample
+        // (buffer rate assumed = ctx rate) and read with linear interpolation.
+        const pos = this._pos;
+        this._pos = pos + this.playbackRate.at(t);
+        const len = d.length;
+        let i = Math.floor(pos), f = pos - i;
+        if (this.loop) i %= len;
+        else if (i >= len) return 0;
+        const a = d[i], b = d[(i + 1) % len];
+        return a + (b - a) * f;
       });
-      n.buffer = null; n.loop = false; n._idx = 0; n._start = Infinity; n._stop = Infinity;
-      n.start = (t) => { n._start = t; };
+      n.buffer = null; n.loop = false; n._pos = 0; n._start = Infinity; n._stop = Infinity;
+      n.playbackRate = makeParam(1);
+      n.start = (t, offset = 0) => { n._start = t; n._pos = offset * sampleRate; };
       n.stop = (t) => { n._stop = t; };
+      return n;
+    },
+    createStereoPanner() {
+      // Single-channel model: output the LEFT channel of the equal-power law.
+      const n = baseNode(function (t) { return this._sum(t) * Math.cos(((this.pan.at(t) + 1) * Math.PI) / 4); });
+      n.pan = makeParam(0);
       return n;
     },
     // Collect every param reachable from `node` so render can _prep them.
     _allParams(node, seen = new Set(), out = []) {
       if (!node || seen.has(node)) return out;
       seen.add(node);
-      for (const k of ['gain', 'frequency', 'detune', 'Q']) if (node[k] && node[k]._events) out.push(node[k]);
+      for (const k of ['gain', 'frequency', 'detune', 'Q', 'pan', 'playbackRate']) if (node[k] && node[k]._events) out.push(node[k]);
       for (const inp of node._inputs || []) this._allParams(inp, seen, out);
       return out;
     },
