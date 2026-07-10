@@ -76,18 +76,51 @@ behaves, the constraints and gotchas to respect. Keep it **succinct** and curren
   unused for now; live MIDI will need a `noteOn/noteOff` voice API (current voice is
   fire-and-forget).
 
+## Code organization rules (agents: read before adding code)
+
+The 2026-07 refactor (`refactor_plan.md`) established this structure. Keep it — the goal is
+to never need a refactor like that again.
+
+**Where code goes.** Decide by layer, not by convenience:
+- `core/` — pure music/model logic. **No DOM, no Web Audio, no imports from other layers.**
+  Must stay importable by node (the `notch/` tests import it directly). New pure logic gets
+  a notch test.
+- `audio/` — Web Audio synthesis, effects, scheduling. May import `core/`, nothing else.
+- `ui/` — DOM/canvas views and reusable widgets. Views receive **callbacks** at construction;
+  they never import `app/` modules or reach into controller state.
+- `export/` — pure file encoders (bytes out).
+- `app/` — feature controllers. Each exports one `initX(ctx)` that registers its API on the
+  shared `ctx` (flat namespace, `Object.assign(ctx, {...})` at the tail). Controllers talk to
+  each other **only through `ctx`** — no direct imports between `app/` modules.
+- `main.js` — composition root ONLY: imports, object construction, `ctx` assembly, `initX`
+  calls, and the conductor (`refresh`/`onToolbarChange`). The "odds & ends" section exists
+  for true homeless one-liners; keep it small.
+
+**New feature ⇒ new `app/` module** (or extend the module that owns the feature). Do not land
+feature controller code in main.js "for now" — that is exactly how the 3,641-line main.js
+happened. Mutable state shared across modules becomes a `ctx` field; before registering a
+name on `ctx`, grep that it isn't taken.
+
+**Size tripwires** (flag to the user when crossed; don't silently let files ride):
+- main.js above ~900 lines → something is living there that belongs in `app/`.
+- any module above ~600 lines → propose a split at a natural seam before adding more.
+
+**Bookkeeping when files change:** new/moved/deleted file ⇒ update the File map below, keep
+`main.js`'s init-order comments truthful, and check `notch/` imports still resolve
+(`node notch/run.mjs` must stay green).
+
 ## Two architectural "seams" (the important bits)
 
 - **Time is in beats**, tempo-independent, throughout the model; seconds are derived only
   at the audio layer (`Score.secondsPerBeat`). This is where generative rhythm plugs in.
-- **Pitch goes through a tuning seam** ([src/tuning.js](src/js/core/tuning.js)): `degreeToFreq` /
+- **Pitch goes through a tuning seam** ([src/js/core/tuning.js](src/js/core/tuning.js)): `degreeToFreq` /
   `degreeToName(degree, tuningId)` / `pitchClassName(pc, tuningId)`, plus `tuningFreq(degree, tuningId, root)`
   per pattern and **`edoOf(tuningId)`** — the **degrees-per-octave is a property of the tuning** (not a
   global constant), so the pitch-class logic (scales, triads, the grid's octave math) takes `edo` as a
   parameter. Tunings: **12-ET**, **Just (5-limit)**, and **16-ET** (`2^((d−60)/16)`, anchored so degree 60
   stays middle C; octave = 16 degrees; pitch-classes named in **hex `0–f`**). Naming is per-tuning (12-ET
   letters, non-12 hex); the grid renders octave-every-`edo`, drops black keys for non-12 (tints the class-0
-  home row instead). **Scale masks are EDO-tagged** ([src/scales.js](src/js/core/scales.js) `scalesFor(edo)`): the
+  home row instead). **Scale masks are EDO-tagged** ([src/js/core/scales.js](src/js/core/scales.js) `scalesFor(edo)`): the
   picker shows Chromatic (universal) + the tuning's masks — 12-ET pentatonics, or 16-ET **Mavila[7]** `{0,2,4,6,9,11,13}`
   + Mavila pentatonic; switching tuning drops an out-of-EDO mask back to Chromatic. **Roll** still mirrors with
   12-ET-flavored black-key/octave cosmetics (notes sit at the right degree + sound correct; per-tuning roll
@@ -381,7 +414,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   change — see Gotchas). v1 = **808 only** (a future Model select for 909/ride/china is noted).
   *Planned:* the same variability/snap pass for the other drum types; per-type factory presets
   sanctioned if needed.
-- **Multi-instrument registry** ([src/instrument.js](src/js/audio/instrument.js)): each **kind** owns its
+- **Multi-instrument registry** ([src/js/audio/instrument.js](src/js/audio/instrument.js)): each **kind** owns its
   defaults + `PARAMS` (editor metadata); a patch carries a `kind` tag and the engine dispatches on it
   in `buildVoice` (one DSP branch per kind). `normalizePatch` / `defaultPatch(kind)` / `clonePatch`
   are kind-aware (unknown/missing kind → Vesperia, so old projects upgrade silently). The voice reads
@@ -389,7 +422,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 - **Patches are per lane.** Each arrangement lane owns its `lane.patch` (`engine.patchFor(laneId)`);
   new lanes start from the factory preset. Un-laned sound (grid click-to-hear / ♪ Test) uses a
   **separate neutral grid patch** — a workspace preference, *not* part of the project.
-- **Edit instrument pane** ([src/instrumentpane.js](src/js/ui/instrumentpane.js), below the roll; an editor
+- **Edit instrument pane** ([src/js/ui/instrumentpane.js](src/js/ui/instrumentpane.js), below the roll; an editor
   panel, *not* a transport pane). Edits **one target patch at a time**, retargetable: focusing the
   **grid** pane loads the neutral grid patch; **double-clicking a lane head** loads that lane's patch.
   A color-swatch chip shows the target ("Grid" / "Lane N"). An **instrument selector** switches the
@@ -429,7 +462,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   **New** → back to the grid's own; **Clone** → promote the borrowed one to the grid's own; **Restore**
   → re-apply the parked pattern's instrument. Persisted; a project Open/New resets to the grid's own.
 - **Patch catalog (2026-07-06)** (future_directions §14). Patches are **first-class, id-keyed, named
-  objects** (the sound analogue of named patterns): a `PatchStore` ([src/patches.js](src/js/audio/patches.js))
+  objects** (the sound analogue of named patterns): a `PatchStore` ([src/js/audio/patches.js](src/js/audio/patches.js))
   holds `{id,name,kind,params,factory}` — names are non-unique labels, the **id is the key**
   (`crypto.randomUUID` for user patches; a deterministic `f:<kind>` for the read-only factory **`Init`**
   per kind, so a project resolves on any machine). The catalog is **user-global** (`notorolla.patches`,
@@ -440,7 +473,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   - **Editor Patch bar**: the name (double-click → inline rename = a fork name), **Save** (overwrite the
     linked user entry if the name is unchanged, else fork), **Save As** (always fork), **Load** (per-kind
     dropdown), **Catalog** (opens the window).
-  - **Catalog window** ([src/catalog.js](src/js/ui/catalog.js), a `panel.js` tenant): lists **kind → patch**
+  - **Catalog window** ([src/js/ui/catalog.js](src/js/ui/catalog.js), a `panel.js` tenant): lists **kind → patch**
     (factory + user), live name search, **double-click = apply to the current target** (cross-kind
     aware), the target's patch highlighted, per-user-patch **Rename ✎ / Delete ✕** (factory read-only);
     live-refreshes on every store/target change.
@@ -502,7 +535,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   swap carries the selection with the note. Cleared by **Esc**, loading/switching the pattern,
   **Clear**, or leaving the grid pane. Transient (not saved/undone). Exposed as
   `grid.selection` for the selection *tools* (see Permute below; transpose/etc. to come).
-- **Scale-mask library** ([src/scales.js](src/js/core/scales.js) `SCALES`) — a full 12-ET set: Chromatic, the
+- **Scale-mask library** ([src/js/core/scales.js](src/js/core/scales.js) `SCALES`) — a full 12-ET set: Chromatic, the
   **seven diatonic modes** (Ionian/Dorian/Phrygian/Lydian/Mixolydian/Aeolian/Locrian), **harmonic** &
   **melodic minor**, the **symmetric** scales (whole-tone, octatonic W–H & H–W = diminished, augmented),
   **blues**, and pentatonics; 16-ET has Mavila. Symmetric scales are a deliberate target — their even
@@ -521,7 +554,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   12-ET reference ruler backdrop; 12-ET maps pixel-identically via `yForCents`; a just third ≈ 2.5px
   below ET). *Deferred:* a global concert-pitch / C256 reference control, a vertical roll zoom for cents
   differences; microtonal MIDI export is §17.
-- **The "cross" tuning — first NON-OCTAVE tuning BUILT (2026-07-06)** ([src/tuning.js](src/js/core/tuning.js);
+- **The "cross" tuning — first NON-OCTAVE tuning BUILT (2026-07-06)** ([src/js/core/tuning.js](src/js/core/tuning.js);
   future_directions §15). A sparse **just** scale that deliberately **does not close the octave**: two
   generators fan out **both directions from middle C** — a just minor third (**6/5**) and a just perfect
   fourth (**4/3**), a **"cross"** (two independent chains, *not* the 2-D lattice). **Comma-pairs are KEPT**
@@ -553,14 +586,14 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   navigable range; undoable; grid-only.
 - Two views: **Grid** (uniform columns) and **Stretch** (width ∝ duration, aligned to the
   roll). Active rows highlight; **octave-mates highlight softly**.
-- **Reference backdrop (2026-07-08)** ([src/reference.js](src/js/core/reference.js); the first pass of
+- **Reference backdrop (2026-07-08)** ([src/js/core/reference.js](src/js/core/reference.js); the first pass of
   future_directions §16 New Counterpoint). A **read-only reference pattern** overlaid behind the edited
   one, to see/hear them together. **Toolbar "Reference" group**: **Set Reference** (enabled only when
   exactly one tile is selected) freezes that tile — pattern + its lane's patch + transforms — into an
   **immutable self-contained snapshot** (`bakeReference`); a **chip** (`❄ name`), **Clear**, and a **3-way
   level** button (green full / yellow Soft / red Muted). **Not a live link** (user's call): later edits to
   or deletion of the source tile never touch the reference. Both patterns render through the **shared
-  merged-time layout** ([src/grid.js](src/js/core/grid.js) `mergedLayout` + `widthForBeats`) — one engraving-style
+  merged-time layout** ([src/js/core/grid.js](src/js/core/grid.js) `mergedLayout` + `widthForBeats`) — one engraving-style
   `beat→x` map from the **union of their column boundaries**, so simultaneous onsets align regardless of
   each pattern's durations (a foreign onset widens an edited column); today's **Stretch is the degenerate
   case** of this, so a reference **forces Stretch**. **Length policy**: timeline = `max(edited,
@@ -589,12 +622,12 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 - Vertical **resize** (drag handle, min 12 rows) + **wheel scroll** of pitch range, with a
   fixed-position dashed resize guide.
 - **Navigable pitch range = the 88-key piano, A0 (27.5 Hz) → C8, per tuning.** `degreeBounds(tuningId,
-  root)` ([src/tuning.js](src/js/core/tuning.js)) resolves the A0..C8 frequency band to the **degrees closest in
+  root)` ([src/js/core/tuning.js](src/js/core/tuning.js)) resolves the A0..C8 frequency band to the **degrees closest in
   pitch** to those edges in the pattern's tuning (monotonic scan, so any non-EDO tuning works without an
   inverse; memoized). So 12-ET = A0..C8 (MIDI 21–108, exactly the piano); 16-ET = degree 8–124 (~7.25
   octaves). Bounds are **per-pattern** (gridview clamps/viewport read `_loDeg`/`_hiDeg`). 12-ET stays in
   MIDI 0–127, so plain-MIDI export is unaffected.
-- **New Random** (toolbar, next to New/Clone; [src/random.js](src/js/core/random.js)). Regenerates pitches
+- **New Random** (toolbar, next to New/Clone; [src/js/core/random.js](src/js/core/random.js)). Regenerates pitches
   **over the current grid's rhythm** (per-column durations + groove kept, only pitches randomize).
   **Never gated**: if the current pattern isn't in a tile it's rewritten in place; if referenced, a 3-way
   dialog — Replace All / New Pattern / Cancel. **Auto-rolls on open** (audition immediately); Accept = one
@@ -698,7 +731,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
     the block for `k<0`, clamped at beat 0); a `position:fixed` count chip follows the pointer ("N + M",
     or "N + M (I)" with I = |k| for a multi-tile selection). One undo entry; afterwards selection =
     originals + all stamps. Transforms clone onto copies.
-- **Per-tile transforms (nondestructive)** ([src/transforms.js](src/js/core/transforms.js), applied in
+- **Per-tile transforms (nondestructive)** ([src/js/core/transforms.js](src/js/core/transforms.js), applied in
   `arrangementScore`): transforms live on the **tile instance** as an **ordered list**, never the
   pattern, so two tiles can share one pattern yet sound different and editing the pattern still
   updates both. A **note-list pipeline** (`applyTransforms`): **transpose** maps pitch (re-resolves
@@ -710,12 +743,12 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   per-tile (`tile.transforms`, optional/backward-safe), **undoable** (carried through `arrApply`),
   **copies carry cloned transforms**. Future Phase 2: append semantics + reorderable chips +
   **Rotate** (the non-commuting case that forces real ordering UI).
-- **Modeless-pane primitive** ([src/panel.js](src/js/ui/panel.js); Patch Catalog Phase A). `createPanel({title,
+- **Modeless-pane primitive** ([src/js/ui/panel.js](src/js/ui/panel.js); Patch Catalog Phase A). `createPanel({title,
   storeKey, defaultGeom})` is the floating / draggable / resizable / scroll-resistant / geometry-remembered
   / **document-agnostic** window chrome — a tenant appends content to `panel.root` and drives
   `show/hide/toggle/isOpen/onToggle`. Shared by the Tile Inspector and the Patch Catalog (future_directions
   §14).
-- **Tile Inspector (2026-07-05)** ([src/inspector.js](src/js/ui/inspector.js); a button in the tile-player top
+- **Tile Inspector (2026-07-05)** ([src/js/ui/inspector.js](src/js/ui/inspector.js); a button in the tile-player top
   row). A **modeless window** (future_directions §12) — not a modal: stays open, blocks nothing, and
   **follows the tile selection**. `position: fixed` (owns its spot, ignores page scroll), header-draggable,
   `resize: both` (min 240×180), never scrolls the page (interior overflow scrolls inside `.inspector-body`);
@@ -753,7 +786,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   lanes sound; else every non-muted lane sounds. M/S **save with the project** (part of the content
   snapshot → toggling marks dirty; undoable, rides tile Undo/Redo; New Project resets).
 - **M/S act in real time (a per-lane gain bus).** Each lane's voices route through its own
-  `GainNode` (a tiny mixer in [src/audio.js](src/js/audio/audio.js): `laneBus`/`setLaneGain`, voices via
+  `GainNode` (a tiny mixer in [src/js/audio/audio.js](src/js/audio/audio.js): `laneBus`/`setLaneGain`, voices via
   `playNote(..., laneId)`); Mute/Solo just ramps that bus to 0/1 (~12 ms, click-free). Because the
   scheduler keeps scheduling **every** lane's notes regardless of mute, the voices always run into
   their bus — so muting silences **present tails and future notes at once**, and **unmute reveals
@@ -916,8 +949,8 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   `ChannelMerger`), so it spreads wide and **collapses toward mono on an L+R sum** (authentic). Modes are
   LFO presets — I: 0.513 Hz, II: 0.863 Hz (the measured Juno-60 rates), I+II runs both at once. Built
   lazily per strip / rebuilt on a mode change (`applyLaneChorus`); chorus-modal session is **one undo
-  step**, same bracket as the delay. No WASM. ([src/chorus.js](src/js/audio/chorus.js) owns the config + editor.)
-- **Per-lane INSERT REVERB (2026-07-04)** ([src/reverb.js](src/js/audio/reverb.js); `buildReverbInsert`/`reverbIR`
+  step**, same bracket as the delay. No WASM. ([src/js/audio/chorus.js](src/js/audio/chorus.js) owns the config + editor.)
+- **Per-lane INSERT REVERB (2026-07-04)** ([src/js/audio/reverb.js](src/js/audio/reverb.js); `buildReverbInsert`/`reverbIR`
   in audio.js): character reverbs for a single instrument — canonical case **gated snare** (default mode
   = Gated). **"R" chiclet** (chiclets are a 2×2 grid, `M C / D R`), modal with **Type** (Gated / Ambience
   / Room / Hall / Plate / Spring) · **PreDelay** (0–80 ms) · **Size** (for Gated it IS the gate time,
@@ -936,7 +969,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   can copy one lane's effect and paste it onto another. Paste overwrites the config in place, applies
   it live, and rebuilds the controls; Paste is disabled until that type has been copied. Rides the
   same one-undo-step mix bracket.
-- **Per-lane playback MODULATORS** ([src/mods.js](src/js/audio/mods.js)) — slow parameter movement à la Cubase
+- **Per-lane playback MODULATORS** ([src/js/audio/mods.js](src/js/audio/mods.js)) — slow parameter movement à la Cubase
   modulators, so notes evolve as their patterns repeat. **"M" chiclet** (lit violet when active) opens a
   modal with **two fixed mod slots**, each: **On** · **Shape** (Sine / Triangle / Ramp↑ / Ramp↓ /
   **Walk**) · **Parameter** (from `paramsFor(kind)` — numeric params only) · **Amount** (0–100% = peak
@@ -1029,7 +1062,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   third), so the families union cleanly. **Combinatorial caveat:** partial trad+sus makes many more
   3-pc subsets qualify → far more alternatives; `MAX_RESULTS = 200` caps the search (extras beyond
   200 truncated, deterministic).
-- **Engine** ([src/triads.js](src/js/core/triads.js)) is pure and works on pitch-class **sets**, so
+- **Engine** ([src/js/core/triads.js](src/js/core/triads.js)) is pure and works on pitch-class **sets**, so
   all **inversions** are inherent ({0,4,7}={4,7,0}=C major). `chordsFor(edo, families)` makes the
   candidate pool (templates tagged by EDO); `enumerateTriadulations(pcs, {proper, families, edo})` returns
   a deterministic, stable list (proper/best first); rotation is just an index into it. The recursive search
@@ -1081,7 +1114,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 
 ### Export to MIDI
 - **Export MIDI** (in the Tile-player controls) writes the arrangement as a **Standard MIDI
-  File** ([src/midi.js](src/js/export/midi.js), pure). Our pitches are already MIDI note numbers and
+  File** ([src/js/export/midi.js](src/js/export/midi.js), pure). Our pitches are already MIDI note numbers and
   beats are quarter notes, so the mapping is direct; **480 ticks/quarter** keeps every event
   on an integer tick.
 - **Format 1**, one named track per non-empty lane (`Lane 1`/`Lane 2`), each on its own
@@ -1102,10 +1135,10 @@ gibberish (degree ≠ MIDI note off 12).
   `engine.renderToBuffer(notes, durationSec, sampleRate)`, which builds an `OfflineAudioContext`
   mirroring the live master + compressor and the **same context-parametric `buildVoice`** (per-lane
   patch + mix + chorus + delay + reverb). One pass, **mute/solo respected**, **articulation applied**,
-  plus a **release tail** so notes ring out. `encodeWav` ([src/wav.js](src/js/export/wav.js)) → bytes. The
+  plus a **release tail** so notes ring out. `encodeWav` ([src/js/export/wav.js](src/js/export/wav.js)) → bytes. The
   mixdown **always begins at time 0** (plain WAV, no BWF metadata — a mixdown has no offset to store).
   An **indeterminate** "Rendering…" bar (no portable offline progress event in Firefox).
-- **Export options** (shared with the stems dialog, `exportRangeControls` in [src/main.js](src/js/main.js)):
+- **Export options** (shared with the stems dialog, `exportRangeControls` in [src/js/main.js](src/js/main.js)):
   - **Sample rate** — **48 kHz default**, or 44.1 / 96 kHz. The rate is now **caller-chosen and stamped
     into the WAV** rather than inherited from the live device (see Gotchas re the 44.1-vs-48 confusion).
   - **Range** — **Entire project** or **Between markers** (the latter offered only when the play-region
@@ -1118,7 +1151,7 @@ gibberish (degree ≠ MIDI note off 12).
 
 ### Export stems (BWF, per lane → zip)
 - **Export Stems…** (Tile-player controls, right of Export Audio…) opens a modal — **Export Stems**
-  ([src/modal.js](src/js/ui/modal.js)) — to pick a **bus mode** plus the shared **rate / range / tail**
+  ([src/js/ui/modal.js](src/js/ui/modal.js)) — to pick a **bus mode** plus the shared **rate / range / tail**
   options, then renders **one Broadcast Wave (BWF) per lane** and bundles them in a **zip**. Every lane
   with notes is rendered (**mute/solo ignored** — you mute in the DAW; the single-file mixdown export
   still respects it). All stems share one length (region length + tail) and one **`TimeReference`**, so
@@ -1128,18 +1161,18 @@ gibberish (degree ≠ MIDI note off 12).
   a **Between-markers** range starting past beat 0, a **"Treat Start marker as time 0"** checkbox
   (default on) governs it: **off** stamps `TimeReference` = the marker's **absolute sample offset** at
   the chosen rate, so the set re-lands at its project position on Import-at-Origin.
-- **Bus modes** (`engine.renderStem(notes, durSec, laneId, busMode, sampleRate)`, [src/audio.js](src/js/audio/audio.js) —
+- **Bus modes** (`engine.renderStem(notes, durSec, laneId, busMode, sampleRate)`, [src/js/audio/audio.js](src/js/audio/audio.js) —
   a per-lane sibling of `renderToBuffer`):
   - **`dry`** (default) — voice straight to output: no volume/pan/chorus/delay, no master limiter.
   - **`postfader`** — lane volume/pan/chorus/delay baked, master limiter **off** so stems **sum to the mix**.
   - **`baked`** — as post-fader, plus the master fader + limiter (sounds as soloed-in-mix, but the
     nonlinear limiter means stems no longer sum exactly). `masterLevel` is applied only in `baked`.
-- **BWF writer** — [src/wav.js](src/js/export/wav.js) refactored to share a `pcm16Bytes` core + a `cursor`/chunk
+- **BWF writer** — [src/js/export/wav.js](src/js/export/wav.js) refactored to share a `pcm16Bytes` core + a `cursor`/chunk
   assembler between `encodeWav` and new **`encodeBwf(buffer, meta)`**, which inserts a 602-byte **`bext`**
   chunk (EBU Tech 3285 v1; Description / Originator=`Notorolla` / OriginationDate+Time / 64-bit
   `TimeReference`). It stays a valid WAVE — players ignoring `bext` still find `fmt `+`data`. `bext`
   fields are ASCII (non-printable → `?`).
-- **Zip writer** — new [src/zip.js](src/js/export/zip.js): `zipStore([{name,bytes}], date)`, **STORE method (no
+- **Zip writer** — new [src/js/export/zip.js](src/js/export/zip.js): `zipStore([{name,bytes}], date)`, **STORE method (no
   compression)** — PCM is already uncompressed, so deflate would cost a dependency for ~nothing. Pure,
   no-deps (own CRC-32 table); writes local headers + central directory + EOCD, UTF-8 names (flag set).
 - *Deferred:* loop selection; mono "pre-pan" option; a single multichannel poly-WAV alternative.

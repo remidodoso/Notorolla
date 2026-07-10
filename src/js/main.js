@@ -404,37 +404,8 @@ initRandomui(ctx); // New Random modal
 initProjectio(ctx); // project name/dirty + save/open/new/load (registers recomputeDirty)
 initExportui(ctx); // MIDI/audio/stem export + dialogs
 
-// In-memory Copy/Paste clipboards for the effect editors — one per effect type
-// (a delay can't paste onto a reverb). Cleared on reload; persists across modal
-// opens so you can copy one lane's effect and paste it onto another.
-
-
 state.tileScaleIdx = ctx.clampScaleIdx(state.tileScaleIdx);
 tilePlayer.ppb = TILE_SCALES[state.tileScaleIdx];
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 // What the editor is currently editing: the grid's neutral patch, or a lane's.
@@ -515,7 +486,6 @@ function updateRollContent() {
 }
 
 
-
 // --- pattern lifecycle ------------------------------------------------
 
 // Re-center the grid's pitch viewport on a pattern's notes, so opening one that
@@ -577,7 +547,6 @@ function clearPattern() {
   arrangement.clearSelection();
   refresh();
 }
-
 
 
 // --- audition ---------------------------------------------------------
@@ -750,7 +719,6 @@ const gridName = document.getElementById('gridName');
 document.getElementById('resetPlayer').addEventListener('click', ctx.resetPlayer);
 
 
-
 arrUndoBtn.addEventListener('click', ctx.arrUndo);
 arrRedoBtn.addEventListener('click', ctx.arrRedo);
 
@@ -761,7 +729,6 @@ tb.grabHandle.addEventListener('dragstart', (e) => {
 // dragend always fires (drop or cancel) — the one reliable point to clear the
 // grid-drag landing preview.
 tb.grabHandle.addEventListener('dragend', () => ctx.clearGridDragPreview());
-
 
 
 // --- initial paint ----------------------------------------------------
@@ -788,6 +755,5 @@ tilePlayer.setPlayhead(state.playheadBeat);
 // Restore the tile player's scroll (after the render above built the content;
 // the browser clamps if the arrangement shrank).
 document.getElementById('tileLane').scrollLeft = state.tileScrollX || 0;
-
 
 

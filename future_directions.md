@@ -70,7 +70,7 @@ Two corrections to flag up front, because they change sequencing:
 Three cross-cutting enablers underlie the rest and are worth building deliberately (see
 [Cross-cutting enablers](#cross-cutting-enablers)): a **unified "playable material"
 abstraction**, one **DSP worklet investment**, and the **pure generator/transform pattern**
-we already use ([src/random.js](src/js/core/random.js), [src/transforms.js](src/js/core/transforms.js)).
+we already use ([src/js/core/random.js](src/js/core/random.js), [src/js/core/transforms.js](src/js/core/transforms.js)).
 
 **Suggested order:** 1 (subsequences) → 4 (PadSynth) → 7 (polyphony) → 3 (beat generator)
 → 5 (sampler) → 6 (etuderator) → 2 (PaulStretch). Rationale in
@@ -106,7 +106,7 @@ built is a special case of this.
   the natural home for the "panes in separate windows" idea we discussed — a subsequence
   editor is just another tile-player instance over a different root.
 - **Transforms compose for free.** The per-tile nondestructive transform pipeline
-  ([src/transforms.js](src/js/core/transforms.js)) already runs on a flattened note list, so
+  ([src/js/core/transforms.js](src/js/core/transforms.js)) already runs on a flattened note list, so
   transpose/reverse *of a whole nested block* falls out — a reversed subsequence tile
   retrogrades everything inside it. (Reverse-of-a-nest is order-sensitive; the existing
   ordered-transform normalization already anticipates that.)
@@ -171,10 +171,10 @@ generalize it. A tool to randomly **mutate** an existing pattern to add a fill, 
 **generate** a breakbeat.
 
 **What's already here.** Boshwick is a full 808-style percussion synth
-([src/instrument.js](src/js/audio/instrument.js)), deliberately *monotimbral* — **one drum per lane,
+([src/js/audio/instrument.js](src/js/audio/instrument.js)), deliberately *monotimbral* — **one drum per lane,
 layer lanes for a kit**. So today a "kit" is a group of Boshwick lanes, and a beat generator
 that targets that group is a **pure pattern generator** in the exact mold of
-[src/random.js](src/js/core/random.js).
+[src/js/core/random.js](src/js/core/random.js).
 
 **Two separable pieces — and they have different costs:**
 
@@ -235,7 +235,7 @@ mechanism — compute the wavetable in plain JS when the patch changes, feed it 
 buffer (or `PeriodicWave`). **Likely the easiest big instrument to add.**
 
 **How it maps.** It's a new **kind** in the instrument registry
-([src/instrument.js](src/js/audio/instrument.js)): defaults + `PARAMS` editor metadata + a DSP branch
+([src/js/audio/instrument.js](src/js/audio/instrument.js)): defaults + `PARAMS` editor metadata + a DSP branch
 in `buildVoice`. Params are the PadSynth naturals — harmonic profile/bandwidth (the "spread"
 that makes it lush), number of harmonics, a stretch/inharmonicity knob (ties beautifully to
 the tuning seam — Sethares-style tuning-matched partials are already on the wishlist). The
@@ -650,7 +650,7 @@ steps are unequal, so scale-step transposition **warps interval qualities** inst
 translating them — in asymmetric/exotic scales that produces surprising-but-coherent material,
 exactly the app's north star.)
 
-**The cheap enabler: a real scale-mask library — BUILT (2026-07).** In [src/scales.js](src/js/core/scales.js)
+**The cheap enabler: a real scale-mask library — BUILT (2026-07).** In [src/js/core/scales.js](src/js/core/scales.js)
 a mask is **just data** (`scalesFor(edo)`), and the generous 12-ET palette is now in: the **seven
 modes**, harmonic/melodic minor, blues, and especially the **symmetric** scales — **whole-tone,
 octatonic (diminished) ×2, augmented** — which give scale-transposition its most disorienting even
@@ -688,7 +688,7 @@ no WASM.
 ## 12. Tile Attributes and Tile Inspector — the per-tile modifier stack
 
 **First cut BUILT (2026-07-05):** the modeless-window shell + a read-only facts dump + a play/stop/loop
-transport cluster ([src/inspector.js](src/js/ui/inspector.js), a "Tile Inspector" button in the tile-player top
+transport cluster ([src/js/ui/inspector.js](src/js/ui/inspector.js), a "Tile Inspector" button in the tile-player top
 row) — floating, `position:fixed`, draggable, resizable, never scrolls the page, follows the tile
 selection, never holds focus. No per-tile modifier *editing* yet (transforms still live in the transform
 bar; the instrument-override plumbing below is untouched). Mechanics in
@@ -702,12 +702,12 @@ all reference the same pattern on the same lane.
 
 **What's already here.** This extends machinery we have:
 
-- **Per-tile transforms** ([src/transforms.js](src/js/core/transforms.js)) live on the tile *instance*, are
-  applied when the score is built ([src/main.js](src/js/main.js) `arrangementScore`), never change the
+- **Per-tile transforms** ([src/js/core/transforms.js](src/js/core/transforms.js)) live on the tile *instance*, are
+  applied when the score is built ([src/js/main.js](src/js/main.js) `arrangementScore`), never change the
   referenced pattern, are honored in the offline bounce, and are saved with the tile. Two tiles
   sharing one pattern already sound different.
 - **Instrument patches live on the lane** (`lane.patch`, resolved per note by `patchFor(laneId)`),
-  and **mods** ([src/mods.js](src/js/audio/mods.js)) are a per-lane, per-instrument thing that stays there.
+  and **mods** ([src/js/audio/mods.js](src/js/audio/mods.js)) are a per-lane, per-instrument thing that stays there.
 
 **The one real change.** The instrument is chosen per *lane*, but a tile is a group of notes *within*
 a lane — several tiles on one lane share one instrument. So to vary a setting per tile, each note has
@@ -735,7 +735,7 @@ everything else is placement.
 
 **The inspector UI.** Select a tile → a panel shows its modifiers: the existing transforms, plus an
 instrument-override section that renders the lane instrument's own controls (reusing the instrument
-pane, [src/instrumentpane.js](src/js/ui/instrumentpane.js)) with an inherit-or-override choice per setting.
+pane, [src/js/ui/instrumentpane.js](src/js/ui/instrumentpane.js)) with an inherit-or-override choice per setting.
 For a Nayumi lane that's a vowel menu; for Wendelhorn, detune/cutoff/etc. The panel is also the home
 for the modifiers below. Even where a setting isn't editable yet, the inspector should **show the
 relevant facts** — e.g. the transpose control lists the *current* scale library (not a frozen subset)
@@ -926,18 +926,18 @@ focused — but it's the audio verb the catalog leans on, so build it alongside 
 
 - **Phase A — extract the modeless-pane primitive — BUILT (2026-07-06)** *(enabler, no visible change)*:
   the floating / draggable / resizable / scroll-resistant / geometry-persisted / **document-agnostic**
-  chrome is now [src/panel.js](src/js/ui/panel.js) (`createPanel`); the Tile inspector is its first tenant
+  chrome is now [src/js/ui/panel.js](src/js/ui/panel.js) (`createPanel`); the Tile inspector is its first tenant
   (behavior-preserving). The shared shell the catalog (and future pop-outs) build on. *(Mechanics in
   notes_and_status.md.)*
 - **Phase B — patch identity on the lane + the editor's Save/Load — BUILT (2026-07-06)** *(the core
-  value)*: the user-global patch store ([src/patches.js](src/js/audio/patches.js), factory `Init` per kind + user
+  value)*: the user-global patch store ([src/js/audio/patches.js](src/js/audio/patches.js), factory `Init` per kind + user
   tier, id-keyed); lane/grid patches carry originId/originName/dirty; the instrument pane gained a Patch
   bar (inline-rename + Save / Save As / Load); lane-head rework (two-line Instrument/Patch(`*`),
   double-click → editor, Edit button removed); Save = overwrite-or-fork by whether-the-name-changed, with
   sibling `*` propagation. Delete/true-Rename deferred to C. Mechanics in notes_and_status.md;
   `notch/patches.mjs`. *The "desperately needed" step — name, recall, and see-when-changed.*
 - **Phase C — the patch catalog window — BUILT (2026-07-06)** *(browse + apply + manage)*:
-  [src/catalog.js](src/js/ui/catalog.js), a panel.js tenant opened from the instrument pane — kind → patch
+  [src/js/ui/catalog.js](src/js/ui/catalog.js), a panel.js tenant opened from the instrument pane — kind → patch
   (all instruments), **live name search**, **double-click = apply to the current target** (cross-kind
   aware), **Rename / Delete** of user patches (factory read-only). Plus the **`imported` flag** (`[I]`,
   set on project-file Open; a local delete detaches linkers to `Name*`, not `[I]`), the **name-collision
@@ -976,7 +976,7 @@ ad hoc inside one feature.
    seam up before the harder spectral DSP leans on it.
 
 3. **The pure generator/transform pattern — already established.**
-   [src/random.js](src/js/core/random.js) (generator) and [src/transforms.js](src/js/core/transforms.js)
+   [src/js/core/random.js](src/js/core/random.js) (generator) and [src/js/core/transforms.js](src/js/core/transforms.js)
    (per-tile transform) are the templates: data-in/data-out, injectable rng, headless-tested
    in [notch/](notch/). The beat generator (3), the serial transforms / Hanon engine (6), and
    the note-transform "MIDI-filter" family all follow this mold — no new architecture, just
@@ -1215,7 +1215,7 @@ tunings match; the roll handles the mixed-tuning case.
 
 **New Counterpoint — the *creative* generator.** It is **New Random with one extra, conditional bias
 source**: at each new-pattern slot, query the reference at that beat and, **when the reference sounds**,
-feed consonant-interval **`biasTargets`** into the existing **Steer** `biasedPick` ([src/random.js](src/js/core/random.js))
+feed consonant-interval **`biasTargets`** into the existing **Steer** `biasedPick` ([src/js/core/random.js](src/js/core/random.js))
 — Steer, not Sort, because it preserves Run/Triad/arpeggio contour. **Where the reference rests, it
 degrades gracefully to plain New Random** (no constraint). So it inherits every New Random knob and adds
 a consonance pull; small surface area.
@@ -1298,7 +1298,7 @@ questions, so we can pick it back up cold.
     note), no change needed. The dividing line is the **EDO, not the scale's "feel"**: a Mavila
     scale is 16-EDO → Scala, even though it sounds diatonic-ish.
   - **Scala (microtonal)** — the **degree IS the interchange unit, no pitch math**. Emit the
-    same degree-MIDI **plus a generated `.scl` + `.kbm`**, zipped (reuse [src/zip.js](src/js/export/zip.js)),
+    same degree-MIDI **plus a generated `.scl` + `.kbm`**, zipped (reuse [src/js/export/zip.js](src/js/export/zip.js)),
     loaded into a tuning-aware synth (Surge XT, Pianoteq, Vital, anything Scala/MTS-ESP). The
     synth retunes per key → exact pitch, **full polyphony, lane tracks intact, one channel**.
 - **Why Scala fits Notorolla naturally:** our internal degree space (EDO steps anchored at
@@ -1388,7 +1388,7 @@ kept here so they aren't lost.
   influencing how the new one is built: the same beat-indexed "what is the
   reference doing at beat *b*" query that drives a ghost-overlay view also tells the generator
   *where the reference is silent*, and rhythmic complementarity biases onsets/durations into
-  those holes. Rides the existing **Duration Bias** machinery in [src/random.js](src/js/core/random.js);
+  those holes. Rides the existing **Duration Bias** machinery in [src/js/core/random.js](src/js/core/random.js);
   naturally two-voice while the grid is mono, generalizes with polyphony (§7). Very on-brand for
   the ostinato/interlock aesthetic.
 
