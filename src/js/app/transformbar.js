@@ -3,7 +3,7 @@
 // the Insert/Clear/Delete range tools drawn on the ruler, and the per-selection
 // transform chips. One bar, two roles (tool palette + per-tile readout).
 
-import { setTileTranspose, setTileReverse, hasReverse, describeTransform, transformKindLabel } from '../core/transforms.js';
+import { setTileTranspose, setTileReverse, setTileDetune, hasReverse, describeTransform, transformKindLabel, DETUNE_MAX } from '../core/transforms.js';
 import { edoOf, pitchClassName } from '../core/tuning.js';
 import { scalesFor, scaleById } from '../core/scales.js';
 import { insertPoint, deletePoint } from '../core/library.js';
@@ -21,6 +21,7 @@ export function initTransformbar(ctx) {
   // undo entry per action; the selection survives so actions chain.)
   ctx.rangeMode = null;                                  // null | 'insert' | 'clear' | 'delete' — armed Range tool (draws on the ruler)
   const transposeOpts = { amount: 1, scaleId: 'auto' };  // the Transpose action's parameters (always visible in the bar)
+  const detuneOpts = { cents: 10 };                      // the Detune action's parameter (± cents)
 
   // Transpose: SET each selected tile's transpose to the bar's amount (a second
   // application replaces, never accumulates; amount 0 clears). Scale 'auto' =
@@ -35,6 +36,18 @@ export function initTransformbar(ctx) {
       const scaleId = transposeOpts.scaleId === 'auto' ? (p ? p.scaleId : 'chromatic') : transposeOpts.scaleId;
       setTileTranspose(tile, transposeOpts.amount, scaleId, root);
     }
+    ctx.arrCommit(before);
+    ctx.refresh();
+  }
+
+  // Detune: SET each selected tile's detune to the bar's cents (a second
+  // application replaces, never accumulates; 0 clears). Uniform-pitch contract:
+  // the sounding pitch shifts by the full cents on every instrument.
+  function applyDetuneAction() {
+    const tiles = ctx.selectedTiles();
+    if (!tiles.length) return;
+    const before = ctx.arrSnap();
+    for (const tile of tiles) setTileDetune(tile, detuneOpts.cents);
     ctx.arrCommit(before);
     ctx.refresh();
   }
@@ -131,6 +144,11 @@ export function initTransformbar(ctx) {
     refreshTransformBar();
   }
 
+  function bumpDetune(d) {
+    detuneOpts.cents = Math.max(-DETUNE_MAX, Math.min(DETUNE_MAX, detuneOpts.cents + d));
+    refreshTransformBar();
+  }
+
   // Remove one transform KIND from every selected tile (a chip's ✕), one undo.
   function removeSelectedTransform(kind) {
     const tiles = ctx.selectedTiles();
@@ -139,6 +157,7 @@ export function initTransformbar(ctx) {
     for (const tile of tiles) {
       if (kind === 'transpose') setTileTranspose(tile, 0);
       else if (kind === 'reverse') setTileReverse(tile, false);
+      else if (kind === 'detune') setTileDetune(tile, 0);
     }
     ctx.arrCommit(before);
     ctx.refresh();
@@ -150,6 +169,7 @@ export function initTransformbar(ctx) {
   // readout). Built once; refreshTransformBar syncs state.
   const transformBarEl = document.getElementById('transformBar');
   let xbRippleBtn, xbTransBtn, xbRevBtn, xbCloneBtn, xbArmedEl, xbAmountEl, xbScaleSel, xbKeyEl, xbSelEl;
+  let xbDetBtn, xbDetArmedEl, xbDetAmountEl; // Detune action + its cents stepper
   let xbInsBtn, xbClrBtn, xbDelBtn; // Range tools (draw a range on the ruler)
 
   function buildTransformBar() {
@@ -204,6 +224,22 @@ export function initTransformbar(ctx) {
     xbRevBtn.title = 'Reverse the selected tile(s) — if all are already reversed, un-reverses them all. One undo step; the selection stays.';
     xbRevBtn.onclick = applyReverseAction;
 
+    // Detune action + its cents stepper (± = 5 ¢ per click, Shift = 1 ¢).
+    xbDetBtn = document.createElement('button');
+    xbDetBtn.className = 'xb-brush xf-detune';
+    xbDetBtn.textContent = 'Detune';
+    xbDetBtn.title = 'Detune the selected tile(s) by the cents shown — shifts the SOUNDING pitch uniformly on every instrument (SETS the detune — a second application replaces it; 0 clears). One undo step; the selection stays.';
+    xbDetBtn.onclick = applyDetuneAction;
+    xbDetArmedEl = document.createElement('span');
+    xbDetArmedEl.className = 'xb-armed';
+    xbDetAmountEl = document.createElement('span');
+    xbDetAmountEl.className = 'xb-amt-val';
+    xbDetArmedEl.append(
+      mkBtn('−', 'Down 5 ¢ (Shift = 1 ¢)', (e) => bumpDetune(e.shiftKey ? -1 : -5)),
+      xbDetAmountEl,
+      mkBtn('+', 'Up 5 ¢ (Shift = 1 ¢)', (e) => bumpDetune(e.shiftKey ? 1 : 5)),
+    );
+
     xbCloneBtn = document.createElement('button');
     xbCloneBtn.className = 'xb-brush xf-clone';
     xbCloneBtn.textContent = 'Clone';
@@ -237,7 +273,7 @@ export function initTransformbar(ctx) {
     xbDelBtn.title = 'Delete time — arm, then draw a range on the ruler: tiles starting in the range are removed and everything after shifts left to close it (overlaps with an earlier tile’s tail are allowed). Playhead/markers ride along. Shift at release keeps it armed; Esc cancels.';
     xbDelBtn.onclick = () => setRangeTool('delete');
 
-    transformBarEl.append(xbRippleBtn, rippleSep, xbTransBtn, xbArmedEl, xbRevBtn, xbCloneBtn,
+    transformBarEl.append(xbRippleBtn, rippleSep, xbTransBtn, xbArmedEl, xbRevBtn, xbDetBtn, xbDetArmedEl, xbCloneBtn,
       rangeSep, rangeLabel, xbInsBtn, xbClrBtn, xbDelBtn, xbSelEl);
     refreshTransformBar();
   }
@@ -278,11 +314,12 @@ export function initTransformbar(ctx) {
     if (!xbTransBtn) return;
     xbRippleBtn.classList.toggle('active', !!state.ripple);
     const tiles = ctx.selectedTiles();
-    xbTransBtn.disabled = xbRevBtn.disabled = xbCloneBtn.disabled = tiles.length === 0;
+    xbTransBtn.disabled = xbRevBtn.disabled = xbDetBtn.disabled = xbCloneBtn.disabled = tiles.length === 0;
     xbInsBtn.classList.toggle('active', ctx.rangeMode === 'insert');
     xbClrBtn.classList.toggle('active', ctx.rangeMode === 'clear');
     xbDelBtn.classList.toggle('active', ctx.rangeMode === 'delete');
     xbAmountEl.textContent = (transposeOpts.amount > 0 ? '+' : '') + transposeOpts.amount;
+    xbDetAmountEl.textContent = `${detuneOpts.cents > 0 ? '+' : ''}${detuneOpts.cents} ¢`;
     syncTransposeControls();
 
     // The selection's transforms as chips ("the transform inspector").
@@ -316,13 +353,13 @@ export function initTransformbar(ctx) {
       if (!transforms.length) mkMuted('no transforms');
     } else if (tiles.length > 1) {
       mkMuted(`${tiles.length} tiles`);
-      for (const kind of ['transpose', 'reverse']) {
+      for (const kind of ['transpose', 'reverse', 'detune']) {
         const per = tiles.map((t) => (t.transforms || []).find((tf) => transformKindLabel(tf).kind === kind));
         if (per.some((tf) => !tf)) continue; // not common to every selected tile
         const descs = new Set(per.map((tf) => describeTransform(tf)));
         const text = descs.size === 1
           ? [...descs][0]
-          : (kind === 'transpose' ? 'Transpose (mixed)' : 'Reverse (mixed)');
+          : { transpose: 'Transpose (mixed)', reverse: 'Reverse (mixed)', detune: 'Detune (mixed)' }[kind];
         mkChip(kind, text, () => removeSelectedTransform(kind));
       }
     }

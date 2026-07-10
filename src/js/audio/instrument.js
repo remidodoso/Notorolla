@@ -19,6 +19,8 @@ const secs = (v) => (v < 1 ? `${Math.round(v * 1000)} ms` : `${v.toFixed(2)} s`)
 const pct = (v) => `${Math.round(v * 100)}%`;
 const hz = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)} kHz` : `${Math.round(v)} Hz`);
 const cents = (v) => `${Math.round(v)} ¢`;
+// Signed cents (the ± pitch-attack sliders): 0 reads as "off".
+const scents = (v) => (Math.abs(v) < 0.5 ? 'off' : `${v > 0 ? '+' : '−'}${Math.round(Math.abs(v))} ¢`);
 
 // --- Vesperia: additive partials through a shared amplitude envelope and a
 // resonant lowpass with its own envelope + key tracking. -----------------------
@@ -169,10 +171,10 @@ const WENDELHORN_PARAMS = [
   { key: 'stereo', group: 'Ensemble', label: 'Stereo', min: 0, max: 1, fmt: pct,
     title: 'Spreads the saws across the stereo field by detune (flat → left, sharp → right).' },
 
-  { key: 'pitchAtk', group: 'Pitch', label: 'Pitch Atk', min: 0, max: 200, fmt: cents,
-    title: 'Synth-brass pitch blip: the note starts this many cents sharp and decays to pitch. 0 = off.' },
+  { key: 'pitchAtk', group: 'Pitch', label: 'Pitch Atk', min: -200, max: 200, fmt: scents,
+    title: 'Pitch attack: the note starts this many cents off pitch and settles. Positive = from above (the synth-brass blip / vocal approach), negative = from below (the scoop). 0 = off.' },
   { key: 'pitchAtkTime', group: 'Pitch', label: 'Pitch Time', min: 0.01, max: 1, log: true, fmt: secs,
-    title: 'How long the pitch blip takes to settle (exponential decay).' },
+    title: 'How long the pitch attack takes to settle (exponential decay).' },
 
   { key: 'cutoff', group: 'Filter', label: 'Cutoff', min: 120, max: 14000, log: true, fmt: hz,
     title: 'Lowpass cutoff (base, before key tracking).' },
@@ -244,11 +246,13 @@ function tervikOpParams(n, group) {
   ];
   if (n !== 1) P.push({ key: `follow${n}`, group, label: 'Follow Op 1', bool: true, fmt: followFmt,
     title: 'On: shape this op with Op 1’s envelope (Level is the amount). Off: use this op’s own ADSR below.' });
+  // Ops 2 & 3's own ADSR is inert (dimmed) while Follow Op 1 shapes them instead.
+  const inert = n === 1 ? undefined : (p) => !!p[`follow${n}`];
   P.push(
-    { key: `a${n}`, group, label: 'A', min: 0.001, max: 1.5, log: true, fmt: secs, title: `Op ${n} attack.` },
-    { key: `d${n}`, group, label: 'D', min: 0.005, max: 5, log: true, fmt: secs, title: `Op ${n} decay.` },
-    { key: `s${n}`, group, label: 'S', min: 0, max: 1, fmt: pct, title: `Op ${n} sustain.` },
-    { key: `r${n}`, group, label: 'R', min: 0.005, max: 3, log: true, fmt: secs, title: `Op ${n} release.` },
+    { key: `a${n}`, group, label: 'A', min: 0.001, max: 1.5, log: true, fmt: secs, inert, title: `Op ${n} attack.` },
+    { key: `d${n}`, group, label: 'D', min: 0.005, max: 5, log: true, fmt: secs, inert, title: `Op ${n} decay.` },
+    { key: `s${n}`, group, label: 'S', min: 0, max: 1, fmt: pct, inert, title: `Op ${n} sustain.` },
+    { key: `r${n}`, group, label: 'R', min: 0.005, max: 3, log: true, fmt: secs, inert, title: `Op ${n} release.` },
   );
   return P;
 }
@@ -401,6 +405,12 @@ const PADLINGTON_DEFAULTS = {
   bwScale: 1.0,
   stretch: 0,
 
+  // Pitch attack (shared keys/labels with Wendelhorn, so Copy/Paste ferries the
+  // gesture cross-kind): start ± cents off pitch, exp-settle onto it. Positive =
+  // approach from above (brass blip / the vocal ideal), negative = the scoop.
+  pitchAtk: 0,
+  pitchAtkTime: 0.08,
+
   // Two decorrelated read-heads pan apart by Width (0 = mono-centered).
   width: 0.7,
 
@@ -430,12 +440,12 @@ const stretchFmt = (v) => (Math.abs(v) < 0.0005 ? 'harmonic' : `${v > 0 ? '+' : 
 const PADLINGTON_PARAMS = [
   { key: 'source', group: 'Source', label: 'Source', sel: true, options: PAD_SOURCE_OPTS,
     title: 'Harmonic profile the pad is baked from: Saw (all harmonics, 1/k), Square (odd harmonics only), Choir (vowel formants), Tilt (a bare 1/k^e rolloff).' },
-  { key: 'vowel', group: 'Source', label: 'Vowel', sel: true, options: NAYUMI_VOWEL_OPTS,
+  { key: 'vowel', group: 'Source', label: 'Vowel', sel: true, options: NAYUMI_VOWEL_OPTS, inert: (p) => p.source !== 'choir',
     title: 'Choir source only: which vowel shapes the harmonic profile (ooh/oh/ah/eh/ee). Inert for other sources.' },
-  { key: 'size', group: 'Source', label: 'Size', min: 0.8, max: 1.3,
+  { key: 'size', group: 'Source', label: 'Size', min: 0.8, max: 1.3, inert: (p) => p.source !== 'choir',
     fmt: (v) => (v < 0.97 ? 'larger' : v > 1.03 ? 'smaller' : 'neutral'),
     title: 'Choir source only: vocal-tract size — scales every formant. Low = larger/darker, high = smaller/brighter.' },
-  { key: 'tilt', group: 'Source', label: 'Tilt', min: 0.5, max: 3, fmt: (v) => `1/k^${v.toFixed(2)}`,
+  { key: 'tilt', group: 'Source', label: 'Tilt', min: 0.5, max: 3, fmt: (v) => `1/k^${v.toFixed(2)}`, inert: (p) => p.source !== 'tilt',
     title: 'Tilt source only: the spectral rolloff exponent. Low = bright (slow rolloff), high = dark, nearly a pure tone.' },
   { key: 'harmonics', group: 'Source', label: 'Harmonics', min: 8, max: 128, log: true, fmt: (v) => `${Math.round(v)}`,
     title: 'How many harmonics the bake includes (automatically band-limited at Nyquist).' },
@@ -446,6 +456,11 @@ const PADLINGTON_PARAMS = [
     title: 'How the smear grows up the harmonic series: 1 = constant in cents (natural), toward 0 = upper harmonics stay clearer, toward 2 = upper harmonics wash out.' },
   { key: 'stretch', group: 'Pad', label: 'Stretch', knob: true, min: -0.05, max: 0.05, reset: 0, detents: [0], fmt: stretchFmt,
     title: 'Inharmonicity: partial k lands at f·k^(1+s). 0 = exactly harmonic; positive stretches the partials sharp (bell/gamelan), negative compresses them flat. Double-click to reset.' },
+
+  { key: 'pitchAtk', group: 'Pitch', label: 'Pitch Atk', min: -200, max: 200, fmt: scents,
+    title: 'Pitch attack: the note starts this many cents off pitch and settles. Positive = from above (brass / the vocal approach), negative = from below (the scoop). 0 = off.' },
+  { key: 'pitchAtkTime', group: 'Pitch', label: 'Pitch Time', min: 0.01, max: 1, log: true, fmt: secs,
+    title: 'How long the pitch attack takes to settle (exponential decay) — pairs nicely with a slow pad attack.' },
 
   { key: 'width', group: 'Stereo', label: 'Width', min: 0, max: 1, fmt: pct,
     title: 'Stereo spread — the voice’s two decorrelated read-heads pan apart. 0 = mono-centered (mono-safe).' },

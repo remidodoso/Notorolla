@@ -138,10 +138,11 @@ export function makeSimCtx(sampleRate = 44100) {
       const n = baseNode(function (t) {
         if (t < this._start || t >= this._stop || !this.buffer) return 0;
         const d = this.buffer.getChannelData(0);
-        // Advance a fractional read position by playbackRate per output sample
-        // (buffer rate assumed = ctx rate) and read with linear interpolation.
+        // Advance a fractional read position by playbackRate (× detune, in
+        // cents) per output sample (buffer rate assumed = ctx rate) and read
+        // with linear interpolation.
         const pos = this._pos;
-        this._pos = pos + this.playbackRate.at(t);
+        this._pos = pos + this.playbackRate.at(t) * Math.pow(2, this.detune.at(t) / 1200);
         const len = d.length;
         let i = Math.floor(pos), f = pos - i;
         if (this.loop) i %= len;
@@ -151,6 +152,7 @@ export function makeSimCtx(sampleRate = 44100) {
       });
       n.buffer = null; n.loop = false; n._pos = 0; n._start = Infinity; n._stop = Infinity;
       n.playbackRate = makeParam(1);
+      n.detune = makeParam(0);
       n.start = (t, offset = 0) => { n._start = t; n._pos = offset * sampleRate; };
       n.stop = (t) => { n._stop = t; };
       return n;

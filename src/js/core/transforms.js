@@ -5,18 +5,35 @@
 // the pattern still updates both (each re-applying its own transforms). Transforms
 // are applied at score-build time (main.js arrangementScore), never baked in.
 //
-// A tile carries an ORDERED list of transforms. `applyTransforms` walks it in
-// order over the tile's note list — transpose touches pitch, reverse touches time
-// — so ordering is honored (it doesn't matter for transpose+reverse, which
-// commute, but will once a time-op like Rotate joins). Adding a transform type is
-// an apply branch here + a brush in main; the data model doesn't change.
-//
-// Phase-1 policy (set by the user): keep at most ONE transpose (a second replaces
-// it) and ONE reverse (applying it again cancels it) — `normalizeTransforms`
-// enforces that. The "compute the minimal equivalent set" generalization is later.
+// A tile carries an ORDERED list of transforms; `applyTransforms` walks it in
+// order over the tile's note list. The order is CANONICAL — the One True Order
+// (decided 2026-07-09): at most one of each kind, applied degree-space →
+// time-space → frequency-space (see TRANSFORM_ORDER below). With one-of-each
+// and signed/parameterized transforms, any "other order" is reachable by
+// adjusting parameters (TnI; reverse∘rotate(+k) = rotate(−k)∘reverse), and the
+// planned per-tile "Bake" makes staging fully general. `normalizeTransforms`
+// enforces one-of-each + the canonical order; the setTileX helpers maintain it.
+// Adding a transform type is an apply branch here + a bar action in
+// transformbar; the data model doesn't change.
 
 import { stepInScale, scaleById } from './scales.js';
 import { tuningFreq, edoOf } from './tuning.js';
+
+// The One True Order. Degree-space ops FIRST (they re-resolve `freq` from the
+// tuning, so anything frequency-space upstream of them would be clobbered),
+// time ops next, frequency-space ops LAST. 'invert' and 'rotate' are reserved
+// slots for the planned transforms; an unknown type sorts to the end.
+const TRANSFORM_ORDER = ['invert', 'transpose', 'rotate', 'reverse', 'detune'];
+function orderOf(type) {
+  const i = TRANSFORM_ORDER.indexOf(type);
+  return i < 0 ? TRANSFORM_ORDER.length : i;
+}
+// Re-sort a transform list into the canonical order, in place (stable, so this
+// is a no-op on an already-canonical list).
+function canonicalize(arr) {
+  arr.sort((a, b) => orderOf(a.type) - orderOf(b.type));
+  return arr;
+}
 
 // --- transform constructors --------------------------------------------------
 
@@ -32,6 +49,13 @@ export function transposeTransform(steps, scaleId, root) {
 
 // A reverse (retrograde) transform — no params; it's its own inverse.
 export function reverseTransform() { return { type: 'reverse' }; }
+
+// A detune transform: shift the tile's SOUNDING pitch by ± whole cents.
+export const DETUNE_MAX = 100; // ± cents
+export function detuneTransform(cents) {
+  const c = Math.round(Number(cents) || 0);
+  return { type: 'detune', cents: Math.max(-DETUNE_MAX, Math.min(DETUNE_MAX, c)) };
+}
 
 // --- application (the pipeline) ----------------------------------------------
 
@@ -63,6 +87,26 @@ function applyReverse(notes, ctx) {
   return notes.map((n) => ({ ...n, start: L - n.start - n.duration }));
 }
 
+// Detune: shift every note's SOUNDING pitch by `cents` — uniformly, for every
+// instrument (the contract, decided 2026-07-09). Two parts: (1) multiply the
+// resolved frequency — exactly right for every voice whose pitch is linear in
+// f0 (all the melodic kinds), and what the roll's true-pitch plot reads; and
+// (2) stamp the cents on the note (`n.detune`), so a voice with a NONLINEAR
+// pitch response still guarantees the full shift by its own means — Boshwick's
+// PitchTrack exponent tops itself up by cents×(1−track) (audio.js); a future
+// sampler shifts playbackRate by the same ratio. Detune sits LAST in the
+// canonical order because transpose/invert re-resolve `freq` from the tuning
+// and would clobber an upstream multiply.
+function applyDetune(notes, t, ctx) {
+  if (!t.cents) return notes;
+  const ratio = Math.pow(2, t.cents / 1200);
+  return notes.map((n) => ({
+    ...n,
+    freq: (n.freq != null ? n.freq : tuningFreq(n.pitch, ctx.tuningId, ctx.root)) * ratio,
+    detune: (n.detune || 0) + t.cents,
+  }));
+}
+
 // Apply a tile's ordered transform list to its note list. `notes` are plain
 // { pitch, start, duration, velocity, freq }; ctx = { lengthBeats, tuningId, root }.
 export function applyTransforms(notes, transforms, ctx) {
@@ -71,6 +115,7 @@ export function applyTransforms(notes, transforms, ctx) {
   for (const t of transforms) {
     if (t.type === 'transpose') out = applyTranspose(out, t, ctx);
     else if (t.type === 'reverse') out = applyReverse(out, ctx);
+    else if (t.type === 'detune') out = applyDetune(out, t, ctx);
   }
   return out;
 }
@@ -84,11 +129,16 @@ export function findTranspose(transforms) {
 export function hasReverse(transforms) {
   return !!(transforms && transforms.some((t) => t.type === 'reverse'));
 }
+// The (single) detune transform on a tile, or null.
+export function findDetune(transforms) {
+  return transforms ? transforms.find((t) => t.type === 'detune') || null : null;
+}
 
 // Coerce a loaded transforms array to clean entries; undefined if empty (absent ==
-// none). Drops junk, rounds steps, normalizes scale/root, and enforces the Phase-1
-// policy: at most one transpose (last wins) and reverse by PARITY (pairs cancel),
-// preserving the order entries first appear in.
+// none). Drops junk, rounds/clamps params, enforces one-of-each (a later transpose/
+// detune replaces the earlier one; reverse by PARITY — pairs cancel), and emits the
+// CANONICAL order regardless of the input order (so any historical file comes out
+// One-True-Ordered).
 export function normalizeTransforms(arr) {
   if (!Array.isArray(arr)) return undefined;
   const out = [];
@@ -102,23 +152,37 @@ export function normalizeTransforms(arr) {
       const i = out.findIndex((x) => x.type === 'reverse');
       if (i >= 0) out.splice(i, 1); // a pair of reverses cancels
       else out.push(reverseTransform());
+    } else if (t.type === 'detune' && typeof t.cents === 'number' && isFinite(t.cents) && Math.round(t.cents) !== 0) {
+      const i = out.findIndex((x) => x.type === 'detune');
+      if (i >= 0) out.splice(i, 1); // a later detune replaces the earlier one
+      out.push(detuneTransform(t.cents));
     }
   }
-  return out.length ? out : undefined;
+  return out.length ? canonicalize(out) : undefined;
 }
 
-// Set/clear the transpose on a tile in place (keeps any reverse). steps 0 removes.
+// Set/clear the transpose on a tile in place (keeps the other kinds, canonical
+// order maintained). steps 0 removes.
 export function setTileTranspose(tile, steps, scaleId, root) {
   const others = (tile.transforms || []).filter((t) => t.type !== 'transpose');
-  const next = Math.round(steps) === 0 ? others : [...others, transposeTransform(steps, scaleId, root)];
+  const next = Math.round(steps) === 0 ? others : canonicalize([...others, transposeTransform(steps, scaleId, root)]);
   tile.transforms = next.length ? next : undefined;
   return tile;
 }
 
-// Set/clear the reverse on a tile in place (keeps any transpose).
+// Set/clear the reverse on a tile in place (keeps the other kinds).
 export function setTileReverse(tile, on) {
   const others = (tile.transforms || []).filter((t) => t.type !== 'reverse');
-  const next = on ? [...others, reverseTransform()] : others;
+  const next = on ? canonicalize([...others, reverseTransform()]) : others;
+  tile.transforms = next.length ? next : undefined;
+  return tile;
+}
+
+// Set/clear the detune on a tile in place (keeps the other kinds; a second
+// application replaces — never accumulates). cents 0 removes.
+export function setTileDetune(tile, cents) {
+  const others = (tile.transforms || []).filter((t) => t.type !== 'detune');
+  const next = Math.round(cents) === 0 ? others : canonicalize([...others, detuneTransform(cents)]);
   tile.transforms = next.length ? next : undefined;
   return tile;
 }
@@ -130,17 +194,24 @@ export function transposeLabel(t) {
   return (t.steps > 0 ? '+' : '−') + Math.abs(t.steps);
 }
 
+// Short label for a detune swath, e.g. "+37¢" / "−12¢".
+export function detuneLabel(t) {
+  return (t.cents > 0 ? '+' : '−') + Math.abs(t.cents) + '¢';
+}
+
 // A transform's kind + short swath label.
 export function transformKindLabel(t) {
   if (t.type === 'transpose') return { kind: 'transpose', label: transposeLabel(t) };
   if (t.type === 'reverse') return { kind: 'reverse', label: '◄' };
+  if (t.type === 'detune') return { kind: 'detune', label: detuneLabel(t) };
   return { kind: 'other', label: '?' };
 }
 
 // Fuller description for a chip / future tooltip, e.g.
-// "Transpose +2 · Major pentatonic" / "Reverse".
+// "Transpose +2 · Major pentatonic" / "Reverse" / "Detune +37 ¢".
 export function describeTransform(t) {
   if (t.type === 'transpose') return `Transpose ${transposeLabel(t)} · ${scaleById(t.scaleId).name}`;
   if (t.type === 'reverse') return 'Reverse';
+  if (t.type === 'detune') return `Detune ${t.cents > 0 ? '+' : '−'}${Math.abs(t.cents)} ¢`;
   return '';
 }

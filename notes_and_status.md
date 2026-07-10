@@ -272,7 +272,6 @@ archive or the linked section. (Bigger features are in [future_directions.md](fu
 - **`app/keyboard.js`** could become a data-driven keymap table instead of an if-ladder.
 - **Docs:** split per-voice implementation detail into a separate `instrument_design_details.md`
   (currently parked in [archived_status_07_26.md](archived_status_07_26.md) → Undated / background).
-- **Tervik:** gray out the inert A/D/S/R sliders when *Follow Op 1* is on.
 - **Wendelhorn:** a Cubase-style combined Width+Pan panner.
 - **Boshwick:** the variability/snap pass for the non-kick drum types; optional per-type factory presets.
 - **Bug:** `loadContent` doesn't restore `playStart`/`playEnd` (opening a project keeps the previous
@@ -303,7 +302,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 | [core/scales.js](src/js/core/scales.js) | per-EDO scale masks: `scalesFor(edo)`, `scaleById`, `scaleValidForEdo` (the scale library the grid + transpose menus draw from) |
 | [core/grid.js](src/js/core/grid.js) | `Pattern` (named; **per-pattern column count**, `Pattern.initial(name, cols)`), `DURATIONS`, `PALETTE`, `BASE_PITCH`, `DEFAULT_ARTIC` |
 | [core/library.js](src/js/core/library.js) | `PatternLibrary` (registry, naming, parking), `Arrangement` (lanes/tiles + per-lane mute/solo + `lane.gain`/`lane.pan`/`lane.patch`, play-region `playStart`/`playEnd`, `audibleLaneIds`), `laneColor`, `insertPoint`/`deletePoint` |
-| [core/transforms.js](src/js/core/transforms.js) | per-tile **nondestructive** pattern transforms (pure): scalar/chromatic **transpose** + **reverse** — `applyTransforms`, `setTileTranspose`/`setTileReverse`, `hasReverse`, `describeTransform`, `transformKindLabel`, `normalizeTransforms` |
+| [core/transforms.js](src/js/core/transforms.js) | per-tile **nondestructive** pattern transforms (pure): scalar/chromatic **transpose** + **reverse** + **detune** (±100 ¢, uniform sounding-pitch contract), in the canonical One True Order — `applyTransforms`, `setTileTranspose`/`setTileReverse`/`setTileDetune`, `hasReverse`/`findDetune`, `describeTransform`, `transformKindLabel`, `normalizeTransforms` |
 | [core/triads.js](src/js/core/triads.js) | Triadulator engine (pure): partition a pitch-class set into chords — families `trad`/`sus` (12-ET), `septimal` (16-ET); `enumerateTriadulations(pcs, {families, edo})`, `classifyTriad`, `familiesFor(edo)`/`familyLabel`, `chordsFor` |
 | [core/random.js](src/js/core/random.js) | New Random generator (pure): a contiguous in-scale degree window around the viewport centroid → random degrees, bent by Unique / Run / Triad; plus **Duration/Accent Bias** each with a **Steer** or **Sort** mechanism; `scaleWindow`, injectable rng |
 | [core/reference.js](src/js/core/reference.js) | grid **reference backdrop** (future_directions §16): `bakeReference`, `referenceScore`/`referenceDisplay`, `mergeAudition`, `referenceToJSON`/`FromJSON` |
@@ -324,7 +323,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 | [ui/pianoroll.js](src/js/ui/pianoroll.js) | `PianoRoll` canvas render + playhead; per-note color/alpha; `ROLL_V_SCALES`/`ROLL_H_SCALES` zoom ladders |
 | [ui/tileplayer.js](src/js/ui/tileplayer.js) | `TilePlayer` — multi-lane tile rendering + interaction; lane heads (instrument/Edit, Pan/Gain knobs, M/S); beat **ruler + play-region markers**; per-tile transform swath; drag/marquee/repeat/range gestures; `TILE_SCALES` |
 | [ui/toolbar.js](src/js/ui/toolbar.js) | `buildToolbar` — grid toolbar (brush, pattern lifecycle, view toggles, transpose/permute, triadulate) |
-| [ui/instrumentpane.js](src/js/ui/instrumentpane.js) | `buildInstrumentPane` — the retargetable, **kind-aware** "Edit instrument" pane (instrument selector; slider/fader/checkbox/dropdown/stepped-list/knob widgets; target chip, Test, Copy/Paste, Save/Load identity) |
+| [ui/instrumentpane.js](src/js/ui/instrumentpane.js) | `buildInstrumentPane` — the retargetable, **kind-aware** "Edit instrument" pane (instrument selector; slider/fader/checkbox/dropdown/stepped-list/knob widgets; **inert dimming** via `spec.inert(patch)`; target chip, Test, Copy/Paste, Save/Load identity) |
 | [ui/knob.js](src/js/ui/knob.js) | `makeKnob` — click-vertical-drag rotary widget + `PAN_MAP`/`GAIN_MAP` mixer mappings |
 | [ui/catalog.js](src/js/ui/catalog.js) | `createCatalog` — the **Patch Catalog** window (a panel.js tenant): kind→patch browse, search, apply, Rename/Delete; content-only |
 | [ui/inspector.js](src/js/ui/inspector.js) | `createInspector` — the **Tile inspector** content (a panel.js tenant): optional play/stop/loop transport + a `setFacts` data dump with inline-rename heading |
@@ -376,8 +375,9 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   pitch-LFO chorus (up to 50 cents; also lifts the side saws to an audible floor so it's heard at
   any Detune); Ensemble 0 = clean single saw. **Speed** = LFO rate 0.1–5 Hz (log); shared 3-LFO
   pool → ~10 osc/note. **Stereo** = a cheap, mono-safe source-level M/S widen (pan spread by index +
-  a center-saw scoop gated by side energy). **Pitch Atk / Pitch Time** = the synth-brass pitch blip
-  (starts up to 200 cents sharp, exp-decays to pitch; 0 = off). Into Vesperia's resonant lowpass +
+  a center-saw scoop gated by side energy). **Pitch Atk / Pitch Time** = the pitch attack, now
+  **signed ±200 ¢** (2026-07-09): positive starts sharp and exp-settles to pitch (the synth-brass
+  blip), negative approaches from below (the scoop); 0 = off. Into Vesperia's resonant lowpass +
   filter envelope and a shared ADSR. Levels scaled by `WENDEL_NORM`. *Deferred:* a Cubase-style
   combined Width+Pan panner.
 - **Tervik** — a lightweight **3-operator FM** synth (only 3 osc/voice — the cheapest voice).
@@ -389,7 +389,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   (off = own ADSR; on = shaped by Op 1's envelope, Level = amount). **Feedback** morphs Ops 2 & 3 from
   sine toward a band-limited saw. Default = a DX-style electric piano. Levels scaled by `TERVIK_NORM`.
   Introduced the editor's **enum/`select`**, **stepped-list slider**, and **knob** param types. (When
-  Follow is on, that op's A/D/S/R sliders stay visible but inert.)
+  Follow is on, that op's A/D/S/R sliders **dim as inert** — the `spec.inert` mechanism, 2026-07-09.)
 - **Nayumi** — a **breathy formant "voice"** (oohs/ahhs) by source–filter synthesis, aimed at the
   **Fairlight ARR1** zone (clear sung vowel ↔ hollow "blown vessel"). **Carrier** = a per-context
   glottal-pulse `PeriodicWave`; **Size** scales the formants (male↔female, one knob). The carrier
@@ -426,14 +426,29 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   Tables bake **lazily per (patch, octave base C1–C8)** and are cached per context (LRU 16;
   `playbackRate = f0/base` stays within ~[0.71, 1.41], which also keeps the choir's formants
   anchored); the bake is **seeded from the param key**, so every `OfflineAudioContext` bakes
-  bit-identical tables — **exports match live**. The voice = **two decorrelated read-heads** over one
+  bit-identical tables — **exports match live**. **Offline export is structurally glitch-immune:**
+  every bake happens during graph assembly (before `startRendering()`), and an OfflineAudioContext
+  has no realtime deadline — load makes an export slower, never corrupted. (Live, the first note
+  after an edit / into a new octave pays the ~40–50 ms bake on the main thread — accepted for now;
+  per-note read-head offsets are `Math.random()` like Wendelhorn's phases, so re-exports differ
+  microscopically in phase texture, not character.) The voice = **two decorrelated read-heads** over one
   table (independent random start offsets — the Wendelhorn random-phase precedent) panned ±**Width**
   (mono-safe at 0), into Vesperia's resonant lowpass + ADSR. **Cheapest voice in the roster**
   (~7 nodes/note; no Lite handling needed). `PAD_NORM` set by headless metering
   (`node notch/meter-pad.mjs`: pad RMS ≈ the Vesperia reference, peak a couple dB under — a held pad
-  at equal peak reads hot). `notch/padsynth.mjs` (44 tests); wasim grew a StereoPanner (left-channel
-  model) + buffer-source playbackRate/offset for it. *Likely phase 2:* analyze a **self-bounce** of
-  any patch into a profile ("any Notorolla sound as a pad").
+  at equal peak reads hot). **Amp attack is LINEAR + duration-aware** (2026-07-09): an exponential
+  ramp from near-zero is linear-in-dB (a 1 s attack = ~0.7 s of silence then a snap), and a note
+  SHORTER than the attack must ramp only to the level it reaches by note-off and release from there —
+  never schedule a release into the middle of an attack ramp (conflicting automation = silence + a
+  click). Fire-and-forget scheduling knows the duration up front, which is what makes this exact.
+  **Pitch Atk / Pitch Time (2026-07-09)** — a signed ±200 ¢ pitch attack (positive = from above,
+  the brass/vocal approach; negative = the scoop), exp-settling onto pitch: pure detune automation
+  on the read-heads, never touches the bake or the cache. **Same keys/labels as Wendelhorn's**, so
+  cross-kind Copy/Paste ferries the gesture — a first concrete instance of the §13 shared-labels
+  idea. (A per-note/per-tile articulation version is future work, §7/§12.)
+  `notch/padsynth.mjs` (53 tests); wasim grew a StereoPanner (left-channel model) + buffer-source
+  playbackRate/offset/detune for it. *Likely phase 2:* analyze a **self-bounce** of any patch into a profile
+  ("any Notorolla sound as a pad").
 - **Multi-instrument registry** ([src/js/audio/instrument.js](src/js/audio/instrument.js)): each **kind** owns its
   defaults + `PARAMS` (editor metadata); a patch carries a `kind` tag and the engine dispatches on it
   in `buildVoice` (one DSP branch per kind). `normalizePatch` / `defaultPatch(kind)` / `clonePatch`
@@ -755,14 +770,32 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   `arrangementScore`): transforms live on the **tile instance** as an **ordered list**, never the
   pattern, so two tiles can share one pattern yet sound different and editing the pattern still
   updates both. A **note-list pipeline** (`applyTransforms`): **transpose** maps pitch (re-resolves
-  freq in the tile's tuning), **reverse** retrogrades time — walked in list order. Phase-1 policy:
-  at most **one transpose + one reverse** (`normalizeTransforms` enforces last-transpose-wins +
-  reverse parity). The tile's **thumbnail stays the pattern's identity**; transforms show as
-  **stacked translucent swaths** at the bottom (transpose purple `+n`, reverse teal `◄`) and as
+  freq in the tile's tuning), **reverse** retrogrades time, **detune** shifts sounding pitch —
+  walked in list order. **The One True Order (2026-07-09):** at most **one of each kind**, in the
+  canonical order **invert → transpose → rotate → reverse → detune** (degree-space ops that
+  re-resolve freq first, time ops, then frequency-space last — forced: detune upstream of transpose
+  would be clobbered; invert/rotate are reserved slots). `normalizeTransforms` enforces
+  one-of-each + emits canonical order (any historical file comes out ordered); the `setTileX`
+  helpers maintain it. With one-of-each + signed params, any "other order" is reachable by
+  adjusting parameters; the planned **Bake** (future_directions §12) makes staging fully general.
+  The tile's **thumbnail stays the pattern's identity**; transforms show as **stacked translucent
+  swaths** at the bottom (transpose purple `+n`, reverse teal `◄`, detune amber `+37¢`) and as
   chips in the bar (see the inspector above); the **roll shows the real transformed notes**. Saved
   per-tile (`tile.transforms`, optional/backward-safe), **undoable** (carried through `arrApply`),
-  **copies carry cloned transforms**. Future Phase 2: append semantics + reorderable chips +
-  **Rotate** (the non-commuting case that forces real ordering UI).
+  **copies carry cloned transforms**.
+- **Detune transform (2026-07-09)** — the third transform: shift a tile's **SOUNDING pitch by ±100
+  whole cents, uniformly for every instrument** (the contract: it alters the *output* pitch, not
+  the input note — a PitchTrack-0 Boshwick drum still moves the full amount). Mechanism, two parts:
+  `applyDetune` **multiplies `note.freq`** by `2^(cents/1200)` (exactly right for every voice whose
+  pitch is linear in f0 — all the melodic kinds — and the roll's true-pitch plot draws the offset
+  for free) **and stamps `note.detune`** (cents), carried like `artDur` through score-build →
+  scheduler → `playNote` → `buildVoice` → both offline export loops. **Boshwick tops up** the
+  nonlinear remainder (`× 2^(cents·(1−PitchTrack)/1200)`); the stated contract for future nonlinear
+  voices (sampler: shift playbackRate by the same ratio). Bar UI mirrors Transpose: a **Detune**
+  action + cents stepper (**5 ¢/click, Shift = 1 ¢**), SET-not-accumulate, 0 clears, one undo,
+  amber chips/swath. Reference backdrop + tile audition inherit via the shared pipeline. **MIDI
+  export doesn't carry it** (12-ET degrees; the §17 microtonal-export bucket). `notch/detune.mjs`
+  (23 — incl. the [T,D]≡[D,T] canonicalization regression).
 - **Modeless-pane primitive** ([src/js/ui/panel.js](src/js/ui/panel.js); Patch Catalog Phase A). `createPanel({title,
   storeKey, defaultGeom})` is the floating / draggable / resizable / scroll-resistant / geometry-remembered
   / **document-agnostic** window chrome — a tenant appends content to `panel.root` and drives

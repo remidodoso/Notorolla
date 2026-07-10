@@ -470,8 +470,12 @@ export class AudioEngine {
    * @param laneId    optional arrangement lane — routes the voice through that
    *                  lane's gain bus (for Mute/Solo). Omit/null for un-laned
    *                  sound (grid playback, audition) → straight to master.
+   * @param detune    optional per-note detune in CENTS (the tile detune
+   *                  transform). `freq` already carries the multiply; the cents
+   *                  ride along for voices whose pitch is nonlinear in f0
+   *                  (Boshwick's PitchTrack) to guarantee the full shift.
    */
-  playNote(pitch, time, duration, velocity = 0.8, freq = null, laneId = null, rulerSec = null, patchOverride = null) {
+  playNote(pitch, time, duration, velocity = 0.8, freq = null, laneId = null, rulerSec = null, patchOverride = null, detune = 0) {
     // Elapsed anchor = this note's start relative to the session's first Play;
     // ruler anchor = its position on the timeline (caller supplies; falls back
     // to elapsed for un-laned sound, which has no mods anyway).
@@ -480,7 +484,7 @@ export class AudioEngine {
     // its own baked patch — straight to master, no lane bus, no mods.
     const patch = patchOverride || this.moddedPatch(laneId, elSec, rulerSec != null ? rulerSec : elSec);
     const bus = patchOverride ? this.laneBus(null) : this.laneBus(laneId);
-    buildVoice(this.ctx, bus, patch, pitch, time, duration, velocity, freq, this.lite);
+    buildVoice(this.ctx, bus, patch, pitch, time, duration, velocity, freq, this.lite, detune);
   }
 
   /**
@@ -541,7 +545,7 @@ export class AudioEngine {
     };
     // Modulators: in a bounce both anchors are the note's own time — the export
     // is "a fresh play from the ruler's 0", so it matches the first live pass.
-    for (const n of notes) buildVoice(oac, dest(n.laneId), this.moddedPatch(n.laneId, n.time, n.time), n.pitch, n.time, n.duration, n.velocity, n.freq);
+    for (const n of notes) buildVoice(oac, dest(n.laneId), this.moddedPatch(n.laneId, n.time, n.time), n.pitch, n.time, n.duration, n.velocity, n.freq, false, n.detune);
     return oac.startRendering();
   }
 
@@ -595,7 +599,7 @@ export class AudioEngine {
       dest = volume;
     }
 
-    for (const n of notes) buildVoice(oac, dest, this.moddedPatch(n.laneId, n.time, n.time), n.pitch, n.time, n.duration, n.velocity, n.freq);
+    for (const n of notes) buildVoice(oac, dest, this.moddedPatch(n.laneId, n.time, n.time), n.pitch, n.time, n.duration, n.velocity, n.freq, false, n.detune);
     return oac.startRendering();
   }
 }
@@ -607,13 +611,18 @@ export class AudioEngine {
 // `lite` (live only; the offline export paths omit it → false) asks the heavy
 // voices for a cheaper graph. Only Wendelhorn and Nayumi honour it; the rest
 // ignore it (their graphs are already light).
-function buildVoice(ctx, dest, p, pitch, time, duration, velocity, freq, lite = false) {
+// `detune` (cents, the tile detune transform): `freq` already carries the
+// multiply — exactly a full N-cent shift for every voice whose pitch is linear
+// in f0, i.e. all the melodic kinds — so only Boshwick (pitch nonlinear in f0
+// via its PitchTrack exponent) consumes the cents, to top the shift up to the
+// full amount. A future nonlinear voice (sampler etc.) follows the same rule.
+function buildVoice(ctx, dest, p, pitch, time, duration, velocity, freq, lite = false, detune = 0) {
   switch (p && p.kind) {
     case 'zindel': return buildZindelVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
     case 'wendelhorn': return buildWendelhornVoice(ctx, dest, p, pitch, time, duration, velocity, freq, lite);
     case 'tervik': return buildTervikVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
     case 'nayumi': return buildNayumiVoice(ctx, dest, p, pitch, time, duration, velocity, freq, lite);
-    case 'boshwick': return buildBoshwickVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
+    case 'boshwick': return buildBoshwickVoice(ctx, dest, p, pitch, time, duration, velocity, freq, detune);
     case 'padlington': return buildPadlingtonVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
     default: return buildVesperiaVoice(ctx, dest, p, pitch, time, duration, velocity, freq);
   }
@@ -1069,7 +1078,7 @@ function boshEnv(param, time, peak, decay, gated, releaseTime) {
 // topology; all are one-shot decays except Hat & Cymbal (duration-gated). Pitch =
 // nominal × Tune × note-tracking. Accent (velocity) raises level and, just
 // audibly, brightness. `duration` is ignored except by the gated voices.
-function buildBoshwickVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
+function buildBoshwickVoice(ctx, dest, p, pitch, time, duration, velocity, freq, detune = 0) {
   const f0 = freq != null ? freq : degreeToFreq(pitch);
   const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
   const type = BOSH_BASE[p.type] ? p.type : 'kick';
@@ -1080,8 +1089,12 @@ function buildBoshwickVoice(ctx, dest, p, pitch, time, duration, velocity, freq)
   const collect = (n) => { nodes.push(n); return n; };
 
   // Pitch: nominal × Tune (±octaves) × note-tracking (rel. C4).
+  // Detune contract: the tile detune transform shifts the SOUNDING pitch by the
+  // full cents regardless of PitchTrack. The multiply already inside `freq`
+  // contributes cents×track through the exponent, so top up the remainder.
   const tuneMult = Math.pow(2, (p.tune - 0.5) * 2 * BOSH_TUNE_OCT);
-  const track = Math.pow(f0 / FREF, p.pitchTrack);
+  const track = Math.pow(f0 / FREF, p.pitchTrack)
+    * Math.pow(2, ((detune || 0) * (1 - p.pitchTrack)) / 1200);
   const hz = clamp(BOSH_BASE[type] * tuneMult * track, 20, nyq);
   const [dMin, dMax] = BOSH_DECAY[type];
   const decay = dMin + (dMax - dMin) * p.decay;
@@ -1353,7 +1366,7 @@ function buildWendelhornVoice(ctx, dest, p, pitch, time, duration, velocity, fre
       osc.setPeriodicWave(waves[Math.floor(Math.random() * waves.length)]); // random phase
       osc.frequency.value = f0;
       const staticDetune = off * WENDEL_MAX_DETUNE_CENTS * p.detune;
-      if (p.pitchAtk > 0.01 && p.pitchAtkTime > 0) {
+      if (Math.abs(p.pitchAtk) > 0.01 && p.pitchAtkTime > 0) {
         osc.detune.setValueAtTime(staticDetune + p.pitchAtk, time);
         osc.detune.setTargetAtTime(staticDetune, time, p.pitchAtkTime / 4);
       } else {
@@ -1379,10 +1392,11 @@ function buildWendelhornVoice(ctx, dest, p, pitch, time, duration, velocity, fre
     osc.frequency.value = f0;
     const staticDetune = off * WENDEL_MAX_DETUNE_CENTS * p.detune; // static spread (cents)
 
-    // Pitch attack (synth-brass blip): start `pitchAtk` cents sharp and exp-decay
-    // to the static detune over ~pitchAtkTime. Scheduled on the detune param so it
+    // Pitch attack (synth-brass blip, signed): start `pitchAtk` cents off pitch
+    // (positive = sharp/from above, negative = the scoop) and exp-decay to the
+    // static detune over ~pitchAtkTime. Scheduled on the detune param so it
     // sums with the ensemble LFO (a connected node). 0 cents = off.
-    if (p.pitchAtk > 0.01 && p.pitchAtkTime > 0) {
+    if (Math.abs(p.pitchAtk) > 0.01 && p.pitchAtkTime > 0) {
       osc.detune.setValueAtTime(staticDetune + p.pitchAtk, time);
       osc.detune.setTargetAtTime(staticDetune, time, p.pitchAtkTime / 4);
     } else {
@@ -1459,12 +1473,24 @@ function buildPadlingtonVoice(ctx, dest, p, pitch, time, duration, velocity, fre
   env.connect(tone);
   tone.connect(dest);
 
+  // LINEAR attack, not exponential: an exponential ramp from near-zero is
+  // linear in dB, so a 1 s "attack" is ~0.7 s of inaudibility and then it snaps
+  // on — a linear ramp is the audible pad swell (and may start at a true 0).
+  // And because scheduling is fire-and-forget, the duration is known up front:
+  // a note SHORTER than the attack ramps only to the level it actually reaches
+  // by note-off and releases from there — never a release event scheduled into
+  // the middle of a longer attack ramp (conflicting automation = silence + a
+  // click on short notes).
   const peak = velocity * VOICE_PEAK * PAD_NORM;
-  const sustainLevel = Math.max(peak * p.sustain, 0.00001);
+  const atk = Math.max(p.attack, 0.001);
+  const atkEnd = Math.min(atk, duration);
+  const atkLevel = Math.max(peak * (atkEnd / atk), 0.00001);
   const g = env.gain;
-  g.setValueAtTime(0.0001, time);
-  g.exponentialRampToValueAtTime(Math.max(peak, 0.0002), time + p.attack);
-  g.setTargetAtTime(sustainLevel, time + p.attack, p.decay);
+  g.setValueAtTime(0, time);
+  g.linearRampToValueAtTime(atkLevel, time + atkEnd);
+  if (atkEnd >= atk) { // the attack completed: decay toward the sustain level
+    g.setTargetAtTime(Math.max(peak * p.sustain, 0.00001), time + atk, p.decay);
+  }
   g.setTargetAtTime(0.0001, releaseTime, p.release);
 
   // Filter envelope + key tracking (opens on attack, settles to base).
@@ -1473,6 +1499,12 @@ function buildPadlingtonVoice(ctx, dest, p, pitch, time, duration, velocity, fre
   const peakCut = clamp(baseCut * Math.pow(2, p.filterEnv), 60, nyq);
   tone.frequency.setValueAtTime(peakCut, time);
   tone.frequency.setTargetAtTime(baseCut, time + p.attack, FILTER_ENV_TAU);
+
+  // Pitch attack (Wendelhorn's blip, signed): start ± cents off pitch and
+  // exp-settle onto it — positive = approach from above (brass / the vocal
+  // ideal), negative = the scoop. Pure play-time automation on the read-heads'
+  // detune param: never touches the bake or the table cache.
+  const pitchAtkOn = Math.abs(p.pitchAtk) > 0.01 && p.pitchAtkTime > 0;
 
   const base = padBaseFreq(f0);
   const buf = padTableBuffer(ctx, p, base);
@@ -1484,6 +1516,10 @@ function buildPadlingtonVoice(ctx, dest, p, pitch, time, duration, velocity, fre
     src.buffer = buf;
     src.loop = true;
     src.playbackRate.value = f0 / base;
+    if (pitchAtkOn) {
+      src.detune.setValueAtTime(p.pitchAtk, time);
+      src.detune.setTargetAtTime(0, time, p.pitchAtkTime / 4);
+    }
     const sg = ctx.createGain();
     sg.gain.value = PAD_HEAD_GAIN;
     const pan = ctx.createStereoPanner();

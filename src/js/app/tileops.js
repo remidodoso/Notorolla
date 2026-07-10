@@ -242,6 +242,7 @@ export function initTileops(ctx) {
       const nn = new Note(n.pitch, n.start, n.duration, n.velocity);
       nn.freq = n.freq;
       nn.artDur = n.artDur;            // articulated (sounded) length in beats
+      nn.detune = n.detune;            // per-tile detune transform, in cents
       nn.laneId = lane.id;             // route through the lane's bus + inserts
       nn.tileStart = 0;
       nn.rulerBeat = tile.start + n.start; // the in-context modulator anchor

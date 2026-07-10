@@ -360,12 +360,24 @@ version bump**, but the axes never move again.
 
 **Articulation = a per-note expression bundle, instrument-resolved (decided).** Not just a
 number: a named-articulation **palette** (Staccato / Tenuto / Marcato / Muted …), each a bundle
-of offsets — gate, velocity, brightness/filter, attack/release, vibrato — that the **voice
+of offsets — gate, velocity, brightness/filter, attack/release, vibrato, **pitch attack/scoop**
+(the signed ±cents approach-from-above/below now built as a patch param on Wendelhorn +
+Padlington, 2026-07-09 — per-note, and possibly **per-tile** via §12, is the future home the
+user flagged) — that the **voice
 interprets in its own DSP terms**, a seam parallel to the tuning seam
 (`articulationToPatch(basePatch, artic, note)`). Plus **optional per-note raw overrides** for
 hand-tuning. Implementation lever: the mod system (`mods.js`) already applies patch offsets in
 **position space** (`applyMods`, `toPos`/`fromPos`) — per-note articulation is the same
 machinery evaluated at note-on instead of over time.
+
+**Articulations are level-agnostic (user musing, 2026-07-09).** The same expression parameter can
+be applied at several levels: baked into the **patch** (Wendelhorn/Padlington's Pitch Atk), as a
+**tile transform** (the Detune transform is exactly an "articulation applied per tile"), per
+**note** (this section), and — the new thought — **via a MOD**, time-varying: a modulator lane
+could sweep detune, note length/gate, velocity/volume, etc. over the loop. Today's mods only
+offset *patch* params; extending mod targets into **note-domain attributes** (gate, velocity,
+cents) is a distinct step to plan when this cluster lands. One mental model: an articulation is a
+*value*; patch/tile/note/mod are just *who supplies it and when*.
 
 **Velocity is already wired — the grid is the bottleneck.** Every `buildVoice` branch already
 scales loudness by `velocity` (`velocity * VOICE_PEAK`); the grid just emits **two** levels
@@ -749,7 +761,19 @@ separate windows" capability flagged in subsequences (1), so a subsequence windo
 **Fixed order (decided).** Modifiers apply in **one built-in order** — there is no per-tile "drag to
 reorder." When we add order-dependent transforms (rotate especially), you get the result you want by
 choosing the rotate direction, not by rearranging. (An arbitrary, user-ordered insert stack is a
-separate, later **mixer pane** — audio effects — not this.)
+separate, later **mixer pane** — audio effects — not this.) The planned canonical order (2026-07-09):
+**invert → transpose → rotate → reverse → detune** — degree-space ops (which re-resolve frequency
+from the tuning) first, then time ops, then frequency-space ops last (forced: detune must follow
+anything that re-resolves freq). With at-most-one-of-each and signed/parameterized transforms, any
+"other order" is reachable by adjusting parameters (TnI; reverse∘rotate(+k) = rotate(−k)∘reverse).
+
+**"Bake" button (planned, 2026-07-09).** Clone the tile onto a fresh pattern with **some or all of
+its transforms applied** (materialized), clearing the baked ones from the tile — Clone's divergence
+semantics + `applyTransforms`' pure output written back as pattern content. This makes the fixed
+order fully general: staging through bakes reaches ANY composition order, so the canonical order is
+just the default reading of one stage. Note: **detune is un-bakeable** (a pattern stores degrees in
+a tuning; a uniform cents shift has no degree representation) until §7 adds per-note cents — it
+stays on the tile, which is harmless since it commutes with everything.
 
 **Other modifiers the inspector will hold (later):**
 

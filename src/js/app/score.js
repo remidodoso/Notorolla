@@ -110,6 +110,7 @@ export function initScore(ctx) {
           const nn = new Note(n.pitch, n.start + tile.start, n.duration, n.velocity);
           nn.freq = n.freq;         // carry each pattern's tuning-resolved frequency
           nn.artDur = n.artDur;     // articulated (sounded) length in beats
+          nn.detune = n.detune;     // per-tile detune transform, in cents (for the nonlinear voices)
           nn.color = color;
           nn.alpha = alpha;
           nn.laneId = lane.id;      // routes the voice through this lane's gain bus

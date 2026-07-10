@@ -78,6 +78,7 @@ export function initExportui(ctx) {
         velocity: n.velocity,
         freq: n.freq,
         laneId: n.laneId, // render through this lane's instrument patch
+        detune: n.detune, // per-tile detune transform, in cents
       });
     }
     if (!notes.length) return;
@@ -142,7 +143,7 @@ export function initExportui(ctx) {
       if (!arr) { arr = []; byLane.set(n.laneId, arr); }
       arr.push({
         pitch: n.pitch, time: (n.start - startBeat) * spb, duration: (n.artDur != null ? n.artDur : n.duration * state.articulation) * spb,
-        velocity: n.velocity, freq: n.freq, laneId: n.laneId,
+        velocity: n.velocity, freq: n.freq, laneId: n.laneId, detune: n.detune,
       });
     }
     if (byLane.size === 0) return;

@@ -83,6 +83,7 @@ export function mergeAudition(ref, gridNotes, gridLen, bpm, articulation, quietF
         const nn = new Note(n.pitch, start, n.duration, tag ? n.velocity * q : n.velocity);
         nn.freq = n.freq;
         nn.artDur = n.artDur;
+        nn.detune = n.detune; // per-tile detune transform, in cents
         if (tag) nn.patch = ref.patch; // dry, reference instrument
         out.push(nn);
       }

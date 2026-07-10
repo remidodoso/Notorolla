@@ -186,7 +186,7 @@ export function buildInstrumentPane(containerEl, cb) {
     const input = mkRange();
     const valEl = document.createElement('span');
     valEl.className = 'instr-val';
-    bind(spec, input, valEl);
+    bind(spec, input, valEl, row);
     row.append(name, input, valEl);
     return row;
   }
@@ -205,7 +205,7 @@ export function buildInstrumentPane(containerEl, cb) {
     input.min = 0; input.max = spec.steps.length - 1; input.step = 1;
     const valEl = document.createElement('span');
     valEl.className = 'instr-val';
-    bind(spec, input, valEl);
+    bind(spec, input, valEl, row);
     row.append(name, input, valEl);
     return row;
   }
@@ -231,10 +231,10 @@ export function buildInstrumentPane(containerEl, cb) {
     const initial = patch ? patch[spec.key] : (spec.reset != null ? spec.reset : spec.min);
     const knob = makeKnob(holder, {
       label: spec.label, value: initial, map, detents: spec.detents || [], reset: spec.reset,
-      cb: { onInput: (v) => { if (!patch) return; patch[spec.key] = v; valEl.textContent = spec.fmt(v); cb.onChange(); } },
+      cb: { onInput: (v) => { if (!patch) return; patch[spec.key] = v; valEl.textContent = spec.fmt(v); cb.onChange(); updateInert(); } },
     });
     valEl.textContent = spec.fmt(initial);
-    rows.push({ spec, knob, valEl });
+    rows.push({ spec, knob, valEl, rowEl: row });
     row.append(name, holder, valEl);
     return row;
   }
@@ -251,7 +251,7 @@ export function buildInstrumentPane(containerEl, cb) {
     const name = document.createElement('span');
     name.className = 'instr-bar-label';
     name.textContent = spec.label;
-    bind(spec, input, valEl);
+    bind(spec, input, valEl, cell);
     cell.append(valEl, input, name);
     return cell;
   }
@@ -272,7 +272,7 @@ export function buildInstrumentPane(containerEl, cb) {
       opt.value = o.id; opt.textContent = o.label;
       input.append(opt);
     }
-    bind(spec, input, null);
+    bind(spec, input, null, row);
     row.append(name, input);
     return row;
   }
@@ -290,7 +290,7 @@ export function buildInstrumentPane(containerEl, cb) {
     input.className = 'instr-check';
     const valEl = document.createElement('span');
     valEl.className = 'instr-val';
-    bind(spec, input, valEl);
+    bind(spec, input, valEl, row);
     row.append(name, input, valEl);
     return row;
   }
@@ -304,20 +304,24 @@ export function buildInstrumentPane(containerEl, cb) {
 
   // Wire a control to a param: edit -> mutate patch, update readout, onChange.
   // Boolean params use a checkbox (the `change` event + `.checked`); the rest a
-  // range slider (the `input` event + the param's value mapping).
-  function bind(spec, input, valEl) {
+  // range slider (the `input` event + the param's value mapping). Every edit
+  // also re-evaluates the inert flags — a select/toggle (e.g. Padlington's
+  // Source, Tervik's Follow) can change which OTHER controls are functional.
+  function bind(spec, input, valEl, rowEl) {
     if (spec.bool) {
       input.addEventListener('change', () => {
         if (!patch) return;
         patch[spec.key] = input.checked;
         valEl.textContent = spec.fmt(input.checked);
         cb.onChange();
+        updateInert();
       });
     } else if (spec.sel) {
       input.addEventListener('change', () => {
         if (!patch) return;
         patch[spec.key] = input.value;
         cb.onChange();
+        updateInert();
       });
     } else if (spec.steps) {
       input.addEventListener('input', () => {
@@ -326,6 +330,7 @@ export function buildInstrumentPane(containerEl, cb) {
         patch[spec.key] = v;
         valEl.textContent = spec.fmt(v);
         cb.onChange();
+        updateInert();
       });
     } else {
       input.addEventListener('input', () => {
@@ -334,9 +339,22 @@ export function buildInstrumentPane(containerEl, cb) {
         patch[spec.key] = v;
         valEl.textContent = spec.fmt(v);
         cb.onChange();
+        updateInert();
       });
     }
-    rows.push({ spec, input, valEl });
+    rows.push({ spec, input, valEl, rowEl });
+  }
+
+  // Dim the controls that have no effect at the current settings: a spec's
+  // optional `inert(patch)` predicate (instrument.js) marks e.g. Padlington's
+  // Vowel/Size when the Source isn't Choir, or Tervik's op ADSR under Follow.
+  // The row stays visible (the layout never reflows) but reads as parked.
+  function updateInert() {
+    if (!patch) return;
+    for (const r of rows) {
+      if (!r.spec.inert || !r.rowEl) continue;
+      r.rowEl.classList.toggle('inert', !!r.spec.inert(patch));
+    }
   }
 
   // Re-read the target patch into every control (after an edit, Copy/Paste,
@@ -363,6 +381,7 @@ export function buildInstrumentPane(containerEl, cb) {
         valEl.textContent = spec.fmt(v);
       }
     }
+    updateInert();
   }
 
   // Point the editor at a patch, labeled `label` with `color` (a lane's color,

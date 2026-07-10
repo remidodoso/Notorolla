@@ -187,6 +187,10 @@
       border-bottom: 1px solid #262a35; padding-bottom: 0.25rem; margin-bottom: 0.15rem;
     }
     .instr-row { display: grid; grid-template-columns: 4.5rem 1fr 3.6rem; align-items: center; gap: 0.5rem; cursor: pointer; }
+    /* a control with no effect at the current settings (spec.inert — e.g. Padlington's
+       Vowel outside the Choir source, Tervik's op ADSR under Follow Op 1): dimmed and
+       non-interactive, but still in the layout so nothing reflows when it wakes */
+    .instr-row.inert, .instr-bar.inert { opacity: 0.38; pointer-events: none; }
     .instr-label { color: #aeb9d0; font-size: 0.82rem; }
     .instr-row input[type="range"] { width: 100%; }
     .instr-row input[type="checkbox"].instr-check { justify-self: start; width: 16px; height: 16px; }
@@ -539,6 +543,7 @@
     }
     .tile-xform.xf-transpose { background: rgba(150, 110, 220, 0.55); }
     .tile-xform.xf-reverse { background: rgba(70, 175, 160, 0.55); color: #eafff8; }
+    .tile-xform.xf-detune { background: rgba(220, 160, 70, 0.55); color: #fff4e0; }
     /* Rubber-band multi-select (empty-space drag, clamped to one lane). */
     .marquee-band {
       position: absolute; top: 0; bottom: 0; pointer-events: none; z-index: 1;
@@ -569,6 +574,7 @@
     .xb-brush { color: #241c14; border: 1px solid rgba(0,0,0,0.3); font-weight: 600; }
     .xb-brush.xf-transpose, .xb-brush.xf-transpose:hover { background: #a07cde; }
     .xb-brush.xf-reverse, .xb-brush.xf-reverse:hover { background: #5ec8b4; }
+    .xb-brush.xf-detune, .xb-brush.xf-detune:hover { background: #d9a04f; }
     .xb-brush.xf-clone, .xb-brush.xf-clone:hover { background: #e8a04e; }
     .xb-brush.active { outline: 2px solid #5aa9ff; outline-offset: 1px; }
     .xb-brush:disabled { opacity: 0.35; cursor: default; } /* transform actions need a selection */
@@ -601,6 +607,7 @@
     .xb-chip { display: inline-flex; align-items: center; gap: 0.35rem; border-radius: 4px; padding: 0.12rem 0.45rem; }
     .xb-chip.xf-transpose { background: rgba(150,110,220,0.18); border: 1px solid #4a3d66; color: #d7cdf0; }
     .xb-chip.xf-reverse { background: rgba(70,175,160,0.18); border: 1px solid #2f5f57; color: #c7efe6; }
+    .xb-chip.xf-detune { background: rgba(220,160,70,0.18); border: 1px solid #6b5426; color: #f0dcb4; }
     .xb-chip button { border: none; background: none; color: inherit; cursor: pointer; padding: 0; font-size: 0.95rem; line-height: 1; opacity: 0.8; }
     .xb-muted { color: #6b7280; }
     /* horizontal-scale strip (quantized: smaller ← slider → bigger) */

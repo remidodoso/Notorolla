@@ -91,8 +91,8 @@ const N = 1 << 12; // small table for fast tests (the bake takes tableSize)
 {
   const p = defaultPatch('padlington');
   const k = padTableKey(p, 261.6256, SR);
-  ok(padTableKey({ ...p, attack: 2, width: 0, cutoff: 500 }, 261.6256, SR) === k,
-    'envelope/width/filter edits do NOT change the table key');
+  ok(padTableKey({ ...p, attack: 2, width: 0, cutoff: 500, pitchAtk: 120 }, 261.6256, SR) === k,
+    'envelope/width/filter/pitch-attack edits do NOT change the table key');
   ok(padTableKey({ ...p, bandwidth: 50 }, 261.6256, SR) !== k, 'bandwidth changes the key');
   ok(padTableKey({ ...p, source: 'choir' }, 261.6256, SR) !== k, 'source changes the key');
   ok(padTableKey(p, 523.2511, SR) !== k, 'the octave base is part of the key');
@@ -112,7 +112,8 @@ const N = 1 << 12; // small table for fast tests (the bake takes tableSize)
 {
   const p = defaultPatch('padlington');
   const keys = ['source', 'vowel', 'size', 'tilt', 'harmonics', 'bandwidth', 'bwScale', 'stretch',
-    'width', 'cutoff', 'reso', 'filterEnv', 'keyTrack', 'attack', 'decay', 'sustain', 'release'];
+    'pitchAtk', 'pitchAtkTime', 'width', 'cutoff', 'reso', 'filterEnv', 'keyTrack',
+    'attack', 'decay', 'sustain', 'release'];
   ok(keys.every((k) => p[k] !== undefined), 'default padlington patch has every param');
   ok(p.source === 'saw', 'default source = saw');
   const srcSpec = paramsFor('padlington').find((s) => s.key === 'source');
@@ -121,12 +122,26 @@ const N = 1 << 12; // small table for fast tests (the bake takes tableSize)
   ok(normalizePatch({ kind: 'padlington', source: 'zzz' }).source === 'saw', 'bad source → saw');
   ok(normalizePatch({ kind: 'padlington', harmonics: 9999 }).harmonics === 128, 'harmonics clamps to max');
   ok(normalizePatch({ kind: 'padlington', stretch: 1 }).stretch === 0.05, 'stretch clamps to ±0.05');
+
+  // Inert predicates: source-dependent controls dim when their source isn't active.
+  const spec = (k) => paramsFor('padlington').find((s) => s.key === k);
+  ok(spec('vowel').inert({ source: 'saw' }) && !spec('vowel').inert({ source: 'choir' }), 'Vowel inert outside Choir');
+  ok(spec('size').inert({ source: 'tilt' }) && !spec('size').inert({ source: 'choir' }), 'Size inert outside Choir');
+  ok(spec('tilt').inert({ source: 'choir' }) && !spec('tilt').inert({ source: 'tilt' }), 'Tilt inert outside Tilt');
+  // ...and the same mechanism covers Tervik's Follow-gated op ADSRs.
+  const a2 = paramsFor('tervik').find((s) => s.key === 'a2');
+  ok(a2.inert({ follow2: true }) && !a2.inert({ follow2: false }), "Tervik op 2 ADSR inert under Follow Op 1");
 }
 
 // --- fake Web Audio: record nodes, connections, buffers -----------------------
 function param(v = 0) {
-  return { value: v, _isParam: true, setValueAtTime() {}, exponentialRampToValueAtTime(x) { this.value = x; },
-    linearRampToValueAtTime(x) { this.value = x; }, setTargetAtTime() {}, cancelScheduledValues() {} };
+  const p = { value: v, _isParam: true, _sets: [],
+    setValueAtTime(x, t) { p._sets.push({ type: 'set', v: x, t }); },
+    exponentialRampToValueAtTime(x) { p.value = x; },
+    linearRampToValueAtTime(x) { p.value = x; },
+    setTargetAtTime(x, t, tau) { p._sets.push({ type: 'tgt', v: x, t, tau }); },
+    cancelScheduledValues() {} };
+  return p;
 }
 function node(type, extra = {}) {
   return { type, _conns: [], started: false, stopped: false, _startOffset: null,
@@ -145,7 +160,7 @@ function fakeCtx() {
       buffers.push(b);
       return b;
     },
-    createBufferSource: () => { const n = node('src', { buffer: null, loop: false, playbackRate: param(1) }); sources.push(n); return n; },
+    createBufferSource: () => { const n = node('src', { buffer: null, loop: false, playbackRate: param(1), detune: param(0) }); sources.push(n); return n; },
     createStereoPanner: () => { const n = node('pan', { pan: param(0) }); panners.push(n); return n; },
   };
   return { ctx, gains, biquads, sources, panners, buffers };
@@ -179,6 +194,23 @@ function capture(f, over = {}, freq = 261.6256) {
   ok(f.buffers.length === before, 'second note in the same octave reuses the cached table (no re-bake)');
   capture(f, { width: 0.7 }, 100); // different octave → a new base's table
   ok(f.buffers.length === before + 1, 'a new octave bakes (lazily) one more table');
+}
+
+// 9b) Pitch attack: ± cents scheduled on both read-heads' detune; 0 = off.
+{
+  const f = capture(fakeCtx(), { pitchAtk: 120 });
+  ok(f.sources.every((s) => s.detune._sets.some((e) => e.type === 'set' && near(e.v, 120))
+    && s.detune._sets.some((e) => e.type === 'tgt' && e.v === 0)),
+    'pitchAtk schedules start-offset + settle-to-0 on both read-heads');
+  const neg = capture(fakeCtx(), { pitchAtk: -150 });
+  ok(neg.sources.every((s) => s.detune._sets.some((e) => e.type === 'set' && near(e.v, -150))),
+    'negative pitchAtk (the scoop, from below) schedules too');
+  const off = capture(fakeCtx(), { pitchAtk: 0 });
+  ok(off.sources.every((s) => s.detune._sets.length === 0), 'pitchAtk 0 = no detune automation');
+  ok(normalizePatch({ kind: 'padlington', pitchAtk: 500 }).pitchAtk === 200
+    && normalizePatch({ kind: 'padlington', pitchAtk: -500 }).pitchAtk === -200, 'pitchAtk clamps to ±200');
+  // Wendelhorn's Pitch Atk is now the same ± standard.
+  ok(normalizePatch({ kind: 'wendelhorn', pitchAtk: -100 }).pitchAtk === -100, 'wendelhorn accepts a negative pitchAtk');
 }
 
 // 10) The full-size default bake is sane (one real-size smoke bake).
