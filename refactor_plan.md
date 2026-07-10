@@ -1,15 +1,15 @@
 # Refactor plan — source-tree hierarchy + main.js split
 
-**Status: Phases 1–7 done (2026-07-09)** — P1: dir hierarchy + import repoint. P2: `ctx` stood up;
-`storage`/`meter`/`history`/`zoom`. P3: `app/score.js` (15 score fns). P4: `app/transport.js` (~330
-lines — scheduler wiring, render loop, playhead/buttons, tempo, mod-clock, lite, auto-scroll). P5:
-`app/tileops.js` (344) + `app/transformbar.js` (335) + `app/tileinspector.js` (148). P6:
-`app/patchedit.js` (459 — grid-instrument descriptors, edit pane, patch identity, catalog). P7:
-`app/lanefx.js` (228 — lane mixer/FX pushers, delay/chorus/reverb/mod modals, add-lane, reset). P8:
-`app/triadulator.js` (141) + `app/randomui.js` (325 — the New Random modal). P9: `app/projectio.js`
-(195 — project name/dirty, save/open/new, loadContent) + `app/exportui.js` (357 — MIDI/audio/stem
-export + dialogs); main.js now 896 lines. notch green; awaiting user in-browser smoke test before
-Phase 10 (keyboard + final sweep + docs). Update this line as phases complete.
+**Status: COMPLETE — all 10 phases done (2026-07-09).** P1: dir hierarchy + import repoint. P2: `ctx`
+stood up; `storage`/`meter`/`history`/`zoom`. P3: `app/score.js` (15 score fns). P4: `app/transport.js`
+(scheduler wiring, render loop, playhead/buttons, tempo, mod-clock, lite, auto-scroll). P5:
+`app/tileops.js` + `app/transformbar.js` + `app/tileinspector.js`. P6: `app/patchedit.js` (grid-instrument
+descriptors, edit pane, patch identity, catalog). P7: `app/lanefx.js` (mixer/FX modals, add-lane, reset).
+P8: `app/triadulator.js` + `app/randomui.js`. P9: `app/projectio.js` + `app/exportui.js`. P10:
+`app/keyboard.js` + final sweep + docs. **`src/main.js` (3,641 lines) → `src/js/main.js` (793) + 16
+`app/` modules; zero behavior change; notch green throughout.** The File map in notes_and_status.md is
+rewritten for the new tree; forward-looking Appendix-A items migrated to Deferred work / future_directions.
+The per-phase deviation logs below (Appendix A) are the historical record.
 
 Agreed with the user 2026-07-08. This document is the **complete instruction set** for a series of
 agent sessions. Each phase is one self-contained task ending in a green verification; **the user

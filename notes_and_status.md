@@ -170,6 +170,53 @@ working in that area.
   **editable** field, so a genuinely long reverb/delay is the user's to type — don't re-add
   delay-tail estimation.
 
+**Agent methodology — scripted code-motion (the 2026-07 `ctx`/`app/` refactor, and similar edits)**
+
+The 10-phase split leaned on Node scripts that extract exact source ranges and rewrite call sites.
+These traps recurred; the fixes are proven — reuse them for any future bulk move/rename.
+
+- **CRLF, always.** The repo is `core.autocrlf=true`, so files on disk are **CRLF**. Any script that
+  rewrites a file must be **EOL-aware** or it silently flips every line ending (a giant noisy diff).
+  Pattern: `const eol = raw.includes('\r\n') ? '\r\n' : '\n';`, split on `\n`, strip a trailing `\r`
+  per line, rejoin with `eol`. Line-based `split('\n')/join('\n')` preserves CRLF as-is (the `\r`
+  rides along). The user explicitly flagged time lost to this early — don't relearn it.
+- **Module-aware syntax check.** This Node is **v17.3.0**: `node --check file.js` parses ESM as
+  CommonJS and false-fails on `import`/`export`. Use **`node --check --input-type=module < file.js`**
+  (stdin). And treat a green **`node notch/run.mjs`** as the real parse gate — but note notch does
+  **not** import `main.js`/`app/*`, so it can't catch *wiring* bugs (unregistered `ctx.x`, boot-order);
+  those need the ctx cross-check + the browser smoke test.
+- **grep can't do the lookbehind here.** `grep -P` errors on this Git-bash locale ("supports only
+  unibyte and UTF-8"), and `grep -E` **silently ignores** `(?<!…)` and returns bogus **0-counts** (which
+  reads as "unused" and can trick you into deleting a live import). For accurate `(?<![\w.])NAME\b`
+  counts use **ripgrep** (`\b` works) or a tiny **Node** `str.match(new RegExp(…,'g'))` — not bash grep.
+- **Call-form regex misses bare references.** Prefixing `NAME(` → `ctx.NAME(` catches *calls* but not a
+  function passed as a **value**: `addEventListener('click', resetPlayer)`,
+  `PatternLibrary.fromJSON(env.lib, isReferenced)`. These need word-form (or an explicit edit). Always
+  run a **post-edit bare-identifier scan** for each moved name to catch the reference form.
+- **Word-form prefixing over-reaches; guard it.** A bare-identifier regex hits the name inside **string
+  literals and trailing comments** (`case 'undo'`, `getElementById('arrUndo')`). Skip comment lines,
+  prefer call-form for common words, and **log every change for review**. Promoting `let X` → `ctx.X`
+  needs a **decl-fix** step (`let ctx.X` is invalid) — and match the **full** decl string, since one
+  name can be a prefix of another (`let ctx.exporting` ⊂ `let ctx.exportingStems`).
+- **Never name a local `ctx`.** A pre-existing function-local `const ctx = {…}` (the random generator's
+  context) shadowed the shared context and broke `ctx.*` inside that function. Renamed it to `tctx`.
+- **Extract byte-identical, assert, then delete-then-prefix.** Pull **exact source line ranges** into
+  the new module (bodies unchanged; only cross-boundary refs prefixed) rather than hand-transcribing —
+  a typo in a moved body passes every static check and only surfaces at runtime. Guard every range with
+  **first/last-line assertions that throw *before* `writeFileSync`** (caught off-by-one ends safely). On
+  main.js, **delete the moved definitions first, then prefix the remaining callers by name** — so the
+  pass can't mangle a definition, and it auto-finds caller sites the manual survey missed.
+- **Locate by name, not line number.** Every edit shifts line numbers; a plan's line refs are stale by
+  the next phase. Function/const **names are authoritative** — re-grep each time.
+- **Watch boot-order when registration moves.** A function registered by a *late* `initX(ctx)` will
+  crash if something calls it at boot **before** that init runs (e.g. `recomputeDirty` via the first
+  `persist()`, `patchInfo` via the first `tilePlayer.render()`). Verify the first call site. Floating
+  panes (`createPanel`) stack by **DOM append order** (no bring-to-front), so an init's *position*
+  affects visual stacking — keep it zero-behavior.
+- **Per-move hygiene.** After each extraction: an **unused-import sweep** (count ≤ 1 = import-only) and a
+  **leak scan** (no bare calls to any moved symbol) on main.js. And when updating a status/summary line,
+  edit the **whole** line — it's easy to fix the body and leave a stale "phase N of M" prefix.
+
 ---
 
 ## Deferred work / TODO
@@ -177,11 +224,19 @@ working in that area.
 Short, pithy reminders of parked work — accumulates as entries are pruned; detail lives in the
 archive or the linked section. (Bigger features are in [future_directions.md](future_directions.md).)
 
-- **Refactor (active plan, 2026-07-08):** [refactor_plan.md](refactor_plan.md) — move sources into a
-  `src/js/` hierarchy (+ reserved `src/wasm/`) and split main.js's feature controllers into
-  `src/js/app/` modules via a shared-ctx pattern. Ten phases, code-motion only, one phase per agent
-  session, **user approves each phase** before the next. The file map below is rewritten in the
-  final phase.
+- **Refactor (DONE, 2026-07-09):** [refactor_plan.md](refactor_plan.md) — `src/main.js` (3,641 lines)
+  split into `src/js/{core,audio,ui,export,app}/` + a 793-line composition-root `main.js`, via the
+  shared-`ctx` pattern (each `app/*.js` exports `initX(ctx)`). Zero behavior change, notch green
+  throughout. New features should get an `app/` module by default rather than accreting into main.js.
+  The plan's Appendix A keeps the per-phase deviation log. *Follow-on cleanups surfaced by the split
+  (do these opportunistically, not as a project):*
+- **Dead fixture:** [core/tunes.js](src/js/core/tunes.js) is unreferenced ("Mary Had a Little Lamb")
+  — delete after a glance to confirm nothing imports it.
+- **FX config↔editor split:** `audio/delay.js` / `chorus.js` / `reverb.js` / `mods.js` each mix a pure
+  config model with a modal-editor UI — candidates to split into a config (`audio/`) + editor (`ui/`) pair.
+- **`runRandomModal`** (~260 lines in `app/randomui.js`) wants decomposition (form builder / preview /
+  commit). Moved verbatim in the refactor.
+- **`app/keyboard.js`** could become a data-driven keymap table instead of an if-ladder.
 - **Docs:** split per-voice implementation detail into a separate `instrument_design_details.md`
   (currently parked in [archived_status_07_26.md](archived_status_07_26.md) → Undated / background).
 - **Tervik:** gray out the inert A/D/S/R sliders when *Follow Op 1* is on.
@@ -202,39 +257,68 @@ archive or the linked section. (Bigger features are in [future_directions.md](fu
 
 ## File map
 
+The source lives under `src/js/`, grouped by role: **core/** (pure model + music logic, headless-testable), **audio/** (Web Audio engine + effects + patches), **ui/** (DOM/canvas views + widgets), **export/** (file encoders), and **app/** (the feature-controller layer — see the note below). `main.js` is the composition root.
+
+**The `app/` layer + `ctx`:** each `app/*.js` exports an `initX(ctx)` that registers its API on a shared context object. main.js builds the core objects/views, stands up `ctx`, and calls each `initX(ctx)` in turn; controllers read each other's (and main.js's) functions/state through `ctx`. This keeps main.js to the composition root (~800 lines) instead of one monolith. (History: the 2026-07 refactor split a 3,641-line `src/main.js` into this tree — see `refactor_plan.md`.)
+
 | File | Responsibility |
 |---|---|
 | [index.html](index.html) | Layout (transport bar + reorderable panes), all CSS |
-| [src/model.js](src/js/core/model.js) | `Note`, `Score` (beats, tempo, articulation, explicit length), MIDI↔freq, note names, black-key test |
-| [src/tuning.js](src/js/core/tuning.js) | row/degree → pitch/frequency seam; per-pattern `tuningFreq` + **`edoOf(tuningId)`** (degrees-per-octave is a tuning property); 12-ET / Just / **16-ET**; per-tuning `degreeToName`/`pitchClassName` (12-ET letters, non-12 hex) |
-| [src/grid.js](src/js/core/grid.js) | `Pattern` (named; **per-pattern column count** = `columns.length`, `DEFAULT_COLS`/`MIN_COLS`/`MAX_COLS`, `Pattern.initial(name, cols)`), `DURATIONS`, `PALETTE`, `BASE_PITCH` |
-| [src/library.js](src/js/core/library.js) | `PatternLibrary` (registry, naming, parking), `Arrangement` (lanes/tiles + per-lane mute/solo + `lane.gain`/`lane.pan`/`lane.patch`, play-region `playStart`/`playEnd`, `audibleLaneIds`), `LANE_COLORS` |
-| [src/audio.js](src/js/audio/audio.js) | `AudioEngine` — additive synth voice (`buildVoice`, context-parametric), per-lane patch resolution (`patchFor`), per-lane **stereo mixer strips** (volume→panner→**[chorus insert]→[delay insert]**→mute-gate; ordered insert chain via `_relink`; `setLaneVolume`/`setLaneGain`/`setLanePan`, `laneMix`, `applyLaneChorus`/`buildChorusInsert`, `applyLaneDelay`/`buildDelayInsert`), master limiter (`setupLimiter`) + fader (`setMasterGain`) + **stereo meter tap** (`getPeak`→`{l,r}`); `renderToBuffer` (offline **stereo** bounce, per-lane patch+mix+chorus+delay) |
-| [src/instrument.js](src/js/audio/instrument.js) | the **instrument registry** (`INSTRUMENTS`): per-kind defaults + `PARAMS` (editor metadata) for **Vesperia**, **Zindel**, **Wendelhorn**, **Tervik**, **Nayumi** & **Boshwick**; kind-aware `defaultPatch(kind)`, `normalizePatch` (numeric + boolean + enum/select + **stepped-list** params; Tervik legacy-ratio migration), `nearestStep`, `clonePatch`, `paramsFor`, slider mapping |
-| [src/instrumentpane.js](src/js/ui/instrumentpane.js) | `buildInstrumentPane` — the retargetable, **kind-aware** "Edit instrument" pane (instrument selector, body rebuilt per kind; slider / drawbar-fader / checkbox / dropdown / **stepped-list slider** / **knob** widgets; target chip, Test, Copy/Paste, Factory Reset) |
-| [src/knob.js](src/js/ui/knob.js) | `makeKnob` — click-vertical-drag rotary widget (detents, dbl-click reset, gesture-bracketed callbacks) + `PAN_MAP` / `GAIN_MAP` mixer mappings |
-| [src/delay.js](src/js/audio/delay.js) | per-lane delay config (`defaultDelay`/`normalizeDelay`, `DELAY_TIMES`/`DELAY_MODES`) + `buildDelayEditor` (modal form) |
-| [src/chorus.js](src/js/audio/chorus.js) | per-lane Juno-60 chorus config (`defaultChorus`/`normalizeChorus`, `CHORUS_MODES` = I/II/I+II) + `buildChorusEditor` (modal form; On + Mode only) |
-| [src/modal.js](src/js/ui/modal.js) | `openModal` — generic centered modal (Esc / backdrop / × to close, `onClose`) |
-| [src/panel.js](src/js/ui/panel.js) | `createPanel` — the reusable **modeless floating-pane primitive** (fixed, draggable, resizable, geometry-remembered, document-agnostic chrome; header + close + show/hide/onToggle). Shared by the Tile inspector and the coming Patch Catalog (future_directions §14) |
-| [src/patches.js](src/js/audio/patches.js) | `PatchStore` — the **user-global patch catalog** backing store (future_directions §14): id-keyed named patches, factory `Init` per kind (`factoryInitId`) + user tier (`newPatchId`), `allForKind`/`add`/`update`/`remove`/`uniqueUserName`/`userNames`, toJSON/loadUser. Pure (headless-tested) |
-| [src/catalog.js](src/js/ui/catalog.js) | `createCatalog` — the **Patch Catalog** window (a panel.js tenant): kind→patch browse, live name search, double-click apply, per-user-patch Rename/Delete; content-only (main.js feeds the list + handles the ops) |
-| [src/inspector.js](src/js/ui/inspector.js) | `createInspector` — the **Tile inspector** content (a `panel.js` tenant): optional play/stop/loop transport + a `setFacts` data dump with inline-rename heading |
-| [src/scheduler.js](src/js/audio/scheduler.js) | lookahead scheduler, finite looping, per-cycle re-read (`onCycle`), mid-cycle tile reconciliation (`resync`) |
-| [src/pianoroll.js](src/js/ui/pianoroll.js) | `PianoRoll` canvas render + playhead; per-note color/alpha |
-| [src/gridview.js](src/js/ui/gridview.js) | `GridView` — grid editor (render + gestures + viewport + resize); reference-backdrop overlay via the merged-time layout |
-| [src/reference.js](src/js/core/reference.js) | grid **reference backdrop** (future_directions §16): `bakeReference` (frozen tile snapshot), `referenceScore`/`referenceDisplay` (transform applied on use), `mergeAudition` (dry, tiled, Quieter/Mute), `referenceToJSON`/`FromJSON` |
-| [src/tileplayer.js](src/js/ui/tileplayer.js) | `TilePlayer` — multi-lane tile rendering + interaction; lane heads (instrument/Edit, Pan/Gain knobs, M/S); beat **ruler + play-region markers** (`_buildRuler`/`drawRuler`); per-tile transform swath; `tileAt` hit-test |
-| [src/transforms.js](src/js/core/transforms.js) | per-tile **nondestructive** pattern transforms (pure): v1 scalar/chromatic **transpose** — `transformDegree`, `setTileTranspose`, `findTranspose`, `normalizeTransforms`, `describeTranspose` |
-| [src/toolbar.js](src/js/ui/toolbar.js) | grid toolbar (brush, pattern lifecycle, view toggles) |
-| [src/panes.js](src/js/ui/panes.js) | reorderable vertical panes, order persisted |
-| [src/project.js](src/js/core/project.js) | versioned file envelope (`format`/`version`), migrate, save (download) / load (file read) helpers |
-| [src/triads.js](src/js/core/triads.js) | Triadulator engine (pure): partition a pitch-class set into chords — families `trad` (maj/min/dim/aug) + `sus` (12-ET), `septimal` (16-ET: 4:5:7 `[0,5,13]`, supermajor `[0,6,13]`); `enumerateTriadulations(pcs, {families, edo})` / `classifyTriad(pcs, edo)`. Templates tagged by **EDO**, pools per-edo; `familiesFor(edo)`/`familyLabel` drive the per-tuning family toggles |
-| [src/random.js](src/js/core/random.js) | New Random generator (pure): a contiguous in-scale degree window around the viewport centroid → random degrees, bent by Unique / Run / Triad settings; plus **Duration Bias & Accent Bias** (pitch pulled by each column's length / accent loudness) each with a **Steer** (in-generation `biasTargets`/`biasedPick`, preserves Run/Triad contour) or **Sort** (post-hoc `rankBias` re-pair) mechanism; injectable rng |
-| [src/mods.js](src/js/audio/mods.js) | per-lane playback modulators: config model (`modsByKind`), waveform evaluation (`modWave` incl. value-noise walk), position-space patch application (`applyMods`), target filtering, and the modal editor |
-| [src/midi.js](src/js/export/midi.js) | Standard MIDI File writer (pure): note data → bytes (Format 1, tempo, track names) |
-| [src/wav.js](src/js/export/wav.js) | WAV encoder (pure): an `AudioBuffer` → 16-bit PCM RIFF bytes |
-| [src/main.js](src/js/main.js) | wires everything; transport, undo, active pane, persistence, project save/load |
+| **core/** | *pure model + music logic (no DOM/audio; headless-tested)* |
+| [core/model.js](src/js/core/model.js) | `Note`, `Score` (beats, tempo, articulation, explicit length), MIDI↔freq, note names, black-key test |
+| [core/tuning.js](src/js/core/tuning.js) | row/degree → pitch/frequency seam; per-pattern `tuningFreq` + **`edoOf(tuningId)`**; 12-ET / Just / **16-ET**; per-tuning `degreeToName`/`pitchClassName` (12-ET letters, non-12 hex), `equaveOf`, `degreeBounds`, `nearestDegreeToFreq` |
+| [core/scales.js](src/js/core/scales.js) | per-EDO scale masks: `scalesFor(edo)`, `scaleById`, `scaleValidForEdo` (the scale library the grid + transpose menus draw from) |
+| [core/grid.js](src/js/core/grid.js) | `Pattern` (named; **per-pattern column count**, `Pattern.initial(name, cols)`), `DURATIONS`, `PALETTE`, `BASE_PITCH`, `DEFAULT_ARTIC` |
+| [core/library.js](src/js/core/library.js) | `PatternLibrary` (registry, naming, parking), `Arrangement` (lanes/tiles + per-lane mute/solo + `lane.gain`/`lane.pan`/`lane.patch`, play-region `playStart`/`playEnd`, `audibleLaneIds`), `laneColor`, `insertPoint`/`deletePoint` |
+| [core/transforms.js](src/js/core/transforms.js) | per-tile **nondestructive** pattern transforms (pure): scalar/chromatic **transpose** + **reverse** — `applyTransforms`, `setTileTranspose`/`setTileReverse`, `hasReverse`, `describeTransform`, `transformKindLabel`, `normalizeTransforms` |
+| [core/triads.js](src/js/core/triads.js) | Triadulator engine (pure): partition a pitch-class set into chords — families `trad`/`sus` (12-ET), `septimal` (16-ET); `enumerateTriadulations(pcs, {families, edo})`, `classifyTriad`, `familiesFor(edo)`/`familyLabel`, `chordsFor` |
+| [core/random.js](src/js/core/random.js) | New Random generator (pure): a contiguous in-scale degree window around the viewport centroid → random degrees, bent by Unique / Run / Triad; plus **Duration/Accent Bias** each with a **Steer** or **Sort** mechanism; `scaleWindow`, injectable rng |
+| [core/reference.js](src/js/core/reference.js) | grid **reference backdrop** (future_directions §16): `bakeReference`, `referenceScore`/`referenceDisplay`, `mergeAudition`, `referenceToJSON`/`FromJSON` |
+| [core/project.js](src/js/core/project.js) | versioned file envelope (`VERSION`/`buildEnvelope`), `migrate`/`validate`, `defaultName`, save (`downloadJSON`/`downloadBytes`) / load (`readFile`) helpers |
+| [core/tunes.js](src/js/core/tunes.js) | *(unreferenced demo fixture — "Mary Had a Little Lamb"; slated for deletion, see Deferred work)* |
+| **audio/** | *Web Audio engine, per-lane effects, patches, scheduler* |
+| [audio/audio.js](src/js/audio/audio.js) | `AudioEngine` — additive synth voice (`buildVoice`), per-lane patch resolution (`patchFor`), per-lane **stereo mixer strips** (volume→panner→[chorus]→[delay]→mute-gate; `setLaneVolume`/`setLaneGain`/`setLanePan`, `applyLaneChorus`/`applyLaneDelay`/`applyLaneReverb`, `modsFor`), master limiter + fader + **stereo meter tap** (`getPeak`); `renderToBuffer`/`renderStem` (offline bounce), `FREF` |
+| [audio/instrument.js](src/js/audio/instrument.js) | the **instrument registry** (Vesperia/Zindel/Wendelhorn/Tervik/Nayumi/Boshwick): `defaultPatch(kind)`, `normalizePatch`, `clonePatch`, `instrument`/`instrumentKinds`, slider mapping |
+| [audio/patches.js](src/js/audio/patches.js) | `PatchStore` — the **user-global patch catalog** backing store: id-keyed named patches, factory `Init` per kind (`factoryInitId`) + user tier, `allForKind`/`add`/`update`/`remove`/`uniqueUserName`. Pure |
+| [audio/delay.js](src/js/audio/delay.js) | per-lane delay config (`normalizeDelay`, `DELAY_TIMES`/`DELAY_MODES`) + `buildDelayEditor` |
+| [audio/chorus.js](src/js/audio/chorus.js) | per-lane Juno-60 chorus config (`normalizeChorus`, `CHORUS_MODES`) + `buildChorusEditor` |
+| [audio/reverb.js](src/js/audio/reverb.js) | per-lane reverb config (`normalizeReverb`) + `buildReverbEditor` |
+| [audio/mods.js](src/js/audio/mods.js) | per-lane playback modulators: config model (`modsByKind`), waveform eval (`modWave`), `applyMods`, `modsActive`/`modTargetsFor`, and the modal editor (`buildModEditor`, `MOD_SLOTS`, `defaultMod`) |
+| [audio/scheduler.js](src/js/audio/scheduler.js) | lookahead `Scheduler`, finite looping, per-cycle re-read (`onCycle`), mid-cycle tile reconciliation (`resync`) |
+| **ui/** | *DOM / canvas views + reusable widgets* |
+| [ui/gridview.js](src/js/ui/gridview.js) | `GridView` — grid editor (render + gestures + viewport + resize); reference-backdrop overlay via the merged-time layout |
+| [ui/pianoroll.js](src/js/ui/pianoroll.js) | `PianoRoll` canvas render + playhead; per-note color/alpha; `ROLL_V_SCALES`/`ROLL_H_SCALES` zoom ladders |
+| [ui/tileplayer.js](src/js/ui/tileplayer.js) | `TilePlayer` — multi-lane tile rendering + interaction; lane heads (instrument/Edit, Pan/Gain knobs, M/S); beat **ruler + play-region markers**; per-tile transform swath; drag/marquee/repeat/range gestures; `TILE_SCALES` |
+| [ui/toolbar.js](src/js/ui/toolbar.js) | `buildToolbar` — grid toolbar (brush, pattern lifecycle, view toggles, transpose/permute, triadulate) |
+| [ui/instrumentpane.js](src/js/ui/instrumentpane.js) | `buildInstrumentPane` — the retargetable, **kind-aware** "Edit instrument" pane (instrument selector; slider/fader/checkbox/dropdown/stepped-list/knob widgets; target chip, Test, Copy/Paste, Save/Load identity) |
+| [ui/knob.js](src/js/ui/knob.js) | `makeKnob` — click-vertical-drag rotary widget + `PAN_MAP`/`GAIN_MAP` mixer mappings |
+| [ui/catalog.js](src/js/ui/catalog.js) | `createCatalog` — the **Patch Catalog** window (a panel.js tenant): kind→patch browse, search, apply, Rename/Delete; content-only |
+| [ui/inspector.js](src/js/ui/inspector.js) | `createInspector` — the **Tile inspector** content (a panel.js tenant): optional play/stop/loop transport + a `setFacts` data dump with inline-rename heading |
+| [ui/panel.js](src/js/ui/panel.js) | `createPanel` — the reusable **modeless floating-pane primitive** (fixed, draggable, resizable, geometry-remembered). Shared by the inspector + catalog |
+| [ui/modal.js](src/js/ui/modal.js) | `openModal` — generic centered modal (Esc / backdrop / × to close, `onClose`) |
+| [ui/panes.js](src/js/ui/panes.js) | `setupPanes` — reorderable vertical panes, order persisted |
+| **export/** | *file encoders (pure)* |
+| [export/midi.js](src/js/export/midi.js) | Standard MIDI File writer: note data → bytes (Format 1, tempo, track names) |
+| [export/wav.js](src/js/export/wav.js) | WAV + **BWF** encoders: an `AudioBuffer` → 16-bit PCM RIFF bytes (`encodeWav`/`encodeBwf`) |
+| [export/zip.js](src/js/export/zip.js) | minimal ZIP (store, no compression) writer — bundles the per-lane stem BWFs |
+| **app/** | *feature controllers — each exports `initX(ctx)`, registers on the shared `ctx`* |
+| [app/storage.js](src/js/app/storage.js) | localStorage keys + the persisted-UI `state` object (hydration/migration); `readJSON`/`safeSet`/`persist`, `storageOK`, `recomputeDirty` hook |
+| [app/meter.js](src/js/app/meter.js) | master fader + the stereo-meter animation loop |
+| [app/history.js](src/js/app/history.js) | grid + arrangement undo/redo stacks (`pushHistory`/`undo`/`redo`; `arrSnap`/`arrCommit`/`arrUndo`/`arrRedo`; `histories`, `hist`) |
+| [app/zoom.js](src/js/app/zoom.js) | the tile-scale strip + roll zoom ladders (`updateScaleStrip`, `clampScaleIdx`) |
+| [app/score.js](src/js/app/score.js) | score building: `buildScore`/`arrangementScore`/`windowedArrangementScore`/`activeScore`, `computeTail`/`maxReverbTail`, region beat math (`playStartBeat`/`playEndBeat`/`arrangementEndBeat`), `ensureTileStarts` |
+| [app/transport.js](src/js/app/transport.js) | the scheduler **driver**: play/stop/loop (grid + tiles + audition), render loop + playhead, transport buttons, tempo, mod-clock, Lite toggle, roll/tile auto-scroll; `LOOP_MAX`/`LOOP_STEP` |
+| [app/tileops.js](src/js/app/tileops.js) | tile-player ops: play-region markers, tile drag (move/copy/reorder w/ live ripple preview), click-select, single-tile audition, grid→lane drop, delete/deselect |
+| [app/transformbar.js](src/js/app/transformbar.js) | the tile transform bar: Ripple, the Transpose/Reverse/Clone selection actions, the Insert/Clear/Delete range tools, per-selection transform chips |
+| [app/tileinspector.js](src/js/app/tileinspector.js) | the **Tile Inspector** floating pane — transport + facts dump, following the selection |
+| [app/patchedit.js](src/js/app/patchedit.js) | the instrument editor: grid/parked-instrument descriptors, the edit pane, per-target patch **identity** (dirty/Save/Save As/Load/Rename), the **Patch Catalog** ops |
+| [app/lanefx.js](src/js/app/lanefx.js) | per-lane mixer + FX: volume/pan/mute/solo bus pushers, the delay/chorus/reverb/modulator modal editors, add-lane, lane/player reset |
+| [app/triadulator.js](src/js/app/triadulator.js) | the **Triadulator** proposal system: enumerate placeable triads from unused pitch-classes, overlay/rotate them, Confirm to register |
+| [app/randomui.js](src/js/app/randomui.js) | the **New Random** modal: live-preview generation, in-modal back/redo, audition, Replace-in-place / New-Pattern / Cancel |
+| [app/projectio.js](src/js/app/projectio.js) | the project **document** layer: name / dirty-tracking vs a saved baseline, Save / Open / New, `loadContent` (replace live library + arrangement in place) |
+| [app/exportui.js](src/js/app/exportui.js) | **export**: MIDI, single-file audio (WAV), per-lane stems (BWF zip), + the Export Audio / Export Stems dialogs |
+| [app/keyboard.js](src/js/app/keyboard.js) | global keydown shortcuts — act on the active pane (grid/tiles), flash the mapped button; skipped while a form field is focused |
+| [main.js](src/js/main.js) | **composition root**: imports, `ctx` assembly, core-object + view construction (with ctx-arrow callbacks), and the resident glue that stitches them — reference backdrop, active pane, roll-content sync, pattern lifecycle, grid audition, and the conductor (`onToolbarChange`/`refresh` + the `update*` button-state helpers) |
 
 ---
 
