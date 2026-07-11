@@ -447,3 +447,22 @@ exact pattern+settings restore on back/redo, nav enable/disable sequence, Sort-n
   beat-0 clamp.
 - *"+ Lane" button reworked:* a pinned, lane-head-width enclosure (was a tiny 22×20 "+" that slid off on
   h-scroll).
+
+**Known limitations — stale entries pruned (2026-07-10).** A doc-hygiene pass (during the
+control-skin handoff prep) removed standing-gap entries from notes & status that had quietly
+closed as features landed:
+
+- *"Save / pattern browser not built; localStorage is a stand-in"* — closed by the **project
+  document layer** (versioned save/load, file format v1: Save / Open / New + dirty tracking;
+  `core/project.js` + `app/projectio.js`), the **PatternLibrary** (named patterns + parking),
+  and the **Patch Catalog** (Phases A–C).
+- *"Microtones / alternate scales not built (the tuning seam is ready for them)"* — closed by
+  the tuning seam's real implementations (**Just intonation, 16-ET**, the non-octave **"cross"
+  tuning** with per-tuning naming/equave) and the **per-EDO scale-mask library**
+  (`core/scales.js`: modes, harmonic/melodic minor, blues, the symmetric scales).
+- *Lane controls listing "volume, naming, per-lane instrument" as deferred* — per-lane
+  **gain + pan** (lane-head knobs feeding the stereo mixer strips) and **per-lane instrument
+  with patch identity** are in; only **removing lanes** and lane **naming** remain (tracked in
+  Deferred work / TODO).
+- *"MIDI not wired"* — **Export to MIDI (SMF Format 1)** is built; the limitations entry now
+  names the actual gap (live MIDI I/O, deferred by decision).

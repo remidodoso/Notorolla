@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Exhibit — Padlington 1.3</title>
+<style>
+  /* ============ INSTRUMENT EXHIBIT — Padlington ============
+     The Round-5 composite skin applied to a REAL instrument panel: the actual
+     registry params at their factory values, laid out as the cluster inventory
+     that will seed the common-clusters refactor. Widget policy on display:
+     continuous → vertical slider · ± detented → knob · 3–5-way enum → rotary
+     switch. Two SPECULATIVE clusters (dashed, †) show plausible future
+     controls — a growth stress-test, not a commitment. Vowel/Size/Tilt dim
+     LIVE off the Source switch (the inert rule under the new skin).
+     1.1: spectrum-ordered muted bands; top-aligned banks; meta readouts.
+     1.2: canonical group order (LFO → Oscillator → Filter → Envelope →
+     Effects), hue = ROLE, fieldset-style boxed groups w/ the band as a
+     centered legend tab, subgroups (label / hairline / boxed via meta),
+     user defaults Panel 20 / Tgap 10 / Size 125.
+     1.3: "label only" subgroup chrome LOCKED; every subgroup labeled, even
+     a lone one (Amplitude, Lowpass) — uniform slider tops; speculative
+     elements (LFO slot, Pluck, Response) removed for now.
+     Retained design exhibit — self-contained, not product code. */
+  :root {
+    --pl: 20%; --ro: hsl(41, 100%, 62%); --glow: .7; --tgap: .10em; --mbh: 28;
+    --acc: hsl(358, 78%, 56%);
+    --arc: hsl(200, 70%, 55%);
+    --panel: hsl(220, 7%, var(--pl));
+    --panel-hi: hsl(220, 7%, calc(var(--pl) + 6%));
+    --panel-lo: hsl(220, 8%, calc(var(--pl) - 6%));
+    --ink: hsl(220, 12%, 88%);
+    --ink-dim: hsl(220, 8%, 62%);
+    --slot: hsl(222, 10%, calc(var(--pl) - 10%));
+    --tick: hsl(220, 8%, calc(var(--pl) + 26%));
+    --tick-maj: hsl(220, 8%, calc(var(--pl) + 38%));
+    --cap-a: hsl(220, 6%, 42%);
+    --cap-b: hsl(220, 7%, 20%);
+    --cap-c: hsl(220, 8%, 30%);
+    --boxln: hsl(220, 8%, calc(var(--pl) + 16%));
+  }
+  * { box-sizing: border-box; margin: 0; user-select: none; font-weight: 400; }
+  body { background: hsl(220, 7%, calc(var(--pl) - 7%)); color: var(--ink);
+         font: 14px/1.4 Tahoma, "Segoe UI", system-ui, sans-serif; padding: 1.2rem; }
+  header { max-width: 1160px; margin: 0 auto 1rem; }
+  h1 { font-size: 1.25rem; letter-spacing: .05em; }
+  .blurb { color: var(--ink-dim); font-size: .85rem; margin-top: .15rem; }
+  .meta { display: flex; flex-wrap: wrap; gap: .4rem 1rem; align-items: center; margin-top: .7rem;
+          font-size: .78rem; color: var(--ink-dim); background: var(--panel-lo);
+          border: 1px solid var(--panel-hi); border-radius: 6px; padding: .45rem .8rem; }
+  .meta label { display: flex; align-items: center; gap: .4rem; }
+  .meta input[type="range"] { width: 70px; accent-color: var(--acc); }
+  .meta .mv { color: var(--ro); font-variant-numeric: tabular-nums;
+              min-width: 3ch; text-align: right; }
+  .meta select { background: var(--panel); color: var(--ink); border: 1px solid var(--panel-hi);
+                 border-radius: 3px; padding: .12rem .25rem; font-size: .95em; }
+  .meta a { color: var(--ink-dim); margin-left: auto; }
+
+  /* the pane: kind selector + patch bar sketch, then flowing clusters */
+  .panetop { max-width: 1160px; margin: 0 auto; font-size: 14px;
+             display: flex; align-items: center; gap: .8em;
+             background: var(--panel-lo); border: 1px solid var(--panel-hi);
+             border-radius: 8px 8px 0 0; border-bottom: 0; padding: .45em .9em;
+             color: var(--ink-dim); font-size: .82rem; }
+  .panetop .swatch { width: .85em; height: .85em; border-radius: 3px; background: hsl(28, 70%, 54%); }
+  .panetop .kind { color: var(--ink); }
+  .panetop .desc { font-size: .88em; }
+  .panetop .patch { margin-left: auto; color: var(--ro); font-size: .9em; }
+  .panel { max-width: 1160px; margin: 0 auto; font-size: 14px;
+           background: var(--panel);
+           border: 1px solid var(--panel-hi); border-radius: 0 0 10px 10px;
+           box-shadow: 0 8px 30px rgba(0,0,0,.35), inset 0 1px 0 var(--panel-hi);
+           padding: 1.1em 1em 1em; display: flex; flex-wrap: wrap; gap: 1.7em 1.3em; align-items: flex-start; }
+  /* BOXED groups (1.2): every functional group gets the same fieldset-style
+     frame — one subgroup or five — with the black-on-color band as a legend
+     tab CENTERED on (and notched into) the top border. */
+  .group { display: flex; flex-direction: column; align-items: center;
+           border: 1px solid var(--boxln); border-radius: .5em;
+           padding: 0 .7em .6em; }
+  .group h2 { font-size: .72em; letter-spacing: .14em; text-transform: uppercase;
+              color: hsl(220, 30%, 10%); background: hsl(var(--bh, 28), var(--bs, 60%), 54%);
+              padding: .26em .6em; border-radius: .22em;
+              align-self: center; margin: -.95em 0 .5em; position: relative;
+              /* panel-colored side rects notch the tab out of the border line */
+              box-shadow: -.4em 0 0 var(--panel), .4em 0 0 var(--panel); }
+  /* hue = ROLE (1.2 verdict; muted spectrum values LOCKED "for now"): a role
+     keeps its color on EVERY instrument; an absent role leaves a spectrum gap
+     (that's the feature — it reads "this one has no LFO"). Spares for future
+     splits: yellow 48/45% (osc №2 / pitch), aqua 165/35% (filter №2),
+     mauve 285/22% (output / spare). */
+  .b-lfo    { --bh: 15;  --bs: 45%; }  /* muted rust   */
+  .b-osc    { --bh: 30;  --bs: 48%; }  /* muted orange */
+  .b-filter { --bh: 120; --bs: 30%; }  /* muted green  */
+  .b-env    { --bh: 190; --bs: 40%; }  /* muted cyan   */
+  .b-fx     { --bh: 215; --bs: 35%; }  /* muted blue   */
+  .monoband .group h2 { background: hsl(var(--mbh), 60%, 54%); }
+  /* SUBGROUPS (1.3 verdict): label + spacing ONLY — "label only" won; the
+     hairline/boxed variants are retired. EVERY subgroup is labeled, even a
+     lone one ("Amplitude", "Lowpass"), so slider tops stay uniform panel-wide. */
+  .subs { display: flex; gap: 1.1em; align-items: flex-start; }
+  .sub { display: flex; flex-direction: column; align-items: center; gap: .3em; }
+  .sub .sl { font-size: .62em; letter-spacing: .12em; text-transform: uppercase;
+             color: var(--ink-dim); }
+  /* SPECULATIVE = dashed at any level (group or subgroup) + † */
+  .group.spec { border-style: dashed; border-color: hsl(220, 8%, 40%); }
+  .sub.spec { border: 1px dashed hsl(220, 8%, 40%); border-radius: .4em;
+              padding: .25em .45em .4em; }
+  .group.spec h2::after, .sub.spec .sl::after { content: ' †'; }
+
+  /* controls dimmed as INERT at the current settings (e.g. Vowel outside Choir) */
+  .vsl.inert, .knobw.inert, .rsww.inert { opacity: .35; pointer-events: none; }
+
+  /* ---- vertical slider (locked spec: wide cap, uniform ticks, --tgap) ---- */
+  /* TOP-aligned so sliders start a uniform distance below every band, even
+     next to a taller rotary stack; centering now comes from .group/.subs */
+  .bank { display: flex; gap: var(--tgap); align-items: flex-start; }
+  /* rotary switches STACK vertically within a cluster */
+  .rstack { display: flex; flex-direction: column; gap: .35em; align-items: center; }
+  .vsl { display: flex; flex-direction: column; align-items: center; gap: .16em; }
+  .vslider { position: relative; width: 1.8em; height: 7.4em; cursor: pointer; touch-action: none; }
+  .vslider .slot { position: absolute; left: 50%; transform: translateX(-50%);
+                   top: 0; bottom: 0; width: .3em; border-radius: .15em; background: var(--slot);
+                   box-shadow: inset 0 1px 3px rgba(0,0,0,.7), inset 0 -1px 0 var(--panel-hi); }
+  .vslider .ticks { position: absolute; top: .42em; bottom: .42em; width: calc(50% - .15em);
+                    display: flex; flex-direction: column-reverse; justify-content: space-between; }
+  .vslider .ticks.l { left: 0; }
+  .vslider .ticks.r { right: 0; }
+  .vslider .ticks i { display: block; width: 100%; height: 1px; background: var(--tick); }
+  .vslider .ticks i.maj { height: 2px; background: var(--tick-maj); }
+  .vslider .cap { position: absolute; left: 50%; transform: translateX(-50%);
+                  width: 1.62em; height: .92em; border-radius: .13em;
+                  bottom: calc(var(--val, .5) * (100% - .92em));
+                  background: linear-gradient(180deg, var(--cap-a), var(--cap-b) 46%, var(--cap-c));
+                  border: 1px solid hsl(220,8%,12%);
+                  box-shadow: 0 2px 4px rgba(0,0,0,.55), inset 0 1px 0 hsla(0,0%,100%,.22); }
+  .vslider .cap::after { content: ''; position: absolute; left: 6%; right: 6%; top: 50%;
+                         height: 1.5px; margin-top: -.75px; background: hsl(220, 15%, 92%); }
+  .vsl .bl { font-size: .72em; color: var(--ink); letter-spacing: .03em; }
+  .vsl .ro { font-size: .7em; color: var(--ro); font-variant-numeric: tabular-nums;
+             width: 5.5ch; text-align: center; min-height: 1.2em; }
+
+  /* ---- knobs (± detented params) ---- */
+  .knobrow { display: flex; gap: 1em; align-items: flex-end; }
+  .knobw { display: flex; flex-direction: column; align-items: center; gap: .22em;
+           position: relative; --kd: 3.1em; }
+  .knob { width: var(--kd); height: var(--kd); border-radius: 50%; cursor: ns-resize; touch-action: none;
+          background: radial-gradient(circle at 32% 28%, hsl(220,6%,34%), hsl(220,8%,15%) 72%);
+          border: 1px solid hsl(220,8%,10%);
+          box-shadow: 0 3px 7px rgba(0,0,0,.55), inset 0 1px 1px hsla(0,0%,100%,.14); }
+  .knob .face { position: relative; width: 100%; height: 100%; border-radius: 50%;
+                transform: rotate(var(--rot, 0deg)); }
+  .knob .face::after { content: ''; position: absolute; left: 50%; top: 8%; width: 2.5px; height: 32%;
+                       transform: translateX(-50%); border-radius: 2px; background: hsl(220, 15%, 92%); }
+  .knobw .ring { display: none; }
+  .arcs .knobw .ring { display: block; position: absolute; top: calc(var(--kd) * -0.08);
+                       width: calc(var(--kd) * 1.16); height: calc(var(--kd) * 1.16);
+                       border-radius: 50%; pointer-events: none;
+                       background: conic-gradient(from -135deg,
+                         var(--arc) 0 calc(var(--rot, 0deg) + 135deg),
+                         hsl(220, 9%, calc(var(--pl) - 4%)) calc(var(--rot, 0deg) + 135deg) 270deg,
+                         transparent 270deg);
+                       -webkit-mask: radial-gradient(circle, transparent 0 58%, #000 59% 72%, transparent 73%);
+                       mask: radial-gradient(circle, transparent 0 58%, #000 59% 72%, transparent 73%); }
+  .knobw .bl { font-size: .7em; color: var(--ink); letter-spacing: .03em; }
+  .kval { font-size: .7em; color: var(--ro); font-variant-numeric: tabular-nums;
+          width: 5.5ch; text-align: center; }
+
+  /* ---- rotary switches (3–5-way enums) ----
+     Tervik-1.1 verdict applied skin-wide: more breathing room (esp. right)
+     + larger position labels */
+  .rsww { display: flex; flex-direction: column; align-items: center; gap: .2em;
+          --kd: 2.3em; padding: .8em 1.7em .1em 1.2em; }
+  .rsww .bl { margin-top: 1.15em; font-size: .7em; color: var(--ink); letter-spacing: .03em; }
+  .rswitch { width: var(--kd); height: var(--kd); border-radius: 50%; cursor: pointer; touch-action: none;
+             position: relative;
+             background: radial-gradient(circle at 32% 28%, hsl(220,6%,34%), hsl(220,8%,15%) 72%);
+             border: 1px solid hsl(220,8%,10%);
+             box-shadow: 0 3px 7px rgba(0,0,0,.55), inset 0 1px 1px hsla(0,0%,100%,.14); }
+  .rswitch .face { position: absolute; inset: 0; border-radius: 50%;
+                   transform: rotate(var(--rot, 0deg)); }
+  .rswitch .face::after { content: ''; position: absolute; left: 50%; top: 6%; width: 2.5px; height: 38%;
+                          transform: translateX(-50%); border-radius: 2px; background: hsl(220, 15%, 92%); }
+  .rswitch .ptick { position: absolute; inset: 0; transform: rotate(var(--a)); pointer-events: none; }
+  .rswitch .ptick::before { content: ''; position: absolute; left: calc(50% - 1px); top: -.3em;
+                            width: 2px; height: .22em; background: var(--tick-maj); }
+  .rswitch .ptick.on::before { background: var(--ro); }
+  .rswitch .plab { position: absolute; font-size: .66em; color: var(--ink-dim);
+                   transform: translate(-50%, -50%); white-space: nowrap;
+                   pointer-events: none; letter-spacing: .02em; }
+  .rswitch .plab.on { color: var(--ro); }
+
+  /* the editable-window input */
+  .ro input.edit, .kval input.edit {
+    width: 100%; font: inherit; color: var(--ro); background: hsl(220, 10%, 10%);
+    border: 1px solid var(--ro); border-radius: 2px; text-align: center;
+    padding: 0; outline: none; }
+  footer { max-width: 1160px; margin: .8rem auto 0; font-size: .72rem; color: var(--ink-dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Exhibit — Padlington 1.3</h1>
+  <p class="blurb">1.3 — the production-target look: canonical order (Oscillator → Filter → Envelope → Effects;
+    the LFO slot stays reserved but hidden), <b>hue = role</b>, boxed fieldset groups with centered legend tabs,
+    and <b>"label only" subgroup chrome LOCKED</b> — every subgroup carries a label, even a lone one
+    (<b>Amplitude</b>, <b>Lowpass</b>), which is what keeps slider tops uniform across the panel. Speculative
+    elements removed for now. Defaults: Panel 20 / Tick gap 10 / Size 125 (all still live dials).
+    <b>Turn Source to Choir/Tilt</b> for the live inert rule.</p>
+  <div class="meta">
+    <label>Panel <input type="range" id="mPanel" min="14" max="34" value="20"><span class="mv" id="mPanelV"></span></label>
+    <label>Tick gap <input type="range" id="mTgap" min="4" max="50" value="10"><span class="mv" id="mTgapV"></span></label>
+    <label>Bands <select id="mBands">
+      <option value="spectrum" selected>spectrum (muted)</option>
+      <option value="single">single hue</option></select></label>
+    <label>Band hue <input type="range" id="mBand" min="20" max="300" value="28"><span class="mv" id="mBandV"></span></label>
+    <label>Size <input type="range" id="mSize" min="85" max="135" value="125"><span class="mv" id="mSizeV"></span></label>
+    <a href="index.html">← gallery</a>
+  </div>
+</header>
+
+<div class="panetop">
+  <span class="swatch"></span><span>Lane 3</span>
+  <span class="kind">Padlington</span><span class="desc">PadSynth wavetable pad</span>
+  <span class="patch">Init*</span>
+</div>
+<main class="panel arcs">
+  <!-- canonical order: (LFO slot reserved, none yet) → Oscillator → Filter →
+       Envelope → Effects. EVERY subgroup gets a label, even a lone one —
+       that's what keeps slider tops uniform across the whole panel. -->
+  <section class="group b-osc">
+    <h2>Oscillator</h2>
+    <div class="subs">
+      <div class="sub"><span class="sl">Source</span>
+        <div class="bank">
+          <div class="rstack">
+            <div class="rsww">
+              <div class="rswitch" id="swSource" data-opts="Saw,Sqr,Choir,Tilt" data-idx="0" data-name="Source"><div class="face"></div></div>
+              <span class="bl">Source</span>
+            </div>
+            <div class="rsww" id="wVowel">
+              <div class="rswitch" data-opts="ooh,oh,ah,eh,ee" data-idx="2" data-name="Vowel"><div class="face"></div></div>
+              <span class="bl">Vowel</span>
+            </div>
+          </div>
+          <div class="vsl" id="wSize"><div class="vslider" data-val=".4" data-fmt="siz" data-name="Size (vocal tract; Choir only)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Size</span><span class="ro"></span></div>
+          <div class="vsl" id="wTilt"><div class="vslider" data-val=".4" data-fmt="tl" data-name="Tilt (rolloff exponent; Tilt only)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Tilt</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".75" data-fmt="hm" data-name="Harmonics (bake count)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Harm</span><span class="ro"></span></div>
+        </div>
+      </div>
+      <div class="sub"><span class="sl">Pad</span>
+        <div class="bank">
+          <div class="vsl"><div class="vslider" data-val=".208" data-fmt="ct2" data-name="Bandwidth (the lushness, cents)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">BW</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".5" data-fmt="bws" data-name="BW Scale (smear growth up the series)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Scale</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".5" data-detent=".5" data-fmt="st" data-name="Stretch (inharmonicity — the Sethares knob; BIPOLAR, center detent)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Stretch</span><span class="ro"></span></div>
+        </div>
+      </div>
+      <div class="sub"><span class="sl">Pitch</span>
+        <div class="bank">
+          <div class="vsl"><div class="vslider" data-val=".5" data-detent=".5" data-fmt="ct" data-name="Pitch Atk (± = from above/below; BIPOLAR, center detent)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Atk</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".497" data-fmt="ms" data-name="Pitch Time (settle)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Time</span><span class="ro"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="group b-filter">
+    <h2>Filter</h2>
+    <div class="subs">
+      <div class="sub"><span class="sl">Lowpass</span>
+        <div class="bank">
+          <div class="vsl"><div class="vslider" data-val=".854" data-fmt="hz" data-name="Cutoff"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Cut</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val="0" data-fmt="q" data-name="Resonance"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Res</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val="0" data-fmt="oct" data-name="Env Amount"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Env</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".3" data-fmt="pct" data-name="Key Track"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Key</span><span class="ro"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="group b-env">
+    <h2>Envelope</h2>
+    <div class="subs">
+      <div class="sub"><span class="sl">Amplitude</span>
+        <div class="bank">
+          <div class="vsl"><div class="vslider" data-val=".698" data-fmt="ms" data-name="Attack"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">A</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".812" data-fmt="ms" data-name="Decay"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">D</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".9" data-fmt="pct" data-name="Sustain"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">S</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".835" data-fmt="ms" data-name="Release"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">R</span><span class="ro"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="group b-fx">
+    <h2>Effects</h2>
+    <div class="subs">
+      <div class="sub"><span class="sl">Stereo</span>
+        <div class="bank">
+          <div class="vsl"><div class="vslider" data-val=".7" data-fmt="pct" data-name="Width (read-head spread)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Width</span><span class="ro"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+<footer>future/ui_skin exhibit — Padlington in the composite skin. Dblclick values to type; wheel = coarse, tilt = fine; Source drives the inert dimming.</footer>
+
+<script>
+// Exhibit wiring — throwaway, not product code.
+(function () {
+  const $ = (s, r) => Array.from((r || document).querySelectorAll(s));
+
+  const FMT = {
+    ms:  t => { const s = 0.001 * Math.pow(3000, t) * 1.5; return s < 1 ? Math.round(s * 1000) + ' ms' : s.toFixed(2) + ' s'; },
+    pct: t => Math.round(t * 100) + '%',
+    hz:  t => { const h = Math.round(120 * Math.pow(14000 / 120, t)); return h >= 1000 ? (h / 1000).toFixed(1) + ' kHz' : h + ' Hz'; },
+    q:   t => 'Q ' + (0.5 + t * 17.5).toFixed(1),
+    oct: t => (t * 4).toFixed(2) + ' oct',
+    ct:  t => { const c = Math.round(-200 + t * 400); return c === 0 ? 'off' : (c > 0 ? '+' : '−') + Math.abs(c) + ' ¢'; },
+    ct2: t => Math.max(1, Math.round(t * 120)) + ' ¢',
+    st:  t => { const s = -0.05 + t * 0.1; return Math.abs(s) < 0.00005 ? 'harmonic' : (s > 0 ? '+' : '−') + Math.abs(s).toFixed(3); },
+    siz: t => '×' + (0.8 + t * 0.5).toFixed(2),
+    tl:  t => '1/k^' + (0.5 + t * 2.5).toFixed(2),
+    hm:  t => Math.round(8 * Math.pow(16, t)) + ' harmonics',
+    bws: t => 'k^' + (t * 2).toFixed(2),
+    lhz: t => { const h = 0.05 * Math.pow(400, t); return (h < 1 ? h.toFixed(2) : h.toFixed(1)) + ' Hz'; },
+  };
+  const FMTC = {
+    ms:  t => { const s = 0.001 * Math.pow(3000, t) * 1.5; return s < 1 ? String(Math.round(s * 1000)) : s.toFixed(2) + 's'; },
+    pct: t => String(Math.round(t * 100)),
+    hz:  t => { const h = Math.round(120 * Math.pow(14000 / 120, t)); return h >= 1000 ? (h / 1000).toFixed(1) + 'k' : String(h); },
+    q:   t => (0.5 + t * 17.5).toFixed(1),
+    oct: t => (t * 4).toFixed(2),
+    ct:  t => { const c = Math.round(-200 + t * 400); return c === 0 ? '0' : (c > 0 ? '+' : '−') + Math.abs(c); },
+    ct2: t => String(Math.max(1, Math.round(t * 120))),
+    st:  t => { const s = -0.05 + t * 0.1; return Math.abs(s) < 0.00005 ? '0' : (s > 0 ? '+' : '−') + Math.abs(s).toFixed(3).replace(/^0/, ''); },
+    siz: t => (0.8 + t * 0.5).toFixed(2),
+    tl:  t => (0.5 + t * 2.5).toFixed(2),
+    hm:  t => String(Math.round(8 * Math.pow(16, t))),
+    bws: t => (t * 2).toFixed(2),
+    lhz: t => { const h = 0.05 * Math.pow(400, t); return h < 1 ? h.toFixed(2) : h.toFixed(1); },
+  };
+  const num = (s) => { const v = parseFloat(String(s).replace(/[^\d.eE+-]/g, ' ')); return isFinite(v) ? v : null; };
+  const PARSE = {
+    ms:  (s) => { let v = num(s); if (v == null) return null; if (/(^|\d)\s*s\s*$/i.test(s) && !/ms\s*$/i.test(s)) v *= 1000; const sec = v / 1000; return Math.log(Math.max(sec, 0.0015) / 0.0015) / Math.log(3000); },
+    pct: (s) => { const v = num(s); return v == null ? null : v / 100; },
+    hz:  (s) => { let v = num(s); if (v == null) return null; if (/k/i.test(s)) v *= 1000; return Math.log(Math.max(v, 120) / 120) / Math.log(14000 / 120); },
+    q:   (s) => { const v = num(s); return v == null ? null : (v - 0.5) / 17.5; },
+    oct: (s) => { const v = num(s); return v == null ? null : v / 4; },
+    ct:  (s) => { const v = /^\s*(off|0)\s*$/i.test(s) ? 0 : num(s); return v == null ? null : (v + 200) / 400; },
+    ct2: (s) => { const v = num(s); return v == null ? null : v / 120; },
+    st:  (s) => { const v = /harmonic/i.test(s) ? 0 : num(s); return v == null ? null : (v + 0.05) / 0.1; },
+    siz: (s) => { const v = num(s); return v == null ? null : (v - 0.8) / 0.5; },
+    tl:  (s) => { const v = num(s); return v == null ? null : (v - 0.5) / 2.5; },
+    hm:  (s) => { const v = num(s); return v == null ? null : Math.log(Math.max(v, 8) / 8) / Math.log(16); },
+    bws: (s) => { const v = num(s); return v == null ? null : v / 2; },
+    lhz: (s) => { const v = num(s); return v == null ? null : Math.log(Math.max(v, 0.05) / 0.05) / Math.log(400); },
+  };
+
+  // 11-tick ladders (majors at 0/5/10 by thickness).
+  $('.vslider .ticks').forEach((tk) => {
+    for (let i = 0; i < 11; i++) {
+      const m = document.createElement('i');
+      if (i % 5 === 0) m.className = 'maj';
+      tk.append(m);
+    }
+  });
+
+  const editable = (el, fmtKey, getT, setT) => {
+    if (!el || !PARSE[fmtKey]) return;
+    el.addEventListener('dblclick', () => {
+      if (el.querySelector('input')) return;
+      const old = el.textContent;
+      const inp = document.createElement('input');
+      inp.className = 'edit';
+      inp.value = old;
+      el.textContent = '';
+      el.append(inp);
+      inp.focus();
+      inp.select();
+      let done = false;
+      const finish = (commit) => {
+        if (done) return;
+        done = true;
+        const t = commit ? PARSE[fmtKey](inp.value) : null;
+        inp.remove();
+        if (t != null) setT(Math.min(1, Math.max(0, t)));
+        else el.textContent = old;
+      };
+      inp.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+      });
+      inp.addEventListener('blur', () => finish(true));
+    });
+  };
+
+  const nudgeWheel = (el, step) => {
+    el.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      if (e.deltaY) step(e.deltaY < 0 ? 1 : -1, false);
+      if (e.deltaX) step(e.deltaX > 0 ? 1 : -1, true);
+    }, { passive: false });
+  };
+
+  // Vertical sliders — incl. BIPOLAR ones (data-detent): dragging snaps near
+  // the center; typed entry bypasses the detent (the Tervik-Fine lesson).
+  $('.vslider').forEach((fd) => {
+    let v = +fd.dataset.val || 0;
+    const fmt = fd.dataset.fmt || 'pct';
+    const name = fd.dataset.name || '';
+    const detent = fd.dataset.detent != null ? +fd.dataset.detent : null;
+    const out = fd.parentElement.querySelector('.ro');
+    const sync = () => {
+      fd.style.setProperty('--val', v);
+      if (out && !out.querySelector('input')) out.textContent = FMTC[fmt](v);
+      const tip = name + ' — ' + FMT[fmt](v);
+      fd.title = tip;
+      if (out) out.title = tip + ' (double-click to type)';
+    };
+    fd.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); // stop native drag/pan from hijacking a held slide
+      fd.setPointerCapture(e.pointerId);
+      const r = fd.getBoundingClientRect();
+      const move = (ev) => {
+        v = Math.min(1, Math.max(0, 1 - (ev.clientY - r.top) / r.height));
+        if (detent != null && Math.abs(v - detent) < 0.035) v = detent;
+        sync();
+      };
+      move(e);
+      fd.addEventListener('pointermove', move);
+      fd.addEventListener('pointerup', () => fd.removeEventListener('pointermove', move), { once: true });
+    });
+    fd.addEventListener('dblclick', () => { if (detent != null) { v = detent; sync(); } });
+    nudgeWheel(fd, (dir, fine) => {
+      v = Math.min(1, Math.max(0, v + dir * (fine ? 0.005 : 0.04)));
+      if (detent != null && Math.abs(v - detent) < 0.015) v = detent;
+      sync();
+    });
+    editable(out, fmt, () => v, (t) => { v = t; sync(); }); // typed = exact, no snap
+    sync();
+  });
+
+  $('.knob').forEach((kn) => {
+    const min = +kn.dataset.min, max = +kn.dataset.max;
+    const detent = kn.dataset.detent != null ? +kn.dataset.detent : null;
+    const fmt = kn.dataset.fmt || 'pct';
+    const name = kn.dataset.name || '';
+    const holder = kn.parentElement;
+    const out = holder.querySelector('.kval');
+    let val = +kn.dataset.val;
+    const sync = () => {
+      const t = (val - min) / (max - min);
+      holder.style.setProperty('--rot', (t * 270 - 135) + 'deg');
+      if (out && !out.querySelector('input')) out.textContent = FMTC[fmt](t);
+      const tip = name + ' — ' + FMT[fmt](t);
+      kn.title = tip;
+      if (out) out.title = tip + ' (double-click to type)';
+    };
+    kn.addEventListener('pointerdown', (e) => {
+      kn.setPointerCapture(e.pointerId);
+      const y0 = e.clientY, v0 = val;
+      const move = (ev) => {
+        val = Math.min(max, Math.max(min, v0 + ((y0 - ev.clientY) / 140) * (max - min)));
+        if (detent != null && Math.abs(val - detent) < (max - min) * 0.035) val = detent;
+        sync();
+      };
+      kn.addEventListener('pointermove', move);
+      kn.addEventListener('pointerup', () => kn.removeEventListener('pointermove', move), { once: true });
+    });
+    kn.addEventListener('dblclick', () => { if (detent != null) { val = detent; sync(); } });
+    nudgeWheel(kn, (dir, fine) => {
+      val = Math.min(max, Math.max(min, val + dir * (max - min) * (fine ? 0.005 : 0.03)));
+      if (detent != null && Math.abs(val - detent) < (max - min) * 0.015) val = detent;
+      sync();
+    });
+    editable(out, fmt, () => (val - min) / (max - min), (t) => { val = min + t * (max - min); sync(); });
+    sync();
+  });
+
+  // Rotary switches with position labels; each dispatches 'change' so the
+  // exhibit can drive the INERT dimming off Source.
+  $('.rswitch').forEach((sw) => {
+    const opts = (sw.dataset.opts || '').split(',');
+    const n = opts.length;
+    let idx = Math.min(n - 1, Math.max(0, +sw.dataset.idx || 0));
+    const ticks = [], labs = [];
+    for (let i = 0; i < n; i++) {
+      const a = -135 + (i * 270) / (n - 1);
+      const p = document.createElement('i');
+      p.className = 'ptick';
+      p.style.setProperty('--a', a + 'deg');
+      sw.append(p);
+      ticks.push(p);
+      const l = document.createElement('span');
+      l.className = 'plab';
+      l.textContent = opts[i];
+      const rad = ((a - 180) * Math.PI) / 180;
+      l.style.left = (50 - Math.sin(rad) * 86) + '%';
+      l.style.top = (50 + Math.cos(rad) * 86) + '%';
+      sw.append(l);
+      labs.push(l);
+    }
+    const sync = (fire) => {
+      sw.style.setProperty('--rot', (-135 + (idx * 270) / (n - 1)) + 'deg');
+      ticks.forEach((p, i) => p.classList.toggle('on', i === idx));
+      labs.forEach((l, i) => l.classList.toggle('on', i === idx));
+      sw.dataset.cur = opts[idx];
+      sw.title = (sw.dataset.name || '') + ' — ' + opts[idx];
+      if (fire) sw.dispatchEvent(new CustomEvent('change'));
+    };
+    sw.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      sw.setPointerCapture(e.pointerId);
+      const y0 = e.clientY, i0 = idx;
+      let moved = false;
+      const move = (ev) => {
+        const d = Math.round((y0 - ev.clientY) / 24);
+        if (d !== 0) moved = true;
+        idx = Math.min(n - 1, Math.max(0, i0 + d));
+        sync(true);
+      };
+      sw.addEventListener('pointermove', move);
+      sw.addEventListener('pointerup', () => {
+        sw.removeEventListener('pointermove', move);
+        if (!moved) { idx = (idx + 1) % n; sync(true); }
+      }, { once: true });
+    });
+    nudgeWheel(sw, (dir) => { idx = Math.min(n - 1, Math.max(0, idx + dir)); sync(true); });
+    sync(false);
+  });
+
+  // Belt-and-suspenders for the canvas-drag bug: never let native HTML drag start.
+  document.addEventListener('dragstart', (e) => e.preventDefault());
+
+  // The live INERT rule: Vowel/Size follow Choir, Tilt follows Tilt.
+  const srcSw = document.getElementById('swSource');
+  const dim = () => {
+    const s = srcSw.dataset.cur;
+    document.getElementById('wVowel').classList.toggle('inert', s !== 'Choir');
+    document.getElementById('wSize').classList.toggle('inert', s !== 'Choir');
+    document.getElementById('wTilt').classList.toggle('inert', s !== 'Tilt');
+  };
+  srcSw.addEventListener('change', dim);
+  dim();
+
+  // Meta strip.
+  const root = document.documentElement;
+  const RO = { amber: 'hsl(41, 100%, 62%)', green: 'hsl(120, 75%, 58%)', cyan: 'hsl(185, 85%, 60%)' };
+  const wire = (id, fn) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const mv = document.getElementById(id + 'V'); // numeric readout, if present
+    const go = () => {
+      const v = el.type === 'checkbox' ? el.checked : el.value;
+      if (mv) mv.textContent = v;
+      fn(v);
+    };
+    el.addEventListener('input', go);
+    el.addEventListener('change', go);
+    go();
+  };
+  wire('mPanel', (v) => root.style.setProperty('--pl', v + '%'));
+  wire('mTgap', (v) => root.style.setProperty('--tgap', (v / 100) + 'em'));
+  wire('mBands', (v) => {
+    document.querySelector('.panel').classList.toggle('monoband', v === 'single');
+  });
+  wire('mBand', (v) => root.style.setProperty('--mbh', v));
+  wire('mSize', (v) => { document.querySelector('.panel').style.fontSize = (14 * v / 100) + 'px'; });
+})();
+</script>
+</body>
+</html>

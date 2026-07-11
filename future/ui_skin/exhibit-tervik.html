@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Exhibit — Tervik 1.1</title>
+<style>
+  /* ============ INSTRUMENT EXHIBIT — Tervik (3-op FM) ============
+     The Padlington-1.3 skin applied to Tervik, with the big structural
+     experiment: ENVELOPES EXTRACTED out of the operator groups into a
+     separate Envelope section (the trad-synth "EG section over here" move).
+     The old Follow checkboxes are replaced by COPY buttons ("1 → 2",
+     "1 → 3"): push to copy Env 1's settings; the target flashes. Canonical
+     order — Tervik has no Filter/Effects, so the spectrum simply has gaps
+     (hue = role).
+     1.1: WIDE SLIDERS won the envelope trial (narrow/knob variants
+     retired); rotary switch got breathing room + larger position labels
+     (DEFERRED: numbered-op-box + line algorithm diagrams); fixed the
+     held-drag-hijacks-the-canvas bug (preventDefault + dragstart block).
+     Retained design exhibit — self-contained, not product code. */
+  :root {
+    --pl: 20%; --ro: hsl(41, 100%, 62%); --glow: .7; --tgap: .10em; --mbh: 28;
+    --acc: hsl(358, 78%, 56%);
+    --arc: hsl(200, 70%, 55%);
+    --panel: hsl(220, 7%, var(--pl));
+    --panel-hi: hsl(220, 7%, calc(var(--pl) + 6%));
+    --panel-lo: hsl(220, 8%, calc(var(--pl) - 6%));
+    --ink: hsl(220, 12%, 88%);
+    --ink-dim: hsl(220, 8%, 62%);
+    --slot: hsl(222, 10%, calc(var(--pl) - 10%));
+    --tick: hsl(220, 8%, calc(var(--pl) + 26%));
+    --tick-maj: hsl(220, 8%, calc(var(--pl) + 38%));
+    --cap-a: hsl(220, 6%, 42%);
+    --cap-b: hsl(220, 7%, 20%);
+    --cap-c: hsl(220, 8%, 30%);
+    --boxln: hsl(220, 8%, calc(var(--pl) + 16%));
+  }
+  * { box-sizing: border-box; margin: 0; user-select: none; font-weight: 400; }
+  body { background: hsl(220, 7%, calc(var(--pl) - 7%)); color: var(--ink);
+         font: 14px/1.4 Tahoma, "Segoe UI", system-ui, sans-serif; padding: 1.2rem; }
+  header { max-width: 1160px; margin: 0 auto 1rem; }
+  h1 { font-size: 1.25rem; letter-spacing: .05em; }
+  .blurb { color: var(--ink-dim); font-size: .85rem; margin-top: .15rem; }
+  .meta { display: flex; flex-wrap: wrap; gap: .4rem 1rem; align-items: center; margin-top: .7rem;
+          font-size: .78rem; color: var(--ink-dim); background: var(--panel-lo);
+          border: 1px solid var(--panel-hi); border-radius: 6px; padding: .45rem .8rem; }
+  .meta label { display: flex; align-items: center; gap: .4rem; }
+  .meta input[type="range"] { width: 70px; accent-color: var(--acc); }
+  .meta .mv { color: var(--ro); font-variant-numeric: tabular-nums;
+              min-width: 3ch; text-align: right; }
+  .meta select { background: var(--panel); color: var(--ink); border: 1px solid var(--panel-hi);
+                 border-radius: 3px; padding: .12rem .25rem; font-size: .95em; }
+  .meta a { color: var(--ink-dim); margin-left: auto; }
+
+  .panetop { max-width: 1160px; margin: 0 auto; font-size: 14px;
+             display: flex; align-items: center; gap: .8em;
+             background: var(--panel-lo); border: 1px solid var(--panel-hi);
+             border-radius: 8px 8px 0 0; border-bottom: 0; padding: .45em .9em;
+             color: var(--ink-dim); font-size: .82rem; }
+  .panetop .swatch { width: .85em; height: .85em; border-radius: 3px; background: hsl(206, 55%, 52%); }
+  .panetop .kind { color: var(--ink); }
+  .panetop .desc { font-size: .88em; }
+  .panetop .patch { margin-left: auto; color: var(--ro); font-size: .9em; }
+  .panel { max-width: 1160px; margin: 0 auto; font-size: 14px;
+           background: var(--panel);
+           border: 1px solid var(--panel-hi); border-radius: 0 0 10px 10px;
+           box-shadow: 0 8px 30px rgba(0,0,0,.35), inset 0 1px 0 var(--panel-hi);
+           padding: 1.1em 1em 1em; display: flex; flex-wrap: wrap; gap: 1.7em 1.3em; align-items: flex-start; }
+
+  /* BOXED groups: fieldset frame, band = legend tab centered on the border */
+  .group { display: flex; flex-direction: column; align-items: center;
+           border: 1px solid var(--boxln); border-radius: .5em;
+           padding: 0 .7em .6em; }
+  .group h2 { font-size: .72em; letter-spacing: .14em; text-transform: uppercase;
+              color: hsl(220, 30%, 10%); background: hsl(var(--bh, 28), var(--bs, 60%), 54%);
+              padding: .26em .6em; border-radius: .22em;
+              align-self: center; margin: -.95em 0 .5em; position: relative;
+              box-shadow: -.4em 0 0 var(--panel), .4em 0 0 var(--panel); }
+  /* hue = ROLE (locked): Tervik has no LFO/Filter/Effects → spectrum gaps */
+  .b-lfo    { --bh: 15;  --bs: 45%; }  /* muted rust   */
+  .b-osc    { --bh: 30;  --bs: 48%; }  /* muted orange */
+  .b-filter { --bh: 120; --bs: 30%; }  /* muted green  */
+  .b-env    { --bh: 190; --bs: 40%; }  /* muted cyan   */
+  .b-fx     { --bh: 215; --bs: 35%; }  /* muted blue   */
+  .monoband .group h2 { background: hsl(var(--mbh), 60%, 54%); }
+
+  /* SUBGROUPS: label-only chrome (locked); EVERY subgroup labeled.
+     .slrow is the uniform-height label row (it can also hold a copy button). */
+  .subs { display: flex; gap: 1.1em; align-items: flex-start; }
+  .sub { display: flex; flex-direction: column; align-items: center; gap: .3em;
+         border-radius: .4em; transition: box-shadow .55s; }
+  .sub.flash { box-shadow: 0 0 0 2px var(--ro), 0 0 14px 2px hsla(41, 100%, 62%, .35);
+               transition: none; }
+  .slrow { display: flex; gap: .6em; align-items: center; height: 1.1em; }
+  .sl { font-size: .62em; letter-spacing: .12em; text-transform: uppercase;
+        color: var(--ink-dim); }
+  /* the envelope COPY button (replaces the old Follow checkboxes) */
+  .cpy { font: inherit; font-size: .6em; line-height: 1.1; color: var(--ink);
+         letter-spacing: .06em; cursor: pointer; padding: .1em .5em;
+         background: linear-gradient(180deg, var(--panel-hi), var(--panel-lo));
+         border: 1px solid hsl(220, 8%, 12%); border-radius: .3em;
+         box-shadow: 0 1px 2px rgba(0,0,0,.4), inset 0 1px 0 hsla(0,0%,100%,.12); }
+  .cpy:active { transform: translateY(1px); box-shadow: 0 0 1px rgba(0,0,0,.4); }
+
+  /* ---- vertical slider (locked spec) — width stays a variable
+     (--slw/--capw) per the keep-everything-parameterized rule ---- */
+  .bank { display: flex; gap: var(--tgap); align-items: flex-start; }
+  .rstack { display: flex; flex-direction: column; gap: .35em; align-items: center; }
+  .vsl { display: flex; flex-direction: column; align-items: center; gap: .16em; }
+  .vslider { position: relative; width: var(--slw, 1.8em); height: 7.4em; cursor: pointer; touch-action: none; }
+  .vslider .slot { position: absolute; left: 50%; transform: translateX(-50%);
+                   top: 0; bottom: 0; width: .3em; border-radius: .15em; background: var(--slot);
+                   box-shadow: inset 0 1px 3px rgba(0,0,0,.7), inset 0 -1px 0 var(--panel-hi); }
+  .vslider .ticks { position: absolute; top: .42em; bottom: .42em; width: calc(50% - .15em);
+                    display: flex; flex-direction: column-reverse; justify-content: space-between; }
+  .vslider .ticks.l { left: 0; }
+  .vslider .ticks.r { right: 0; }
+  .vslider .ticks i { display: block; width: 100%; height: 1px; background: var(--tick); }
+  .vslider .ticks i.maj { height: 2px; background: var(--tick-maj); }
+  .vslider .cap { position: absolute; left: 50%; transform: translateX(-50%);
+                  width: var(--capw, 1.62em); height: .92em; border-radius: .13em;
+                  bottom: calc(var(--val, .5) * (100% - .92em));
+                  background: linear-gradient(180deg, var(--cap-a), var(--cap-b) 46%, var(--cap-c));
+                  border: 1px solid hsl(220,8%,12%);
+                  box-shadow: 0 2px 4px rgba(0,0,0,.55), inset 0 1px 0 hsla(0,0%,100%,.22); }
+  .vslider .cap::after { content: ''; position: absolute; left: 6%; right: 6%; top: 50%;
+                         height: 1.5px; margin-top: -.75px; background: hsl(220, 15%, 92%); }
+  .vsl .bl { font-size: .72em; color: var(--ink); letter-spacing: .03em; }
+  .vsl .ro { font-size: .7em; color: var(--ro); font-variant-numeric: tabular-nums;
+             width: 5.5ch; text-align: center; min-height: 1.2em; }
+
+  /* ---- rotary switch (Algorithm) ----
+     1.1 verdict: more breathing room (esp. right, where Pair/Par labels
+     live) + larger position labels. DEFERRED: replace the position labels
+     with classic numbered-operator-box + connection-line algorithm diagrams. */
+  .rsww { display: flex; flex-direction: column; align-items: center; gap: .2em;
+          --kd: 2.3em; padding: .8em 1.7em .1em 1.2em; }
+  .rsww .bl { margin-top: 1.15em; font-size: .7em; color: var(--ink); letter-spacing: .03em; }
+  .rswitch { width: var(--kd); height: var(--kd); border-radius: 50%; cursor: pointer; touch-action: none;
+             position: relative;
+             background: radial-gradient(circle at 32% 28%, hsl(220,6%,34%), hsl(220,8%,15%) 72%);
+             border: 1px solid hsl(220,8%,10%);
+             box-shadow: 0 3px 7px rgba(0,0,0,.55), inset 0 1px 1px hsla(0,0%,100%,.14); }
+  .rswitch .face { position: absolute; inset: 0; border-radius: 50%;
+                   transform: rotate(var(--rot, 0deg)); }
+  .rswitch .face::after { content: ''; position: absolute; left: 50%; top: 6%; width: 2.5px; height: 38%;
+                          transform: translateX(-50%); border-radius: 2px; background: hsl(220, 15%, 92%); }
+  .rswitch .ptick { position: absolute; inset: 0; transform: rotate(var(--a)); pointer-events: none; }
+  .rswitch .ptick::before { content: ''; position: absolute; left: calc(50% - 1px); top: -.3em;
+                            width: 2px; height: .22em; background: var(--tick-maj); }
+  .rswitch .ptick.on::before { background: var(--ro); }
+  .rswitch .plab { position: absolute; font-size: .66em; color: var(--ink-dim);
+                   transform: translate(-50%, -50%); white-space: nowrap;
+                   pointer-events: none; letter-spacing: .02em; }
+  .rswitch .plab.on { color: var(--ro); }
+
+  .ro input.edit {
+    width: 100%; font: inherit; color: var(--ro); background: hsl(220, 10%, 10%);
+    border: 1px solid var(--ro); border-radius: 2px; text-align: center;
+    padding: 0; outline: none; }
+  footer { max-width: 1160px; margin: .8rem auto 0; font-size: .72rem; color: var(--ink-dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Exhibit — Tervik 1.1</h1>
+  <p class="blurb">The 3-op FM instrument with <b>envelopes extracted into their own Envelope section</b>
+    (Env 1 · Env 2 · Env 3) — 1.1: <b>wide sliders won the trial</b> (narrow/knob variants retired). Push
+    <b>1 → 2</b> / <b>1 → 3</b> to copy Env 1's settings (the target flashes). The Algorithm rotary got
+    breathing room + larger position labels; proper <b>numbered-operator-box algorithm diagrams are
+    deferred</b>. Also fixed: a held slider drag can no longer turn into a native canvas drag. No Filter
+    or Effects on this instrument — the spectrum shows its gaps (hue = role).</p>
+  <div class="meta">
+    <label>Panel <input type="range" id="mPanel" min="14" max="34" value="20"><span class="mv" id="mPanelV"></span></label>
+    <label>Tick gap <input type="range" id="mTgap" min="4" max="50" value="10"><span class="mv" id="mTgapV"></span></label>
+    <label>Bands <select id="mBands">
+      <option value="spectrum" selected>spectrum (muted)</option>
+      <option value="single">single hue</option></select></label>
+    <label>Band hue <input type="range" id="mBand" min="20" max="300" value="28"><span class="mv" id="mBandV"></span></label>
+    <label>Size <input type="range" id="mSize" min="85" max="135" value="125"><span class="mv" id="mSizeV"></span></label>
+    <a href="index.html">← gallery</a>
+  </div>
+</header>
+
+<div class="panetop">
+  <span class="swatch"></span><span>Lane 2</span>
+  <span class="kind">Tervik</span><span class="desc">3-op FM</span>
+  <span class="patch">E-Piano*</span>
+</div>
+<main class="panel arcs">
+  <!-- canonical order: (LFO —) → Oscillator → (Filter —) → Envelope → (Effects —) -->
+  <section class="group b-osc">
+    <h2>Oscillator</h2>
+    <div class="subs">
+      <div class="sub"><div class="slrow"><span class="sl">Routing</span></div>
+        <div class="bank">
+          <div class="rsww">
+            <div class="rswitch" data-opts="Stack,Y,Pair,Par" data-idx="2" data-name="Algorithm (operator routing)"><div class="face"></div></div>
+            <span class="bl">Algo</span>
+          </div>
+          <div class="vsl"><div class="vslider" data-val="0" data-fmt="pct" data-name="Feedback (Ops 2 & 3 morph sine → saw)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Fdbk</span><span class="ro"></span></div>
+        </div>
+      </div>
+      <div class="sub"><div class="slrow"><span class="sl">Op 1</span></div>
+        <div class="bank">
+          <div class="vsl"><div class="vslider" data-val=".118" data-steps="18" data-fmt="xr" data-name="Op 1 Coarse ratio (snaps to exact values)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Coarse</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".5" data-detent=".5" data-fmt="fr" data-name="Op 1 Fine ratio offset (BIPOLAR ±1; 0 = exact — typed entry lands exact)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Fine</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".5" data-fmt="pct" data-name="Op 1 Level (carrier volume)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Level</span><span class="ro"></span></div>
+        </div>
+      </div>
+      <div class="sub"><div class="slrow"><span class="sl">Op 2</span></div>
+        <div class="bank">
+          <div class="vsl"><div class="vslider" data-val=".118" data-steps="18" data-fmt="xr" data-name="Op 2 Coarse ratio"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Coarse</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".5" data-detent=".5" data-fmt="fr" data-name="Op 2 Fine ratio offset (BIPOLAR)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Fine</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".5" data-fmt="pct" data-name="Op 2 Level (carrier volume / FM depth)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Level</span><span class="ro"></span></div>
+        </div>
+      </div>
+      <div class="sub"><div class="slrow"><span class="sl">Op 3</span></div>
+        <div class="bank">
+          <div class="vsl"><div class="vslider" data-val=".882" data-steps="18" data-fmt="xr" data-name="Op 3 Coarse ratio (14 = the tine)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Coarse</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".5" data-detent=".5" data-fmt="fr" data-name="Op 3 Fine ratio offset (BIPOLAR)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Fine</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".35" data-fmt="pct" data-name="Op 3 Level (carrier volume / FM depth)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Level</span><span class="ro"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="group b-env" id="gEnv">
+    <h2>Envelope</h2>
+    <div class="subs">
+      <div class="sub" id="env1"><div class="slrow"><span class="sl">Env 1</span></div>
+        <div class="bank">
+          <div class="vsl"><div class="vslider" data-env="1" data-p="a" data-val=".095" data-fmt="ea" data-name="Env 1 attack"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">A</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-env="1" data-p="d" data-val=".816" data-fmt="ed" data-name="Env 1 decay"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">D</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-env="1" data-p="s" data-val="0" data-fmt="pct" data-name="Env 1 sustain"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">S</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-env="1" data-p="r" data-val=".560" data-fmt="er" data-name="Env 1 release"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">R</span><span class="ro"></span></div>
+        </div>
+      </div>
+      <div class="sub" id="env2"><div class="slrow"><span class="sl">Env 2</span><button class="cpy" data-cp="2" title="Copy Env 1's settings to Env 2 (replaces the old Follow checkbox)">1 → 2</button></div>
+        <div class="bank">
+          <div class="vsl"><div class="vslider" data-env="2" data-p="a" data-val=".095" data-fmt="ea" data-name="Env 2 attack"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">A</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-env="2" data-p="d" data-val=".816" data-fmt="ed" data-name="Env 2 decay"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">D</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-env="2" data-p="s" data-val="0" data-fmt="pct" data-name="Env 2 sustain"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">S</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-env="2" data-p="r" data-val=".560" data-fmt="er" data-name="Env 2 release"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">R</span><span class="ro"></span></div>
+        </div>
+      </div>
+      <div class="sub" id="env3"><div class="slrow"><span class="sl">Env 3</span><button class="cpy" data-cp="3" title="Copy Env 1's settings to Env 3">1 → 3</button></div>
+        <div class="bank">
+          <div class="vsl"><div class="vslider" data-env="3" data-p="a" data-val="0" data-fmt="ea" data-name="Env 3 attack (the fast tine)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">A</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-env="3" data-p="d" data-val=".519" data-fmt="ed" data-name="Env 3 decay"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">D</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-env="3" data-p="s" data-val="0" data-fmt="pct" data-name="Env 3 sustain"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">S</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-env="3" data-p="r" data-val=".468" data-fmt="er" data-name="Env 3 release"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">R</span><span class="ro"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+<footer>future/ui_skin exhibit — Tervik in the composite skin. Dblclick values to type; wheel = coarse, tilt = fine; Coarse ratio snaps to exact values; push 1 → 2 / 1 → 3 to copy Env 1.</footer>
+
+<script>
+// Exhibit wiring — throwaway, not product code.
+(function () {
+  const $ = (s, r) => Array.from((r || document).querySelectorAll(s));
+
+  // Coarse ratio snap targets (mirrors TERVIK_RATIOS in the registry).
+  const RATIOS = [0.25, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+  const secFmt = (lo, hi) => (t) => {
+    const s = lo * Math.pow(hi / lo, t);
+    return s < 1 ? Math.round(s * 1000) + ' ms' : s.toFixed(2) + ' s';
+  };
+  const secFmtC = (lo, hi) => (t) => {
+    const s = lo * Math.pow(hi / lo, t);
+    return s < 1 ? String(Math.round(s * 1000)) : s.toFixed(2) + 's';
+  };
+  const secParse = (lo, hi) => (str) => {
+    let v = num(str);
+    if (v == null) return null;
+    if (/(^|\d)\s*s\s*$/i.test(str) && !/ms\s*$/i.test(str)) v *= 1000;
+    const sec = Math.min(hi, Math.max(lo, v / 1000));
+    return Math.log(sec / lo) / Math.log(hi / lo);
+  };
+  const fineOf = (t) => -1 + 2 * t;
+
+  const FMT = {
+    pct: t => Math.round(t * 100) + '%',
+    xr:  t => RATIOS[Math.round(t * (RATIOS.length - 1))].toFixed(2) + '× ratio (snaps to exact values)',
+    fr:  t => { const v = fineOf(t); return Math.abs(v) < 0.0005 ? '0 (exact coarse ratio)' : (v > 0 ? '+' : '−') + Math.abs(v).toFixed(3) + ' ratio offset'; },
+    ea:  secFmt(0.001, 1.5),
+    ed:  secFmt(0.005, 5),
+    er:  secFmt(0.005, 3),
+  };
+  const FMTC = {
+    pct: t => String(Math.round(t * 100)),
+    xr:  t => { const r = RATIOS[Math.round(t * (RATIOS.length - 1))]; return r < 1 ? r.toFixed(2) : String(r); },
+    fr:  t => { const v = fineOf(t); return Math.abs(v) < 0.0005 ? '0' : (v > 0 ? '+' : '−') + Math.abs(v).toFixed(2); },
+    ea:  secFmtC(0.001, 1.5),
+    ed:  secFmtC(0.005, 5),
+    er:  secFmtC(0.005, 3),
+  };
+  const num = (s) => { const v = parseFloat(String(s).replace(/[^\d.eE+-]/g, ' ')); return isFinite(v) ? v : null; };
+  const PARSE = {
+    pct: (s) => { const v = num(s); return v == null ? null : v / 100; },
+    xr:  (s) => { const v = num(s); if (v == null) return null;
+                  let best = 0; RATIOS.forEach((r, i) => { if (Math.abs(r - v) < Math.abs(RATIOS[best] - v)) best = i; });
+                  return best / (RATIOS.length - 1); },
+    fr:  (s) => { const v = num(s); return v == null ? null : (Math.min(1, Math.max(-1, v)) + 1) / 2; },
+    ea:  secParse(0.001, 1.5),
+    ed:  secParse(0.005, 5),
+    er:  secParse(0.005, 3),
+  };
+
+  // 11-tick ladders (majors at 0/5/10 by thickness).
+  $('.vslider .ticks').forEach((tk) => {
+    for (let i = 0; i < 11; i++) {
+      const m = document.createElement('i');
+      if (i % 5 === 0) m.className = 'maj';
+      tk.append(m);
+    }
+  });
+
+  const editable = (el, fmtKey, setT) => {
+    if (!el || !PARSE[fmtKey]) return;
+    el.addEventListener('dblclick', () => {
+      if (el.querySelector('input')) return;
+      const old = el.textContent;
+      const inp = document.createElement('input');
+      inp.className = 'edit';
+      inp.value = old;
+      el.textContent = '';
+      el.append(inp);
+      inp.focus();
+      inp.select();
+      let done = false;
+      const finish = (commit) => {
+        if (done) return;
+        done = true;
+        const t = commit ? PARSE[fmtKey](inp.value) : null;
+        inp.remove();
+        if (t != null) setT(Math.min(1, Math.max(0, t)));
+        else el.textContent = old;
+      };
+      inp.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+      });
+      inp.addEventListener('blur', () => finish(true));
+    });
+  };
+
+  const nudgeWheel = (el, step) => {
+    el.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      if (e.deltaY) step(e.deltaY < 0 ? 1 : -1, false);
+      if (e.deltaX) step(e.deltaX > 0 ? 1 : -1, true);
+    }, { passive: false });
+  };
+
+  // Vertical sliders. data-detent = bipolar snap (typed entry bypasses);
+  // data-steps = STEPPED slider (Coarse ratio: drag/wheel snap to exact steps).
+  // Each widget exposes _get/_set (normalized t) so the env COPY buttons work.
+  $('.vslider').forEach((fd) => {
+    let v = +fd.dataset.val || 0;
+    const fmt = fd.dataset.fmt || 'pct';
+    const name = fd.dataset.name || '';
+    const detent = fd.dataset.detent != null ? +fd.dataset.detent : null;
+    const steps = fd.dataset.steps != null ? +fd.dataset.steps : null;
+    const out = fd.parentElement.querySelector('.ro');
+    const sync = () => {
+      fd.style.setProperty('--val', v);
+      if (out && !out.querySelector('input')) out.textContent = FMTC[fmt](v);
+      const tip = name + ' — ' + FMT[fmt](v);
+      fd.title = tip;
+      if (out) out.title = tip + ' (double-click to type)';
+    };
+    const snap = (x, wheelBand) => {
+      x = Math.min(1, Math.max(0, x));
+      if (steps != null) return Math.round(x * (steps - 1)) / (steps - 1);
+      if (detent != null && Math.abs(x - detent) < wheelBand) return detent;
+      return x;
+    };
+    fd.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); // stop native drag/pan from hijacking a held slide
+      fd.setPointerCapture(e.pointerId);
+      const r = fd.getBoundingClientRect();
+      const move = (ev) => { v = snap(1 - (ev.clientY - r.top) / r.height, 0.035); sync(); };
+      move(e);
+      fd.addEventListener('pointermove', move);
+      fd.addEventListener('pointerup', () => fd.removeEventListener('pointermove', move), { once: true });
+    });
+    fd.addEventListener('dblclick', () => { if (detent != null) { v = detent; sync(); } });
+    nudgeWheel(fd, (dir, fine) => {
+      const inc = steps != null ? 1 / (steps - 1) : (fine ? 0.005 : 0.04);
+      v = snap(v + dir * inc, 0.015);
+      sync();
+    });
+    editable(out, fmt, (t) => { v = steps != null ? snap(t, 0) : t; sync(); }); // typed = exact, no detent snap
+    fd._get = () => v;
+    fd._set = (t) => { v = t; sync(); };
+    sync();
+  });
+
+  // Rotary switch (Algorithm) with position labels.
+  $('.rswitch').forEach((sw) => {
+    const opts = (sw.dataset.opts || '').split(',');
+    const n = opts.length;
+    let idx = Math.min(n - 1, Math.max(0, +sw.dataset.idx || 0));
+    const ticks = [], labs = [];
+    for (let i = 0; i < n; i++) {
+      const a = -135 + (i * 270) / (n - 1);
+      const p = document.createElement('i');
+      p.className = 'ptick';
+      p.style.setProperty('--a', a + 'deg');
+      sw.append(p);
+      ticks.push(p);
+      const l = document.createElement('span');
+      l.className = 'plab';
+      l.textContent = opts[i];
+      const rad = ((a - 180) * Math.PI) / 180;
+      l.style.left = (50 - Math.sin(rad) * 86) + '%';
+      l.style.top = (50 + Math.cos(rad) * 86) + '%';
+      sw.append(l);
+      labs.push(l);
+    }
+    const sync = () => {
+      sw.style.setProperty('--rot', (-135 + (idx * 270) / (n - 1)) + 'deg');
+      ticks.forEach((p, i) => p.classList.toggle('on', i === idx));
+      labs.forEach((l, i) => l.classList.toggle('on', i === idx));
+      sw.title = (sw.dataset.name || '') + ' — ' + opts[idx];
+    };
+    sw.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      sw.setPointerCapture(e.pointerId);
+      const y0 = e.clientY, i0 = idx;
+      let moved = false;
+      const move = (ev) => {
+        const d = Math.round((y0 - ev.clientY) / 24);
+        if (d !== 0) moved = true;
+        idx = Math.min(n - 1, Math.max(0, i0 + d));
+        sync();
+      };
+      sw.addEventListener('pointermove', move);
+      sw.addEventListener('pointerup', () => {
+        sw.removeEventListener('pointermove', move);
+        if (!moved) { idx = (idx + 1) % n; sync(); }
+      }, { once: true });
+    });
+    nudgeWheel(sw, (dir) => { idx = Math.min(n - 1, Math.max(0, idx + dir)); sync(); });
+    sync();
+  });
+
+  // COPY buttons: Env 1 → Env N, then flash the target subgroup as feedback.
+  $('.cpy').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const to = btn.dataset.cp;
+      ['a', 'd', 's', 'r'].forEach((p) => {
+        const src = document.querySelector(`.vslider[data-env="1"][data-p="${p}"]`);
+        const dst = document.querySelector(`.vslider[data-env="${to}"][data-p="${p}"]`);
+        if (src && dst) dst._set(src._get());
+      });
+      const sub = document.getElementById('env' + to);
+      sub.classList.add('flash');
+      setTimeout(() => sub.classList.remove('flash'), 220);
+    });
+  });
+
+  // Belt-and-suspenders for the canvas-drag bug: never let native HTML drag start.
+  document.addEventListener('dragstart', (e) => e.preventDefault());
+
+  // Meta strip.
+  const root = document.documentElement;
+  const wire = (id, fn) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const mv = document.getElementById(id + 'V'); // numeric readout, if present
+    const go = () => {
+      const v = el.type === 'checkbox' ? el.checked : el.value;
+      if (mv) mv.textContent = v;
+      fn(v);
+    };
+    el.addEventListener('input', go);
+    el.addEventListener('change', go);
+    go();
+  };
+  wire('mPanel', (v) => root.style.setProperty('--pl', v + '%'));
+  wire('mTgap', (v) => root.style.setProperty('--tgap', (v / 100) + 'em'));
+  wire('mBands', (v) => {
+    document.querySelector('.panel').classList.toggle('monoband', v === 'single');
+  });
+  wire('mBand', (v) => root.style.setProperty('--mbh', v));
+  wire('mSize', (v) => { document.querySelector('.panel').style.fontSize = (14 * v / 100) + 'px'; });
+})();
+</script>
+</body>
+</html>

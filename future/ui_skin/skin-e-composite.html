@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Skin E — Round 5 Composite</title>
+<style>
+  /* ============ Skin E — the composite, ROUND 5 ============
+     This round: ticks RESTORED (Round 4 dropped the builder — a bug, not a
+     design change); values are back PER-SLIDER but UNIT-LESS (~5ch windows —
+     units + full names live in the rollover, so the banks keep true slider
+     width); WIDE caps (Jupiter-8 style, near column width); the rotary switch
+     grew POSITION LABELS (text or glyphs, the vintage move); group headers are
+     BLACK-ON-COLOR BANDS — single-hue or per-group palette (meta), tasteful
+     mid-tones only. Standing laws: lights glow, text never; mono readouts in
+     fixed windows; Tahoma normal weight; density from removing dead space. */
+  :root {
+    --pl: 22%;             /* panel lightness (meta: Panel) */
+    --ro: hsl(41, 100%, 62%);   /* readout color (meta: Readout) */
+    --glow: .7;            /* LAMP glow only (meta: Glow) */
+    --tgap: .22em;         /* gap between adjacent sliders' tick ends (meta: Tick gap) */
+    --mbh: 28;             /* single-band hue (meta: Band hue) */
+    --acc: hsl(358, 78%, 56%);
+    --arc: hsl(200, 70%, 55%);
+    --panel: hsl(220, 7%, var(--pl));
+    --panel-hi: hsl(220, 7%, calc(var(--pl) + 6%));
+    --panel-lo: hsl(220, 8%, calc(var(--pl) - 6%));
+    --ink: hsl(220, 12%, 88%);
+    --ink-dim: hsl(220, 8%, 62%);
+    --slot: hsl(222, 10%, calc(var(--pl) - 10%));
+    --tick: hsl(220, 8%, calc(var(--pl) + 26%));
+    --tick-maj: hsl(220, 8%, calc(var(--pl) + 38%));
+    --cap-a: hsl(220, 6%, 42%);
+    --cap-b: hsl(220, 7%, 20%);
+    --cap-c: hsl(220, 8%, 30%);
+  }
+  * { box-sizing: border-box; margin: 0; user-select: none; font-weight: 400; }
+  body { background: hsl(220, 7%, calc(var(--pl) - 7%)); color: var(--ink);
+         font: 14px/1.4 Tahoma, "Segoe UI", system-ui, sans-serif; padding: 1.2rem; }
+  header { max-width: 1160px; margin: 0 auto 1rem; }
+  h1 { font-size: 1.25rem; letter-spacing: .05em; }
+  .blurb { color: var(--ink-dim); font-size: .85rem; margin-top: .15rem; }
+  .meta { display: flex; flex-wrap: wrap; gap: .4rem 1rem; align-items: center; margin-top: .7rem;
+          font-size: .78rem; color: var(--ink-dim); background: var(--panel-lo);
+          border: 1px solid var(--panel-hi); border-radius: 6px; padding: .45rem .8rem; }
+  .meta label { display: flex; align-items: center; gap: .4rem; }
+  .meta input[type="range"] { width: 70px; accent-color: var(--acc); }
+  .meta select { background: var(--panel); color: var(--ink); border: 1px solid var(--panel-hi);
+                 border-radius: 3px; padding: .12rem .25rem; font-size: .95em; }
+  .meta a { color: var(--ink-dim); margin-left: auto; }
+
+  .panel { max-width: 1160px; margin: 0 auto; font-size: 14px;
+           background: var(--panel);
+           border: 1px solid var(--panel-hi); border-radius: 10px;
+           box-shadow: 0 8px 30px rgba(0,0,0,.35), inset 0 1px 0 var(--panel-hi);
+           padding: .8em 1em; display: flex; flex-wrap: wrap; gap: 1.7em 1.3em; align-items: flex-start; }
+           /* row gap 1.7em: fader numbers must not read as belonging to the next row's header */
+  .group { display: flex; flex-direction: column; gap: .45em; }
+
+  /* ---- BLACK-ON-COLOR header bands (the Jupiter-8 move). Per-group palette:
+     tasteful mid-tones only (no hot pink/magenta, no strong red, no dark blue —
+     mid lightness so black text reads). Meta switches single-hue vs per-group. */
+  .group h2 { font-size: .72em; letter-spacing: .14em; text-transform: uppercase;
+              color: hsl(220, 30%, 10%); background: hsl(var(--bh, 28), 60%, 54%);
+              padding: .26em .6em; border-radius: .22em;
+              margin-bottom: .55em; } /* band→controls gap ≈ the inter-knob gap */
+  .b-orange { --bh: 28; }   /* VCO orange */
+  .b-amber  { --bh: 44; }
+  .b-olive  { --bh: 75; --bs: 42%; }
+  .b-sage   { --bh: 145; --bs: 34%; }
+  .b-teal   { --bh: 178; --bs: 42%; }
+  .b-slate  { --bh: 206; --bs: 36%; }
+  .group h2 { background: hsl(var(--bh, 28), var(--bs, 60%), 54%); }
+  .monoband .group h2 { background: hsl(var(--mbh), 60%, 54%); }
+  .note { font-size: .66em; color: var(--ink-dim); max-width: 16em; }
+
+  /* ================= THE CANONICAL VERTICAL SLIDER =================
+     WIDE cap (near column width, Jupiter-8 style); ticks all one length,
+     flush slot→edge; the design constant is the inter-ladder gap (--tgap). */
+  .bank { display: flex; gap: var(--tgap); }
+  .vsl { display: flex; flex-direction: column; align-items: center; gap: .16em; }
+  .vslider { position: relative; width: 1.8em; height: 7.4em; cursor: pointer; touch-action: none; }
+  .vslider.tall { height: 12em; }
+  .vslider .slot { position: absolute; left: 50%; transform: translateX(-50%);
+                   top: 0; bottom: 0; width: .3em; border-radius: .15em; background: var(--slot);
+                   box-shadow: inset 0 1px 3px rgba(0,0,0,.7), inset 0 -1px 0 var(--panel-hi); }
+  .vslider .ticks { position: absolute; top: .42em; bottom: .42em; width: calc(50% - .15em);
+                    display: flex; flex-direction: column-reverse; justify-content: space-between; }
+  .vslider .ticks.l { left: 0; }
+  .vslider .ticks.r { right: 0; }
+  .vslider .ticks i { display: block; width: 100%; height: 1px; background: var(--tick); }
+  .vslider .ticks i.maj { height: 2px; background: var(--tick-maj); }
+  .vslider .cap { position: absolute; left: 50%; transform: translateX(-50%);
+                  width: 1.62em; height: .92em; border-radius: .13em;
+                  bottom: calc(var(--val, .5) * (100% - .92em));
+                  background: linear-gradient(180deg, var(--cap-a), var(--cap-b) 46%, var(--cap-c));
+                  border: 1px solid hsl(220,8%,12%);
+                  box-shadow: 0 2px 4px rgba(0,0,0,.55), inset 0 1px 0 hsla(0,0%,100%,.22); }
+  .vslider .cap::after { content: ''; position: absolute; left: 6%; right: 6%; top: 50%;
+                         height: 1.5px; margin-top: -.75px; background: hsl(220, 15%, 92%); }
+  .vsl .bl { font-size: .72em; color: var(--ink); letter-spacing: .03em; }
+  /* the per-slider value WINDOW: unit-less (units in the rollover) — 5ch fits
+     the column, so per-slider values no longer widen the bank */
+  .vsl .ro { font-size: .7em; color: var(--ro); font-variant-numeric: tabular-nums;
+             width: 5.5ch; text-align: center; min-height: 1.2em; }
+
+  /* the MIXER fader cap: ridged, center finger recess, long throw */
+  .vslider.mix { width: 2.1em; }
+  .vslider.mix .cap { width: 1.7em; height: 2.1em; border-radius: .16em;
+                      bottom: calc(var(--val, .5) * (100% - 2.1em));
+                      background:
+                        repeating-linear-gradient(0deg, transparent 0 .16em, rgba(0,0,0,.35) .16em .2em),
+                        linear-gradient(180deg, var(--cap-a), var(--cap-b) 46%, var(--cap-c)); }
+  .vslider.mix .cap::before { content: ''; position: absolute; left: 0; right: 0; top: 50%;
+                              height: .5em; transform: translateY(-50%);
+                              background: linear-gradient(180deg, rgba(0,0,0,.5), rgba(0,0,0,.2) 50%, hsla(0,0%,100%,.08));
+                              border-radius: .1em; }
+  .vslider.mix .cap::after { top: 50%; height: 1.5px; margin-top: -.75px; z-index: 1; }
+  .vslider.mix .ticks { top: 1.05em; bottom: 1.05em; }
+
+  /* ============ the slim HORIZONTAL variant (wide thumb to match) ============ */
+  .row { display: grid; grid-template-columns: 4.6em 1fr 5.5ch; align-items: center; gap: .55em; }
+  .lbl { font-size: .78em; color: var(--ink); letter-spacing: .03em; }
+  .val { font-size: .7em; color: var(--ro); text-align: right; font-variant-numeric: tabular-nums; }
+  .slider { position: relative; height: 1.6em; display: flex; align-items: center;
+            background:
+              repeating-linear-gradient(90deg, var(--tick) 0 1px, transparent 1px calc((100% - 1px) / 10))
+              .6em 100% / calc(100% - 1.2em) .3em no-repeat; }
+  .slider input { -webkit-appearance: none; appearance: none; width: 100%; height: 1.35em;
+                  background: transparent; cursor: pointer; }
+  .slider input::-webkit-slider-runnable-track {
+    height: .3em; border-radius: .15em; background: var(--slot);
+    box-shadow: inset 0 1px 3px rgba(0,0,0,.7), inset 0 -1px 0 var(--panel-hi); }
+  .slider input::-webkit-slider-thumb { -webkit-appearance: none;
+    width: 1.2em; height: 1.35em; margin-top: -.54em; border-radius: .13em;
+    border: 1px solid hsl(220,8%,12%);
+    box-shadow: 0 2px 4px rgba(0,0,0,.55), inset 0 1px 0 hsla(0,0%,100%,.22);
+    background: linear-gradient(90deg, transparent 0 calc(50% - .75px), hsl(220,15%,92%) 0 calc(50% + .75px), transparent 0),
+                linear-gradient(180deg, var(--cap-a), var(--cap-b) 46%, var(--cap-c)); }
+  .slider input::-moz-range-track {
+    height: .3em; border-radius: .15em; background: var(--slot);
+    box-shadow: inset 0 1px 3px rgba(0,0,0,.7), inset 0 -1px 0 var(--panel-hi); }
+  .slider input::-moz-range-thumb {
+    width: 1.2em; height: 1.35em; border-radius: .13em;
+    border: 1px solid hsl(220,8%,12%);
+    box-shadow: 0 2px 4px rgba(0,0,0,.55), inset 0 1px 0 hsla(0,0%,100%,.22);
+    background: linear-gradient(90deg, transparent 0 calc(50% - .75px), hsl(220,15%,92%) 0 calc(50% + .75px), transparent 0),
+                linear-gradient(180deg, var(--cap-a), var(--cap-b) 46%, var(--cap-c)); }
+
+  /* ============ knobs: the size system (--kd = diameter) ============ */
+  .knobrow { display: flex; gap: 1em; align-items: flex-end; }
+  .knobw { display: flex; flex-direction: column; align-items: center; gap: .22em;
+           position: relative; --kd: 3.1em; }
+  .knob { width: var(--kd); height: var(--kd); border-radius: 50%; cursor: ns-resize; touch-action: none;
+          background: radial-gradient(circle at 32% 28%, hsl(220,6%,34%), hsl(220,8%,15%) 72%);
+          border: 1px solid hsl(220,8%,10%);
+          box-shadow: 0 3px 7px rgba(0,0,0,.55), inset 0 1px 1px hsla(0,0%,100%,.14); }
+  .knob .face { position: relative; width: 100%; height: 100%; border-radius: 50%;
+                transform: rotate(var(--rot, 0deg)); }
+  .knob .face::after { content: ''; position: absolute; left: 50%; top: 8%; width: 2.5px; height: 32%;
+                       transform: translateX(-50%); border-radius: 2px; background: hsl(220, 15%, 92%); }
+  .knob.sm { background: radial-gradient(circle at 32% 28%, hsl(220,8%,74%), hsl(220,7%,50%) 74%);
+             border: 1px solid hsl(220,8%,24%);
+             box-shadow: 0 2px 4px rgba(0,0,0,.5), inset 0 1px 1px hsla(0,0%,100%,.5); }
+  .knob.sm .face::after { background: hsl(220, 12%, 14%); width: 2px; height: 36%; }
+  .knobw .ring { display: none; }
+  .arcs .knobw .ring { display: block; position: absolute; top: calc(var(--kd) * -0.08);
+                       width: calc(var(--kd) * 1.16); height: calc(var(--kd) * 1.16);
+                       border-radius: 50%; pointer-events: none;
+                       background: conic-gradient(from -135deg,
+                         var(--arc) 0 calc(var(--rot, 0deg) + 135deg),
+                         hsl(220, 9%, calc(var(--pl) - 4%)) calc(var(--rot, 0deg) + 135deg) 270deg,
+                         transparent 270deg);
+                       -webkit-mask: radial-gradient(circle, transparent 0 58%, #000 59% 72%, transparent 73%);
+                       mask: radial-gradient(circle, transparent 0 58%, #000 59% 72%, transparent 73%); }
+  .knobw .bl { font-size: .7em; color: var(--ink); letter-spacing: .03em; }
+  .kval { font-size: .7em; color: var(--ro); font-variant-numeric: tabular-nums;
+          width: 5.5ch; text-align: center; }
+
+  /* ============ the ROTARY SWITCH, now with POSITION LABELS ============ */
+  .rsww { display: flex; flex-direction: column; align-items: center; gap: .2em;
+          --kd: 2.3em; padding: .8em .9em .1em; }
+  /* clearance: the bottom position labels hang ~1em below the dial */
+  .rsww .bl { margin-top: 1.15em; }
+  .rswitch { width: var(--kd); height: var(--kd); border-radius: 50%; cursor: pointer; touch-action: none;
+             position: relative;
+             background: radial-gradient(circle at 32% 28%, hsl(220,6%,34%), hsl(220,8%,15%) 72%);
+             border: 1px solid hsl(220,8%,10%);
+             box-shadow: 0 3px 7px rgba(0,0,0,.55), inset 0 1px 1px hsla(0,0%,100%,.14); }
+  .rswitch .face { position: absolute; inset: 0; border-radius: 50%;
+                   transform: rotate(var(--rot, 0deg)); }
+  .rswitch .face::after { content: ''; position: absolute; left: 50%; top: 6%; width: 2.5px; height: 38%;
+                          transform: translateX(-50%); border-radius: 2px; background: hsl(220, 15%, 92%); }
+  .rswitch .ptick { position: absolute; inset: 0; transform: rotate(var(--a)); pointer-events: none; }
+  .rswitch .ptick::before { content: ''; position: absolute; left: calc(50% - 1px); top: -.3em;
+                            width: 2px; height: .22em; background: var(--tick-maj); }
+  .rswitch .ptick.on::before { background: var(--ro); }
+  /* position labels: tiny identification text/figures at each angle (upright) */
+  .rswitch .plab { position: absolute; font-size: .56em; color: var(--ink-dim);
+                   transform: translate(-50%, -50%); white-space: nowrap;
+                   pointer-events: none; letter-spacing: .02em; }
+  .rswitch .plab.on { color: var(--ro); }
+  .rswitch .plab.glyph { font-size: .74em; }
+  .rsww .bl { font-size: .7em; color: var(--ink); letter-spacing: .03em; }
+
+  /* the editable-window input (dblclick a value): fits INSIDE the window */
+  .ro input.edit, .val input.edit, .kval input.edit {
+    width: 100%; font: inherit; color: var(--ro); background: hsl(220, 10%, 10%);
+    border: 1px solid var(--ro); border-radius: 2px; text-align: center;
+    padding: 0; outline: none; }
+  .val input.edit { text-align: right; }
+
+  /* ============ toggles · M/S · meter ============ */
+  .togs { display: flex; flex-direction: column; gap: .35em; }
+  .tog { display: flex; align-items: center; gap: .5em; font-size: .78em; color: var(--ink);
+         background: linear-gradient(180deg, var(--panel-hi), var(--panel-lo));
+         border: 1px solid hsl(220,8%,12%); border-radius: .3em; padding: .32em .6em;
+         cursor: pointer; letter-spacing: .03em;
+         box-shadow: 0 1px 3px rgba(0,0,0,.4), inset 0 1px 0 hsla(0,0%,100%,.1); }
+  .tog:active { transform: translateY(1px); }
+  .lamp { width: .55em; height: .55em; border-radius: 50%; background: hsl(220, 10%, 14%);
+          box-shadow: inset 0 1px 2px rgba(0,0,0,.8); }
+  .tog.on .lamp { background: var(--acc);
+                  box-shadow: 0 0 calc(var(--glow) * 9px) calc(var(--glow) * 2px) hsla(358, 95%, 58%, calc(var(--glow) * .95)); }
+  .msbtns { display: flex; gap: .4em; }
+  .msbtns .tog { padding: .3em .6em; font-size: .84em; }
+  .tog.m.on { background: hsl(190, 65%, 42%); color: hsl(200, 40%, 10%); border-color: hsl(190, 65%, 30%); }
+  .tog.s.on { background: hsl(32, 90%, 50%); color: hsl(32, 60%, 10%); border-color: hsl(32, 90%, 36%); }
+  .tog.m .lamp, .tog.s .lamp { display: none; }
+
+  .striprow { display: flex; gap: .7em; align-items: flex-start; }
+  .meter { width: .8em; height: 12em; border-radius: .15em; background: var(--slot); position: relative;
+           overflow: hidden; box-shadow: inset 0 1px 3px rgba(0,0,0,.7); }
+  .meter .bar { position: absolute; bottom: 0; left: 0; right: 0; height: 40%;
+                background: linear-gradient(180deg, hsl(0, 80%, 55%) 0 8%, hsl(48, 90%, 55%) 8% 24%, hsl(145, 65%, 45%) 24%);
+                transition: height 90ms linear; }
+  .meter::after { content: ''; position: absolute; inset: 0;
+                  background: repeating-linear-gradient(0deg, transparent 0 calc(100% / 16 - 1px), var(--panel) 0 calc(100% / 16)); }
+  .stripside { display: flex; flex-direction: column; gap: .55em; align-items: center; }
+  footer { max-width: 1160px; margin: .8rem auto 0; font-size: .72rem; color: var(--ink-dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Skin E — Round 5 Composite</h1>
+  <p class="blurb">Ticks restored (Round 4 dropped the builder — a bug) · per-slider values back, <b>unit-less</b>
+    (units + full names in the rollover; the ~5ch windows fit the column, so the banks stay tight) ·
+    <b>wide Jupiter-8 caps</b> · rotary switches with <b>position labels</b> (text on Source, glyphs on Waveform) ·
+    <b>black-on-color header bands</b> — try Bands: per-group vs single (+ Band hue).</p>
+  <div class="meta">
+    <label>Panel <input type="range" id="mPanel" min="14" max="34" value="22"></label>
+    <label>Tick gap <input type="range" id="mTgap" min="4" max="50" value="22"></label>
+    <label>Bands <select id="mBands"><option value="per" selected>per-group</option><option value="single">single</option></select></label>
+    <label>Band hue <input type="range" id="mBand" min="20" max="220" value="28"></label>
+    <label>Readout <select id="mReadout">
+      <option value="amber" selected>amber</option><option value="green">green</option><option value="cyan">cyan</option></select></label>
+    <label>Font <select id="mFont">
+      <option value='Tahoma, sans-serif' selected>Tahoma</option>
+      <option value='"Segoe UI", system-ui, sans-serif'>Segoe UI</option>
+      <option value='Verdana, sans-serif'>Verdana</option>
+      <option value='"Trebuchet MS", sans-serif'>Trebuchet</option>
+      <option value='Arial, sans-serif'>Arial</option></select></label>
+    <label><input type="checkbox" id="mArc" checked> Arcs</label>
+    <label>Size <input type="range" id="mSize" min="85" max="125" value="100"></label>
+    <label>Glow <input type="range" id="mGlow" min="0" max="100" value="70"></label>
+    <a href="index.html">← gallery</a>
+  </div>
+</header>
+
+<main class="panel arcs">
+  <section class="group b-orange">
+    <h2>Amp Envelope</h2>
+    <div class="bank">
+      <div class="vsl"><div class="vslider" data-val=".18" data-fmt="ms" data-name="Attack"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">A</span><span class="ro"></span></div>
+      <div class="vsl"><div class="vslider" data-val=".52" data-fmt="ms" data-name="Decay"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">D</span><span class="ro"></span></div>
+      <div class="vsl"><div class="vslider" data-val=".9" data-fmt="pct" data-name="Sustain"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">S</span><span class="ro"></span></div>
+      <div class="vsl"><div class="vslider" data-val=".64" data-fmt="ms" data-name="Release"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">R</span><span class="ro"></span></div>
+    </div>
+  </section>
+
+  <section class="group b-amber">
+    <h2>Filter</h2>
+    <div class="bank">
+      <div class="vsl"><div class="vslider" data-val=".78" data-fmt="hz" data-name="Cutoff"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Cut</span><span class="ro"></span></div>
+      <div class="vsl"><div class="vslider" data-val=".12" data-fmt="q" data-name="Resonance"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Res</span><span class="ro"></span></div>
+      <div class="vsl"><div class="vslider" data-val=".36" data-fmt="oct" data-name="Env Amount"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Env</span><span class="ro"></span></div>
+      <div class="vsl"><div class="vslider" data-val="1" data-fmt="pct" data-name="Key Track"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Key</span><span class="ro"></span></div>
+    </div>
+  </section>
+
+  <section class="group b-olive">
+    <h2>Drawbars</h2>
+    <div class="bank">
+      <div class="vsl"><div class="vslider" data-val="1" data-fmt="pct" data-name="Drawbar 1"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">1</span><span class="ro"></span></div>
+      <div class="vsl"><div class="vslider" data-val=".55" data-fmt="pct" data-name="Drawbar 2"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">2</span><span class="ro"></span></div>
+      <div class="vsl"><div class="vslider" data-val=".35" data-fmt="pct" data-name="Drawbar 3"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">3</span><span class="ro"></span></div>
+      <div class="vsl"><div class="vslider" data-val=".15" data-fmt="pct" data-name="Drawbar 4"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">4</span><span class="ro"></span></div>
+      <div class="vsl"><div class="vslider" data-val=".28" data-fmt="pct" data-name="Drawbar 5"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">5</span><span class="ro"></span></div>
+      <div class="vsl"><div class="vslider" data-val=".08" data-fmt="pct" data-name="Drawbar 6"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">6</span><span class="ro"></span></div>
+      <div class="vsl"><div class="vslider" data-val=".05" data-fmt="pct" data-name="Drawbar 7"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">7</span><span class="ro"></span></div>
+      <div class="vsl"><div class="vslider" data-val=".1" data-fmt="pct" data-name="Drawbar 8"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">8</span><span class="ro"></span></div>
+    </div>
+  </section>
+
+  <section class="group b-sage">
+    <h2>Pitch &amp; Stereo</h2>
+    <div class="knobrow">
+      <div class="knobw"><i class="ring"></i><div class="knob" data-min="-200" data-max="200" data-val="0" data-detent="0" data-fmt="ct" data-name="Pitch Atk"><div class="face"></div></div><span class="bl">Pitch Atk</span><span class="kval"></span></div>
+      <div class="knobw"><i class="ring"></i><div class="knob" data-min="-0.05" data-max="0.05" data-val="0" data-detent="0" data-fmt="st" data-name="Stretch"><div class="face"></div></div><span class="bl">Stretch</span><span class="kval"></span></div>
+      <div class="knobw"><i class="ring"></i><div class="knob" data-min="0" data-max="1" data-val="0.7" data-fmt="pct" data-name="Width"><div class="face"></div></div><span class="bl">Width</span><span class="kval"></span></div>
+    </div>
+  </section>
+
+  <section class="group b-teal">
+    <h2>Source &amp; Modes</h2>
+    <div class="knobrow">
+      <div class="rsww">
+        <div class="rswitch" data-opts="Saw,Sqr,Choir,Tilt" data-idx="0" data-name="Source"><div class="face"></div></div>
+        <span class="bl">Source</span>
+      </div>
+      <div class="rsww">
+        <div class="rswitch glyphs" data-opts="∿,⊓,△,▚" data-idx="0" data-name="Waveform"><div class="face"></div></div>
+        <span class="bl">Waveform</span>
+      </div>
+      <div class="togs">
+        <button class="tog on"><i class="lamp"></i>Follow Op 1</button>
+        <button class="tog"><i class="lamp"></i>Lite</button>
+        <button class="tog"><i class="lamp"></i>Hold</button>
+      </div>
+    </div>
+    <p class="note">Rotary switches with position labels — text vs glyphs. Drag/wheel steps; a click cycles.</p>
+  </section>
+
+  <section class="group b-slate">
+    <h2>Horizontal (comparison)</h2>
+    <label class="row"><span class="lbl">Bandwidth</span><span class="slider"><input type="range" min="0" max="1000" value="420" data-fmt="ct2" data-name="Bandwidth"></span><span class="val"></span></label>
+    <label class="row"><span class="lbl">BW Scale</span><span class="slider"><input type="range" min="0" max="1000" value="500" data-fmt="pct" data-name="BW Scale"></span><span class="val"></span></label>
+    <label class="row"><span class="lbl">Harmonics</span><span class="slider"><input type="range" min="0" max="1000" value="700" data-fmt="pct" data-name="Harmonics"></span><span class="val"></span></label>
+    <p class="note">Wide thumb to match the verticals. Hover a value for units.</p>
+  </section>
+
+  <section class="group b-orange">
+    <h2>Lane 3 · Padlington</h2>
+    <div class="striprow">
+      <div class="vsl"><div class="vslider tall mix" data-val=".8" data-fmt="db" data-name="Volume"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Vol</span><span class="ro"></span></div>
+      <div class="meter"><div class="bar"></div></div>
+      <div class="stripside">
+        <div class="knobw" style="--kd: 2em;"><i class="ring"></i><div class="knob sm" data-min="-1" data-max="1" data-val="0" data-detent="0" data-fmt="pan" data-name="Pan"><div class="face"></div></div><span class="bl">Pan</span><span class="kval"></span></div>
+        <div class="knobw" style="--kd: 1.6em;"><i class="ring"></i><div class="knob sm" data-min="0" data-max="1" data-val="0.25" data-fmt="pct" data-name="Send"><div class="face"></div></div><span class="bl">Send</span><span class="kval"></span></div>
+        <div class="knobw" style="--kd: 1.3em;"><i class="ring"></i><div class="knob sm" data-min="0" data-max="1" data-val="0.6" data-fmt="pct" data-name="Cue"><div class="face"></div></div><span class="bl">Cue</span><span class="kval"></span></div>
+        <div class="msbtns">
+          <button class="tog m">M</button>
+          <button class="tog s">S</button>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+<footer>future/ui_skin fixture — Round 5. Dblclick any value to type (units optional; typed values bypass detents). Wheel = coarse, tilt = fine.</footer>
+
+<script>
+// Round-5 fixture wiring — throwaway, not product code.
+(function () {
+  const $ = (s, r) => Array.from((r || document).querySelectorAll(s));
+
+  // Formatters. FULL (rollover + parsing target) and COMPACT (the 5ch window —
+  // unit-less; the rollover carries the units).
+  const FMT = {
+    ms:  t => { const s = 0.001 * Math.pow(3000, t) * 1.5; return s < 1 ? Math.round(s * 1000) + ' ms' : s.toFixed(2) + ' s'; },
+    pct: t => Math.round(t * 100) + '%',
+    hz:  t => { const h = Math.round(120 * Math.pow(14000 / 120, t)); return h >= 1000 ? (h / 1000).toFixed(1) + ' kHz' : h + ' Hz'; },
+    q:   t => 'Q ' + (0.5 + t * 17.5).toFixed(1),
+    oct: t => (t * 4).toFixed(2) + ' oct',
+    ct:  t => { const c = Math.round(-200 + t * 400); return c === 0 ? 'off' : (c > 0 ? '+' : '−') + Math.abs(c) + ' ¢'; },
+    ct2: t => Math.max(1, Math.round(t * 120)) + ' ¢',
+    st:  t => { const s = -0.05 + t * 0.1; return Math.abs(s) < 0.00005 ? 'harmonic' : (s > 0 ? '+' : '−') + Math.abs(s).toFixed(3); },
+    pan: t => { const p = Math.round((t * 2 - 1) * 100); return p === 0 ? 'centre' : (p < 0 ? 'L' + (-p) : 'R' + p); },
+    db:  t => { const d = -60 + t * 66; return d <= -59.5 ? '−∞ dB' : (d > 0 ? '+' : '') + d.toFixed(1) + ' dB'; },
+  };
+  const FMTC = {
+    ms:  t => { const s = 0.001 * Math.pow(3000, t) * 1.5; return s < 1 ? String(Math.round(s * 1000)) : s.toFixed(2) + 's'; },
+    pct: t => String(Math.round(t * 100)),
+    hz:  t => { const h = Math.round(120 * Math.pow(14000 / 120, t)); return h >= 1000 ? (h / 1000).toFixed(1) + 'k' : String(h); },
+    q:   t => (0.5 + t * 17.5).toFixed(1),
+    oct: t => (t * 4).toFixed(2),
+    ct:  t => { const c = Math.round(-200 + t * 400); return c === 0 ? '0' : (c > 0 ? '+' : '−') + Math.abs(c); },
+    ct2: t => String(Math.max(1, Math.round(t * 120))),
+    st:  t => { const s = -0.05 + t * 0.1; return Math.abs(s) < 0.00005 ? '0' : (s > 0 ? '+' : '−') + Math.abs(s).toFixed(3).replace(/^0/, ''); },
+    pan: t => { const p = Math.round((t * 2 - 1) * 100); return p === 0 ? 'C' : (p < 0 ? 'L' + (-p) : 'R' + p); },
+    db:  t => { const d = -60 + t * 66; return d <= -59.5 ? '−∞' : (d > 0 ? '+' : '') + d.toFixed(1); },
+  };
+
+  // Inverse parsers: typed text (units optional) → normalized t, or null.
+  const num = (s) => { const v = parseFloat(String(s).replace(/[^\d.eE+-]/g, ' ')); return isFinite(v) ? v : null; };
+  const PARSE = {
+    ms:  (s) => { let v = num(s); if (v == null) return null; if (/(^|\d)\s*s\s*$/i.test(s) && !/ms\s*$/i.test(s)) v *= 1000; const sec = v / 1000; return Math.log(Math.max(sec, 0.0015) / 0.0015) / Math.log(3000); },
+    pct: (s) => { const v = num(s); return v == null ? null : v / 100; },
+    hz:  (s) => { let v = num(s); if (v == null) return null; if (/k/i.test(s)) v *= 1000; return Math.log(Math.max(v, 120) / 120) / Math.log(14000 / 120); },
+    q:   (s) => { const v = num(s); return v == null ? null : (v - 0.5) / 17.5; },
+    oct: (s) => { const v = num(s); return v == null ? null : v / 4; },
+    ct:  (s) => { const v = /^\s*(off|0)\s*$/i.test(s) ? 0 : num(s); return v == null ? null : (v + 200) / 400; },
+    ct2: (s) => { const v = num(s); return v == null ? null : v / 120; },
+    st:  (s) => { const v = /harmonic/i.test(s) ? 0 : num(s); return v == null ? null : (v + 0.05) / 0.1; },
+    pan: (s) => { if (/^\s*c/i.test(s)) return 0.5; let v = num(s); if (v == null) return null; if (/^\s*l/i.test(s)) v = -Math.abs(v); return (v / 100 + 1) / 2; },
+    db:  (s) => { const v = /∞/.test(s) ? -60 : num(s); return v == null ? null : (v + 60) / 66; },
+  };
+
+  // Build the 11-tick ladders (majors at 0/5/10, by THICKNESS) — the piece
+  // Round 4 accidentally dropped.
+  $('.vslider .ticks').forEach((tk) => {
+    for (let i = 0; i < 11; i++) {
+      const m = document.createElement('i');
+      if (i % 5 === 0) m.className = 'maj';
+      tk.append(m);
+    }
+  });
+
+  // Dblclick-to-type on a value window; typed values bypass detents.
+  const editable = (el, fmtKey, getT, setT) => {
+    if (!el || !PARSE[fmtKey]) return;
+    el.addEventListener('dblclick', () => {
+      if (el.querySelector('input')) return;
+      const old = el.textContent;
+      const inp = document.createElement('input');
+      inp.className = 'edit';
+      inp.value = old;
+      el.textContent = '';
+      el.append(inp);
+      inp.focus();
+      inp.select();
+      let done = false;
+      const finish = (commit) => {
+        if (done) return;
+        done = true;
+        const t = commit ? PARSE[fmtKey](inp.value) : null;
+        inp.remove();
+        if (t != null) setT(Math.min(1, Math.max(0, t)));
+        else el.textContent = old;
+      };
+      inp.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+      });
+      inp.addEventListener('blur', () => finish(true));
+    });
+  };
+
+  // Wheel-on-hover: vertical wheel = coarse, wheel TILT = fine.
+  const nudgeWheel = (el, step) => {
+    el.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      if (e.deltaY) step(e.deltaY < 0 ? 1 : -1, false);
+      if (e.deltaX) step(e.deltaX > 0 ? 1 : -1, true);
+    }, { passive: false });
+  };
+
+  // Vertical sliders: window shows the COMPACT value; the rollover carries the
+  // full name + unit ("Cutoff — 3.5 kHz").
+  $('.vslider').forEach((fd) => {
+    let v = +fd.dataset.val || 0;
+    const fmt = fd.dataset.fmt || 'pct';
+    const name = fd.dataset.name || '';
+    const out = fd.parentElement.querySelector('.ro');
+    const sync = () => {
+      fd.style.setProperty('--val', v);
+      if (out && !out.querySelector('input')) out.textContent = FMTC[fmt](v);
+      const tip = name + ' — ' + FMT[fmt](v);
+      fd.title = tip;
+      if (out) out.title = tip + ' (double-click to type)';
+    };
+    fd.addEventListener('pointerdown', (e) => {
+      fd.setPointerCapture(e.pointerId);
+      const r = fd.getBoundingClientRect();
+      const move = (ev) => { v = Math.min(1, Math.max(0, 1 - (ev.clientY - r.top) / r.height)); sync(); };
+      move(e);
+      fd.addEventListener('pointermove', move);
+      fd.addEventListener('pointerup', () => fd.removeEventListener('pointermove', move), { once: true });
+    });
+    nudgeWheel(fd, (dir, fine) => { v = Math.min(1, Math.max(0, v + dir * (fine ? 0.005 : 0.04))); sync(); });
+    editable(out, fmt, () => v, (t) => { v = t; sync(); });
+    sync();
+  });
+
+  // Horizontal sliders.
+  $('.slider input').forEach((inp) => {
+    const val = inp.closest('.row').querySelector('.val');
+    const fmt = inp.dataset.fmt || 'pct';
+    const name = inp.dataset.name || '';
+    const sync = () => {
+      const t = inp.value / 1000;
+      if (val && !val.querySelector('input')) val.textContent = FMTC[fmt](t);
+      const tip = name + ' — ' + FMT[fmt](t);
+      inp.title = tip;
+      if (val) val.title = tip + ' (double-click to type)';
+    };
+    inp.addEventListener('input', sync);
+    nudgeWheel(inp, (dir, fine) => {
+      inp.value = Math.min(1000, Math.max(0, +inp.value + dir * (fine ? 5 : 40)));
+      sync();
+    });
+    editable(val, fmt, () => inp.value / 1000, (t) => { inp.value = Math.round(t * 1000); sync(); });
+    sync();
+  });
+
+  // Knobs: compact window under each; typed entry bypasses the detent.
+  $('.knob').forEach((kn) => {
+    const min = +kn.dataset.min, max = +kn.dataset.max;
+    const detent = kn.dataset.detent != null ? +kn.dataset.detent : null;
+    const fmt = kn.dataset.fmt || 'pct';
+    const name = kn.dataset.name || '';
+    const holder = kn.parentElement;
+    const out = holder.querySelector('.kval');
+    let val = +kn.dataset.val;
+    const sync = () => {
+      const t = (val - min) / (max - min);
+      holder.style.setProperty('--rot', (t * 270 - 135) + 'deg');
+      if (out && !out.querySelector('input')) out.textContent = FMTC[fmt](t);
+      const tip = name + ' — ' + FMT[fmt](t);
+      kn.title = tip;
+      if (out) out.title = tip + ' (double-click to type)';
+    };
+    kn.addEventListener('pointerdown', (e) => {
+      kn.setPointerCapture(e.pointerId);
+      const y0 = e.clientY, v0 = val;
+      const move = (ev) => {
+        val = Math.min(max, Math.max(min, v0 + ((y0 - ev.clientY) / 140) * (max - min)));
+        if (detent != null && Math.abs(val - detent) < (max - min) * 0.035) val = detent;
+        sync();
+      };
+      kn.addEventListener('pointermove', move);
+      kn.addEventListener('pointerup', () => kn.removeEventListener('pointermove', move), { once: true });
+    });
+    kn.addEventListener('dblclick', () => { if (detent != null) { val = detent; sync(); } });
+    nudgeWheel(kn, (dir, fine) => {
+      val = Math.min(max, Math.max(min, val + dir * (max - min) * (fine ? 0.005 : 0.03)));
+      if (detent != null && Math.abs(val - detent) < (max - min) * 0.015) val = detent;
+      sync();
+    });
+    editable(out, fmt, () => (val - min) / (max - min), (t) => { val = min + t * (max - min); sync(); });
+    sync();
+  });
+
+  // ROTARY SWITCHES with position labels (text or glyphs) at each angle.
+  $('.rswitch').forEach((sw) => {
+    const opts = (sw.dataset.opts || '').split(',');
+    const n = opts.length;
+    const glyphs = sw.classList.contains('glyphs');
+    let idx = Math.min(n - 1, Math.max(0, +sw.dataset.idx || 0));
+    const ticks = [], labs = [];
+    for (let i = 0; i < n; i++) {
+      const a = -135 + (i * 270) / (n - 1);
+      const p = document.createElement('i');
+      p.className = 'ptick';
+      p.style.setProperty('--a', a + 'deg');
+      sw.append(p);
+      ticks.push(p);
+      // upright label just beyond the tick, positioned by trig (% of the dial)
+      const l = document.createElement('span');
+      l.className = 'plab' + (glyphs ? ' glyph' : '');
+      l.textContent = opts[i];
+      const rad = ((a - 180) * Math.PI) / 180; // 0° = top of dial
+      const R = glyphs ? 78 : 86;              // label-centre radius, % of dial size
+      l.style.left = (50 - Math.sin(rad) * R) + '%';
+      l.style.top = (50 + Math.cos(rad) * R) + '%';
+      sw.append(l);
+      labs.push(l);
+    }
+    const sync = () => {
+      sw.style.setProperty('--rot', (-135 + (idx * 270) / (n - 1)) + 'deg');
+      ticks.forEach((p, i) => p.classList.toggle('on', i === idx));
+      labs.forEach((l, i) => l.classList.toggle('on', i === idx));
+      sw.title = (sw.dataset.name || '') + ' — ' + opts[idx];
+    };
+    sw.addEventListener('pointerdown', (e) => {
+      sw.setPointerCapture(e.pointerId);
+      const y0 = e.clientY, i0 = idx;
+      let moved = false;
+      const move = (ev) => {
+        const d = Math.round((y0 - ev.clientY) / 24);
+        if (d !== 0) moved = true;
+        idx = Math.min(n - 1, Math.max(0, i0 + d));
+        sync();
+      };
+      sw.addEventListener('pointermove', move);
+      sw.addEventListener('pointerup', () => {
+        sw.removeEventListener('pointermove', move);
+        if (!moved) { idx = (idx + 1) % n; sync(); } // plain click cycles
+      }, { once: true });
+    });
+    nudgeWheel(sw, (dir) => { idx = Math.min(n - 1, Math.max(0, idx + dir)); sync(); });
+    sync();
+  });
+
+  // Toggles.
+  $('.tog').forEach((b) => b.addEventListener('click', () => b.classList.toggle('on')));
+
+  // The lane meter random walk.
+  const bar = document.querySelector('.meter .bar');
+  if (bar) {
+    let lvl = 0.5;
+    setInterval(() => {
+      lvl = Math.min(1, Math.max(0.05, lvl + (Math.random() - 0.5) * 0.22));
+      bar.style.height = (lvl * 100) + '%';
+    }, 90);
+  }
+
+  // Meta strip.
+  const root = document.documentElement;
+  const RO = { amber: 'hsl(41, 100%, 62%)', green: 'hsl(120, 75%, 58%)', cyan: 'hsl(185, 85%, 60%)' };
+  const wire = (id, fn) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const go = () => fn(el.type === 'checkbox' ? el.checked : el.value);
+    el.addEventListener('input', go);
+    el.addEventListener('change', go);
+    go();
+  };
+  wire('mPanel', (v) => root.style.setProperty('--pl', v + '%'));
+  wire('mTgap', (v) => root.style.setProperty('--tgap', (v / 100) + 'em'));
+  wire('mBands', (v) => document.querySelector('.panel').classList.toggle('monoband', v === 'single'));
+  wire('mBand', (v) => root.style.setProperty('--mbh', v));
+  wire('mReadout', (v) => root.style.setProperty('--ro', RO[v] || RO.amber));
+  wire('mFont', (v) => { document.querySelector('.panel').style.fontFamily = v; });
+  wire('mArc', (on) => document.querySelector('.panel').classList.toggle('arcs', !!on));
+  wire('mSize', (v) => { document.querySelector('.panel').style.fontSize = (14 * v / 100) + 'px'; });
+  wire('mGlow', (v) => root.style.setProperty('--glow', v / 100));
+})();
+</script>
+</body>
+</html>

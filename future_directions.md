@@ -52,8 +52,8 @@ a shared enabler. Rough read before the details:
 | **9. Convolution cross-synthesis** | native `ConvolverNode` + offline bounce | **no** — reuses the reverb core | reverb + `renderToBuffer`; sample-IR waits on 5 |
 | **10. Analog synths** (mono+glide, poly Prophet/OB) | native subtractive engine (shared) | **no** | glide pairs with 7's legato/gate |
 | **11. Scale-space tools** | scale-mask library (data) + transpose features | **no** | harmonization waits on 7 |
-| **12. Tile inspector** (per-tile modifiers) — *shell + facts + transport + rename BUILT; per-tile modifiers ahead* | pure model + UI | no | composes with 1 & 7 |
-| **13. Instrument cleanup pass** (levels, weak controls, shared labels) | audio metering + DSP tuning | no | — |
+| **12. Tile inspector** (per-tile modifiers) — *shell + facts + transport + rename BUILT; transform stack (transpose · reverse · detune, canonical order) BUILT; overrides/nudge/doublers ahead* | pure model + UI | no | composes with 1 & 7 |
+| **13. Instrument cleanup pass** (levels, weak controls, shared labels) — *control-skin mockups COMPLETE (all 7 instruments; see §13 + future/ui_skin) → integration handoff in notes_and_status; levels/labels + common-clusters refactor ahead* | audio metering + DSP tuning | no | — |
 | **14. Patch catalog** (named patches + modeless catalog windows) — *Phases A–C BUILT; D (groups/tags) & E (drag-to-lane) ahead* | pure model + UI + a user-global store | no | reuses the inspector's pane shell (12); catalogs generalize |
 | **15. Tuning ⇄ timbre platform** (Sethares matching; generalized non-EDO tunings; analysis-based harmony) | pure model + a dissonance-curve analysis | no | tunings generalize `edoOf`; the timbre side leans on 8 (modal) & 4 (PadSynth) |
 | **16. New Counterpoint** (reference-aware generation + hocket redistribution) | pure model — a shared beat-timeline + a bias source + a time-proportional overlay | no | reuses New Random (`random.js` Steer); consonance predicate sharpens with 15; voices generalize with 7 |
@@ -418,8 +418,10 @@ model + one migration + a grid gesture, headless-testable), after which the rest
 adopt/rotate its duration" gesture is the thing the composer fought; separate the two. Add a
 **per-column duration lane rendered as a band at the bottom of the grid canvas** (same render
 pass → alignment for free in Grid *and* Stretch views, and under scroll). Duration is edited
-*only* there — **click-to-rotate** through `DURATIONS` for now (wheel-nudge deferred, user "might
-warm to it"); **COLOR is the primary indicator** (the `durationColor`/`PALETTE` spectrum; the
+*only* there — **click-to-rotate** through `DURATIONS` for now (wheel-nudge deferred — and the
+user IS now warming to wheel-on-hover, 2026-07-10, and has a wheel-TILT mouse: vertical wheel =
+coarse / tilt = fine is the scheme being tried in the `future/ui_skin` Round-2 fixture; when it
+proves out, this chit is a natural early customer); **COLOR is the primary indicator** (the `durationColor`/`PALETTE` spectrum; the
 toolbar duration brushes are the legend) with a small **numeric ("1/8") as backup** until SMuFL.
 Grid-body clicks become **pitch-only** (place/repitch/rest/accent — the duration branch is
 removed); a placed note takes its **column's** footer duration. Pure UI/gesture refactor — the
@@ -761,7 +763,9 @@ separate windows" capability flagged in subsequences (1), so a subsequence windo
 **Fixed order (decided).** Modifiers apply in **one built-in order** — there is no per-tile "drag to
 reorder." When we add order-dependent transforms (rotate especially), you get the result you want by
 choosing the rotate direction, not by rearranging. (An arbitrary, user-ordered insert stack is a
-separate, later **mixer pane** — audio effects — not this.) The planned canonical order (2026-07-09):
+separate, later **mixer pane** — audio effects — not this.) The canonical order (decided 2026-07-09;
+now ENFORCED by `normalizeTransforms`/the set-helpers in core/transforms.js — transpose, reverse,
+and detune are BUILT; invert and rotate are the pending slots):
 **invert → transpose → rotate → reverse → detune** — degree-space ops (which re-resolve frequency
 from the tuning) first, then time ops, then frequency-space ops last (forced: detune must follow
 anything that re-resolves freq). With at-most-one-of-each and signed/parameterized transforms, any
@@ -833,6 +837,195 @@ terms" idea that runs through mods, tiles, and expression.
 the small amount of metadata for the shared labels. **Tie-ins:** 7 (articulation is the per-note user
 of the labels), 12 (tile overrides start with concrete settings and gain the shared labels once this
 lands).
+
+**Three additions (user, 2026-07-10; the first two not for now — the third is well underway):**
+
+- **A better envelope generator — the "key-up pluck."** The classic harpsichord/clav release
+  transient (the plectrum/jack resetting on note-off) needs an envelope stage richer than ADSR — a
+  release *event*, not just a fade. Notably cheap in THIS architecture: fire-and-forget scheduling
+  knows note-off time up front, so a release transient is just a second tiny scheduled voice (a
+  filtered noise tick or short pluck) at `releaseTime` — the same pre-known-duration property that
+  made Padlington's duration-aware attack exact. Padlington-as-harpsichord is the motivating patch
+  (its Bandwidth smear already nails the multi-string "searing not quite detuned" register sound).
+  A general multi-stage envelope (delay/hold, curves) can ride the same rework; shared envelope
+  metadata pairs naturally with the common-cluster panels below.
+- **Rework the instrument panels into COMMON CLUSTERS.** Every kind hand-lists its own Amp
+  Envelope / Filter / Pitch groups today (Padlington copied Vesperia's filter block verbatim;
+  Pitch Atk is duplicated between Wendelhorn and Padlington). Extract shared param-group builders
+  (one `ampEnvelopeParams()`, `filterParams()`, `pitchAtkParams()` used by every kind that has the
+  cluster) so the panes converge visually, the shared-label roles above get a natural anchor, and
+  a new instrument assembles from clusters instead of restating them. Pure registry/UI refactor —
+  zero DSP change.
+- **Mock up, then implement, better CONTROL SKINS (user, 2026-07-10).** The current utilitarian
+  look (native range sliders + the minimal rotary) isn't the goal; not "unduly fancy," but the
+  sliders/knobs/faders should read like a **top-down view of the real thing** — fader caps with a
+  grip groove riding a slot, machined knobs with an indicator line, Zindel's drawbars as actual
+  drawbars. **Mock-up-first** is the stated process. Reference sensibility (user): **RD-2000**
+  (great controls; LED-indexed sliders), **Access Virus** minus its low-contrast gray failure,
+  **Roland's color periods** (functional color coding), **TotalMix** (clean dense mixer);
+  **medium-dark gray panel, not black**. Constraints/notes: no deps (pure CSS on native inputs via
+  `::-webkit-slider-thumb`/`::-moz-range-thumb` gets far; `makeKnob` is the precedent for a fully
+  custom widget where CSS can't); keep keyboard focus/a11y of native inputs where possible; dark
+  theme. Natural sequencing: do the common-clusters refactor first, then skin once — every kind
+  inherits the look.
+  **Round 1 BUILT (2026-07-10)** → [future/ui_skin/index.html](future/ui_skin/index.html): four
+  divergent styles on one shared control roster (A Stage Piano / B Color-Coded / C Rack Mixer /
+  D Machined), each live-tunable via a meta strip (panel lightness, accent hue, size, glow) so
+  liked positions ARE spec numbers.
+  **Round 1 feedback → design LAWS (user, 2026-07-10):** lights glow, text NEVER; small colored
+  text only in mono-amber / mono-green / cyan (other hues = large LED numerals or lights only);
+  the VERTICAL slider is canonical (Roland/Yamaha cap with a white center line, 11 ticks each
+  side, thick at 0/5/10, small break between adjacent ladders); horizontals share the vertical's
+  cap cross-section (Round 1's were too chunky); mixer faders are a separate species (long throw,
+  ridged cap, finger recess — see TotalMix); keep A's knobs + M/S, keep B's knob value-arc as an
+  option, C too flat (but its legibility is the bar), D dead. User prefers vertical slider layout
+  generally (ADSR as Juno-style banks); TotalMix's font legibility worth chasing.
+  **Round 2 BUILT (2026-07-10)** → `skin-e-composite.html`: the composite under those laws, with
+  meta switches for readout color (amber/green/cyan), font (Segoe/Tahoma/Verdana/…), knob arcs
+  on/off, plus **wheel-on-hover** (vertical wheel = coarse, wheel-TILT = fine) as an interaction
+  tryout.
+  **Round 2.1 (2026-07-10) — three more laws from feedback:** (1) **Tahoma, normal weight ONLY**
+  — Tahoma has no real 600 (the browser's synthetic bold smears kerning) and its 700 is chunky;
+  emphasis = slightly larger size + letter-spacing, never weight (which also avoids bold's
+  glyph-width layout shifts). (2) **Ticks emanate from the slot** — every mark touches the slot
+  edge, majors extend further OUTWARD. (3) **Readouts are WINDOWS, not text runs** — every value
+  display gets a fixed width sized to its formatter's widest output (+ tabular numerals), so a
+  value changing digit count never shifts the layout; no control's position may depend on a
+  value's current text.
+  **Round 3 BUILT (2026-07-10):** compaction pass ("density from removing dead space, never from
+  shrinking text" — bank gap to the true small break, wider ticks, tighter panel); the **small
+  mixer-strip knob** joins the vocabulary (~2/3 size, INVERTED scheme: light cap + dark mark,
+  slim arc; big = primary timbral params, small = strip/secondary); **double-click-to-type exact
+  values** prototyped (input in the same fixed window, Enter/Esc — the rename idiom; typed values
+  BYPASS detents). The motivating discovery: `makeKnob`'s DETENT (0.03 position units) makes
+  |Tervik fine| < 0.06 UNREACHABLE by drag — the PWM-beating range (|fine| ≈ 0.001–0.01) is
+  entirely inside the snap zone, so the REAL APP needs: dblclick-to-edit readouts + Fine display
+  precision (2 → 3-4 decimals) + typed-value detent bypass (± per-param detent radius). That app
+  feature is agreed in principle, not yet built.
+  **Round 4 BUILT (2026-07-10):** values moved OUT from under the faders into a **per-group
+  "last-touched" readout window** in the group header (the 9ch under-fader windows were what
+  spaced the banks; faders now pack at true slider width like the drawbars) — dblclick the window
+  to type. **Tick geometry finalized-ish:** all ticks ONE length (majors by thickness only), ticks
+  fill to the widget edge, and the **design constant is the horizontal gap between adjacent
+  ladders** (a meta "Tick gap" dial finds the user's optimum — the number is the spec; it landed
+  at 10 → 0.10em, 2026-07-10). Knob
+  diameter became a **size system** (`--kd`; strip shows 2 / 1.6 / 1.3em). New widget: the
+  **rotary switch** for 3–5-way enums (drag/wheel steps between snapped positions, plain click
+  cycles, active position tick lit, label in a fixed window) — Source is the demo; Tervik's
+  Algorithm (4-way) is the natural app customer.
+  **Round 5 BUILT (2026-07-10):** per-group window REVERTED — user prefers per-slider values;
+  the fix that makes them fit is **unit-less windows** (~5ch ≈ the slider column; units + full
+  param names in the rollover title, which also shrinks the edit box). **Wide Jupiter-8 caps**
+  (near column width). Rotary switches grew **position labels** (text or glyphs at each angle,
+  active one lit — the vintage move; shown on Source [text] + Waveform [glyphs]). **Black-on-color
+  header bands** (the Jupiter-8 read): user confirmed color-as-functional-grouping via HEADERS
+  (not slot/thumb fills, which were disliked in B) — tasteful mid-tones only (NO hot pink/magenta,
+  strong red, dark blue); a per-group palette (orange/amber/olive/sage/teal/slate) vs single-hue
+  is meta-switchable. Round 4's tick loss was a rewrite bug (builder dropped), restored.
+  User verdicts: faders + ticks LOCKED 👍🎯; horizontal sliders fine as-is; **the skin will
+  eventually cover the WHOLE APP** (transport, toolbars, panes), later.
+  **First instrument exhibit BUILT (2026-07-10)** → `exhibit-padlington.html`: the composite on
+  the real Padlington panel (factory values), drafting the **cluster inventory** (Source / Pad /
+  Pitch / Stereo / Filter / Amp Env) and the **widget policy** (continuous → vertical slider,
+  ± detented → knob, 3–5-way enum → rotary switch — Source AND Vowel are rotaries); **live inert
+  dimming** off the Source switch (what "inert" looks like under the skin); two dashed **†
+  speculative clusters** (Key-Up Pluck, Vel Response) as the growth stress-test. Spacing nits
+  fixed in composite + exhibit (rotary caption clearance; band→controls gap ≈ inter-knob gap;
+  1.7em row gap so fader numbers don't adopt the next row's header).
+  **Exhibit verdicts (user, 2026-07-10):** view at MAX size = the real size (base ≈ 17.5px);
+  **Stretch/Pitch Atk should be SLIDERS not knobs** → widget policy rewrite: instrument panes =
+  vertical sliders (uni- + BIPOLAR with center detent, typed entry bypasses) + rotary switches +
+  toggles; **round knobs retreat to mixer-strip contexts** (pan/send — where arcs matter most).
+  Rotary switches STACK vertically in a cluster (Source over Vowel). **Short banks CENTER under
+  the band; title text stays left-justified** *(title-left superseded in 1.2: bands became legend
+  tabs CENTERED on the box border)*. Readout = amber LOCKED; tick gap ≈ 0.27em LOCKED *(re-tuned
+  to 0.10em with the 1.2 defaults)*;
+  colored per-group headers liked, final palette TBD *(RESOLVED in 1.1/1.2: muted spectrum,
+  hue = ROLE — the meaning-assignment question answered by the canonical group order, without
+  needing Tervik)*. **Two-row wrapping is FINE for a grown pane** (no pagination, no single-row
+  fight). **Verdict changes APPLIED to the exhibit (2026-07-10):** default size 125%, Source/Vowel
+  stacked, Stretch/Pitch Atk as BIPOLAR sliders (center detent on drag/wheel, dblclick recenters,
+  typed bypasses — zero round knobs remain in the pane), short banks centered, tick gap 27,
+  readout dial removed (amber = law), and Bands became the **palette explorer** (mixed /
+  Jupiter-warm / muted-earth / single-hue sets). Open question flagged: does a bipolar slider
+  need a stronger zero affordance than the centered cap + thick middle tick?
+  **Padlington 1.1 (2026-07-10):** header bands now run **left→right in SPECTRUM ORDER** — muted
+  rust → orange → yellow → green → aqua → cyan → blue → mauve (user verdict: "muted" is the theme;
+  the current choices "generally good for now", exact hues still tunable) — and the spectrum set is
+  the explorer default. Banks are **TOP-aligned** (flex-start) so sliders start a uniform distance
+  below every band — previously the Source group's rotary stack pushed its sliders down under
+  flex-end. Meta-strip sliders (Panel / Tick gap / Band hue / Size) got **numeric readouts** so
+  liked positions can be read out directly as spec numbers.
+  **Padlington 1.2 (2026-07-10):** user verdicts locked — spectrum-muted palette stays ("maybe
+  more saturated later"), **Panel 20 / Tick gap 10 / Size 125** are the defaults (everything
+  stays parameterized for later retuning). NEW: the **canonical group order** — **LFO →
+  Oscillator → Filter → Envelope → Effects** (the Juno panel convention; signal flow is really
+  an inverted tree, but parallel branches live INSIDE a slot as subgroups, and per-branch
+  modulators — e.g. Tervik's per-op envelopes — stay with their branch... though user wants to
+  try several Tervik envelope treatments, incl. envelopes PULLED OUT of the op groups like a
+  trad synth's separate EG section, envelopes on small mixer knobs, and horizontally NARROWED
+  sliders (ARP Odyssey vs Juno) for space + cohesion). **Hue = ROLE, not position** (LFO rust /
+  Osc orange / Filter green / Env cyan / FX blue; spares yellow, aqua, mauve): a role keeps its
+  color on every instrument, an absent role leaves a spectrum gap — this RESOLVES the deferred
+  palette meaning-assignment. **Every group is boxed** (fieldset idiom, band = legend tab
+  CENTERED on the top border — supersedes title-left), one subgroup or five, for harmony;
+  subgroup chrome = label + spacing (meta offers hairline / boxed variants); dashed = speculative
+  at any level (the reserved LFO slot is a dashed group; Key-Up Pluck + Response are dashed
+  subgroups inside Envelope). Padlington mapping: Oscillator [Source | Pad | Pitch], Filter,
+  Envelope [Amp | †Pluck | †Response], Effects [Stereo].
+  **Padlington 1.3 (2026-07-10) — user: "THAT looks TERRIFIC"; the production-target look.**
+  Subgroup chrome verdict: **"label only" WINS** (hairline/boxed retired). New law: **EVERY
+  subgroup gets a label, even a lone one** ("Amplitude", "Lowpass") — mandatory labels are what
+  keep slider tops uniform panel-wide (the empty-spacer hack misaligned). Speculative elements
+  (LFO slot, Key-Up Pluck, Response) removed from the exhibit for now; the conventions (dashed =
+  speculative, rust = LFO) stay reserved. SHELVED ideas from this round: (a) a **persistent
+  app-wide "UI scale" setting** — the skin looks even better larger; Size 125 is the working
+  scale for now; (b) **quick visual instrument identity** — a "logo" top-right of the pane
+  and/or per-instrument "faceplate" chrome.
+  **Tervik exhibit 1.0 (2026-07-10)** — `exhibit-tervik.html`. The structural experiment:
+  **envelopes EXTRACTED from the operator groups into a separate Envelope section** (Env 1·2·3 —
+  the trad-synth "EG section over here" reading of the canonical order), with the **three
+  envelope treatments meta-switchable**: wide sliders / horizontally NARROWED sliders (ARP
+  Odyssey; slider width is now a CSS var --slw/--capw) / small mixer knobs. **Follow checkboxes
+  replaced by COPY buttons** ("1 → 2", "1 → 3" — push = copy Env 1's settings, target subgroup
+  flashes amber ~220ms; user's decided interaction, to be mirrored in the real app: copy is
+  a one-shot edit, not a mode). Coarse ratio = first **STEPPED slider** (data-steps: drag/wheel
+  snap to the exact TERVIK_RATIOS targets; typed entry snaps to nearest). Tervik has no
+  LFO/Filter/Effects → the role-hue spectrum shows gaps (orange + cyan only). Panel = Oscillator
+  [Routing (Algo rotary + Feedback) | Op 1 | Op 2 | Op 3] + Envelope [Env 1 | Env 2 | Env 3].
+  **Tervik 1.1 (2026-07-10):** envelope-treatment verdict — **WIDE SLIDERS win** (narrow/knob
+  variants retired; slider width stays a CSS var). Rotary-switch spec tweak, applied skin-wide
+  (both exhibits): **more breathing room (esp. right)** + **larger position labels** (.56em →
+  .66em). DEFERRED: replace rotary position labels with classic **numbered-operator-box +
+  connection-line algorithm diagrams**. BUG FIXED in the fixture spec, must carry into the real
+  skin: a held slider drag could escalate into a native canvas/element drag — fix is
+  **e.preventDefault() on pointerdown** (sliders + rotaries) plus a global **dragstart
+  preventDefault**. Next: further Tervik iteration, then Zindel (drawbar showcase).
+  **Full roster BUILT — MOCKUP PROGRAM COMPLETE (2026-07-10).** After Padlington + Tervik, the
+  remaining five instruments each got an exhibit (copy-and-adapt against the registry's real
+  params), all signed off ("looks great" throughout): **exhibit-zindel** (the drawbar showcase —
+  a new locked widget species: white/black numbered pull-tabs on chrome stems, 0–8 registration,
+  9-position stepped, powers-of-two harmonics white, up = louder; Acceleration takes the green
+  filter-role slot, band "Motion"); **exhibit-vesperia** (the plain three-cluster reference
+  baseline — all sliders: Oscillator[Timbre bipolar] · Filter[Lowpass] · Envelope[Amplitude]);
+  **exhibit-wendelhorn** (first panel with NO spectrum gaps + the strongest shared-cluster reuse:
+  Ensemble = rust LFO, Pitch Atk/Time = Padlington's cluster, Lowpass = Vesperia's, Stereo = a blue
+  Effects box like Padlington's Width); **exhibit-nayumi** (the vowel formant bank IS the green
+  Filter; Vibrato = the rust LFO; Vowel 5-way rotary); **exhibit-boshwick** (the outlier — a 9-way
+  Type rotary with a readout WINDOW driving live per-type inert dimming; tone-shaping in the green
+  filter-role slot). **Three laws locked this round:** (1) **bipolar zero affordance = the amber
+  detent tick** (the tick at the detent tinted the accent, no slot bar; the detent may be OFF-centre
+  — Zindel Spread, Nayumi Size — RESOLVES the deferred bipolar-zero-affordance question); (2)
+  **many-way enums (>5) use a rotary with a readout WINDOW, no radial labels** (Boshwick Type),
+  3–5-way rotaries keep radial labels; (3) **hue = role holds across the whole roster**, and a
+  **tone-shaping "filter substitute" takes the green Filter slot even without a biquad** (Zindel
+  Acceleration, Boshwick Tone, Nayumi's formant bank). **Shared clusters proven** (Pitch Atk/Time,
+  Lowpass, Amplitude, Stereo/Width reused verbatim) and **live inert dimming** generalised to any
+  selector (Boshwick Type, like Padlington Source). **The exhibits ARE the visual spec; the mockup
+  phase is DONE.** Next is INTEGRATION into the real app — the two-step (common-clusters refactor of
+  `ui/instrumentpane.js`, then the skin on top, then app-wide) — with the full handoff (per-instrument
+  mappings, widget policy, agreed editing upgrades, deferred items) in
+  [notes_and_status.md](notes_and_status.md) → "the control-skin program".
 
 ---
 
@@ -1012,9 +1205,9 @@ Then, ordered by *leverage per unit cost*, respecting the dependency edges above
 
 1. **Subsequences (1)** — pure model, no WASM, and it's the emission target for 3 and 6 and
    the scoping model for multi-window panes. Keystone; do it first among the *structural* items.
-2. **PadSynth / analog synths (4, 10)** — cheapest big instruments (native, no WASM). PadSynth
-   reuses the wave-cache; the **poly analog** fits the current voice model as-is; the **mono
-   analog** adds glide (pairs with 7's legato). Quick wins between larger efforts.
+2. **PadSynth / analog synths (4, 10)** — cheapest big instruments (native, no WASM). *PadSynth
+   is DONE (Padlington, 2026-07-09), validating the "quick win" call.* The **poly analog** fits
+   the current voice model as-is; the **mono analog** adds glide (pairs with 7's legato).
 3. **Polyphony + expression (7)** — the deep migration; unblocks harmonization (11), the
    multi-sound drum track (3), and richer MIDI export. Version the format. *(Pulled early in the
    near-term list above because the grid overhaul is what the user wants to work on next.)*
@@ -1406,5 +1599,166 @@ kept here so they aren't lost.
   previous beat. Works because the scheduler commits whole cycles ahead and playback starts at
   now+100 ms (clamp at audition / t=0). Useful for swells, grace notes, reverse builds — a general
   timing technique, not a drum thing.
+
+## 20. Share links + a Player build
+
+**The idea (yours):** a link that opens a **browser page which plays the piece** (with a social
+preview when pasted into a channel), and a **"Player"** — the app in a *"don't scare the user"* mode:
+transport, maybe mix/tempo, no editing. Reuse as much code as possible; a frozen *copy* of the
+engine baked into the link is explicitly fine.
+
+**Why it's cheap: the document is already decoupled from the editor.** `buildEnvelope()`
+([src/js/core/project.js](src/js/core/project.js)) is pure musical content (`lib`/`arr`/`tempo`;
+view state deliberately excluded), and `loadContent(env)` ([src/js/app/projectio.js](src/js/app/projectio.js))
+rebuilds the live library/arrangement in place. Everything downstream consumes a **flattened score**,
+so a player needs only the playback stack, never the editing UI.
+
+**Player shape (either is fine; reuse is the rule).** The 2026-07 refactor bought this: `core/` pure,
+`audio/` imports only `core/`, editor logic in `ui/`+`app/`. So a player is a **lean second
+composition root** importing only `core/` + `audio/` + `app/score.js` + `app/lanefx.js` + a stripped
+transport — the mutating code is simply never loaded — *or* the one app under a flag. Enabling step
+either way: **extract a headless transport core** from [src/js/app/transport.js](src/js/app/transport.js)
+(separate the pure driving — play/stop/loop, mod-clock, tempo — from the editor-view concerns —
+playhead onto the canvases, roll/tile auto-scroll), with the editor's playhead as an injected sink.
+Useful independent of the player; it sharpens the callback seam the refactor established.
+- **Controls:** transport (play/stop/loop, read-only region markers); optional **mixer** (master +
+  per-lane vol/mute/solo/pan, reusing `app/lanefx.js`) and **tempo**; **no** grid/patch/transform
+  editing. Optional **read-only roll/tile visualization** ([src/js/ui/pianoroll.js](src/js/ui/pianoroll.js))
+  so a listener *sees* it move — and the natural home for §22.
+- **Not a WAV bounce.** A player plays the project *live* (keeps the mix/tempo/generative character,
+  tiny payload). Bouncing stays the export path.
+
+**A share = project + a PINNED ENGINE (the "closure" insight — the load-bearing decision).** The
+synthesis engine evolves, so a link that says "load this `.json` into whatever the live app is today"
+will drift or break a bookmarked piece. A share must pin the engine that made it. Two ways:
+- **Pin by reference** — deploy each engine version immutably under a versioned path (`/engine/vN/…`),
+  the share records which it needs. Dedupes storage; you must keep old builds live forever.
+- **Pin by value — the self-contained bundle (recommended to start).** A share is **one self-contained
+  HTML file**: the player + a frozen snapshot of `core/`+`audio/`+`export/` + the project JSON, all
+  inlined. Maximally on-brand — no deps, runs from any static host or `file://`, frozen by construction,
+  and it sidesteps format migration (frozen engine plays frozen format). Since there are no
+  dependencies the engine is small enough to inline per share; fall back to pin-by-reference for dedupe
+  only if bundle size ever annoys.
+- **Determinism nuance:** a pinned engine reproduces the *algorithm and structure*, not byte-identical
+  audio (per-note random phase — Padlington read-heads, Wendelhorn) — same *character*, not a recording.
+  Byte-identical = the WAV bounce, not the player.
+
+**Social preview — where it steps over "runs from plain files."** Link-unfurlers (Slack/Discord/
+iMessage/X) read Open Graph/Twitter `<meta>` tags and **do not run JS**. A single static page gives
+every link the *same* generic card; a **per-piece** card (title = the piece, image = a thumbnail of
+*this* piece) needs piece-specific tags in the fetched HTML. Two paths:
+- **(A) Bake at publish time (recommended, still server-free).** "Publish share" generates the frozen
+  self-contained HTML with the OG tags already baked **and** renders an `og:image` PNG from the piece
+  (the §22 visualizer produces the frame); upload both to a public-read bucket / Pages. Dumb crawlers
+  get a correct rich card because it's all pre-baked.
+- **(B) Render at the edge.** A Cloudflare Worker serving `/play/<id>` returns dynamic OG tags + the
+  player (pretty URLs, private-share auth, cards without re-baking) — but it's a live server component
+  (the same Worker as §21's proxy option).
+- **Autoplay gotcha (either path):** the page opens to a **play button**, never auto-starts (browsers
+  gate audio on a gesture).
+
+**Convergence.** The player is the centerpiece of the share page; **§21 hosts it**; **§22 is what
+people see**, and its captured frame doubles as the per-piece `og:image`. `MediaRecorder` (native)
+later gives a shareable **WebM clip**. Open decisions: pin-by-value vs by-reference (leaning by-value);
+generic card first vs baked per-piece image from the outset; player mix edits ephemeral vs saveable.
+
+## 21. Cloud store (S3-compatible, bring-your-own-bucket)
+
+**The idea (yours):** an online backing store **beside** localStorage autosave and filesystem
+Save/Open — enter credentials for *your* preferred provider (Cloudflare R2, or a like Wasabi/other
+S3-alike), pick a bucket, and Save/Load from there. **For you, right now** — not a GA multi-user
+feature.
+
+**Why it's small: another backend for the same envelope bytes.** Save = `PUT` the `buildEnvelope()`
+JSON; Open = `GET` → `loadContent()`. **No model change.** Placement: an `app/cloudio.js` (or extend
+`projectio.js`) with a thin `fetch` client isolated so nothing pure gets contaminated; reuses
+`buildEnvelope`/`migrate`/`validate`.
+
+**Build S3-generic, not R2-specific.** A settings screen (endpoint URL + access key/secret or a scoped
+token + bucket) targets the **S3 API**, so provider is just an endpoint — R2, **Wasabi**, Backblaze B2,
+MinIO all work unchanged.
+
+**The one real fork — who signs the request:**
+- **Direct browser → S3 (recommended for "right now").** No server. Costs: implement **AWS SigV4** over
+  Web Crypto HMAC-SHA256 (~100 lines, **no SDK** — the no-deps rule holds); the **bucket needs a CORS
+  policy** for your origin (the common snag); the creds live in `localStorage`. Non-negotiable posture:
+  a **bucket-scoped token**, **entered at runtime, never committed** (a baked token leaks the moment the
+  app is public).
+- **Worker proxy.** Creds server-side, no browser signing/CORS — but a live component (and the same
+  Worker as §20 Path B). The **upgrade path** if previews go dynamic.
+
+**Deliberately minimal:**
+- **No cloud autosave** — localStorage stays the continuous autosave; cloud is **explicit** Save/Open/
+  List (avoids hammering the store + surprising cross-machine overwrites).
+- **Keying:** object key = a stable project id; store the project **name** as object metadata so a
+  `LIST` renders a cloud browser without downloading every file.
+- **Concurrency:** solo = last-write-wins; conditional writes (ETag/`If-Match`) are cheap insurance.
+  Optional timestamped keys / object versioning = a **free save-history** trail — attractive pre-MVP
+  while formats churn.
+- **Two access postures:** a **private** working store (authed, your creds) vs **public** baked shares
+  (§20) — same provider, likely a public-read prefix or a separate public bucket. "Save to cloud" and
+  "Publish share" share plumbing.
+
+**Steps over "runs from plain files":** yes — the first piece of Notorolla that speaks to a remote,
+but **optional and flagged**; the core app still runs fully offline (same deliberate line-crossing as
+§5's "no samples").
+
+## 22. Visualizer
+
+**The idea (yours):** a built-in visualizer — "maybe where WebGL meets WASM." **The realization:**
+Notorolla has the **symbolic score** (pitch/cents, lane, velocity, articulation, tuning, note-on
+timing), not just PCM — so the distinctive visualizer is **score-reactive first, audio-reactive
+second**, unlike a generic FFT toy that must *infer* the music back out of samples. A visualizer only
+Notorolla can build.
+
+**WebGL yes (top tier), WASM almost certainly not.** Canvas 2D handles meters, oscilloscope, spectrum,
+a scrolling bloom-roll, even a few thousand particles. **Raw WebGL** (shaders-as-strings — **not**
+three.js, which is a dependency) is reserved for the "wow" tier (many primitives, shader bloom/feedback/
+warp). **WASM is not the gate** — the heavy lifting is either native (`AnalyserNode` FFT) or GPU
+(shaders); WASM only earns its keep for CPU analysis the browser lacks (onset/beat/chroma — and you
+*have* the note-ons, so you don't even need onset) or a big particle physics sim. Defer WASM until a
+scene demands it (same posture as the §4/§2 WASM corrections).
+
+**Seams (mostly exist).** Reuse the meter tap — an `AnalyserNode` on the master (optionally per-lane;
+[src/js/app/meter.js](src/js/app/meter.js) `getPeak` is the same idea) for the audio-reactive layer;
+emit an `onNoteVisual({ cents, laneColor, velocity, artic, time })` off the scheduler lookahead for the
+score-reactive layer. **Live-only** (offline contexts don't animate; the player plays live). Structure
+as a `ui/` visualizer with a **registry of pluggable "scenes"** (data-driven, mirroring instrument
+kinds / scale masks); reusable musical mappings (cents→position, pc→hue, tuning-aware layout) stay
+**pure in `core/`**.
+
+**Flagship scene — the isomorphic HEX keyboard (yours).** Notes light up on a hex isomorphic keyboard
+(the family microtonalists use: **Lumatone/Terpstra**, **AXiS/Harmonic Table**, **Wicki-Hayden**,
+**Bosanquet**) instead of a piano. Why it's Notorolla-native:
+- **Tuning-general by construction.** An isomorphic layout is two axis step-vectors counted in **EDO
+  steps** (`pitch = base + q·X + r·Y`), so the *same* engine works for any EDO — it maps directly onto
+  **`edoOf` being a property of the tuning** ([src/js/core/tuning.js](src/js/core/tuning.js)). A piano is
+  12-centric (exactly why the grid drops black keys and names non-12 in hex `0–f`); **a hex board
+  privileges no EDO** — the visual companion to the whole §15 microtonal program.
+- **Genuinely low-CPU** (what you asked for): geometry is **static** — pre-render the empty board once
+  to an offscreen canvas (redraw only on tuning change/resize), then composite a handful of **filled
+  hexes** per frame. Canvas 2D, **no WebGL/WASM** — the cheapest scene in the registry.
+- **You see harmony.** Isomorphic ⇒ chords are **fixed shapes** (a triad is a triangle on the Harmonic
+  Table), transposition is a **rigid slide** — ties the Triadulator and §15c triad objects.
+- **Open decisions:** a **generalized engine** (two axis vectors + EDO) with named layouts as **data
+  presets** (recommended) vs hard-coded; **many-to-one lighting** — a played degree appears at multiple
+  cells (the isomorphic redundancy), so light **all** instances (octaves dimmer, leaning) vs a canonical
+  one; range/size + labeling reuses `pitchClassName` (12-ET letters / non-12 hex) and the class-0 home
+  tint; lit color = lane color, velocity → brightness.
+- **Forward hooks:** the *same geometry* becomes a future clickable/MIDI hex **input** surface (the
+  deferred live-play/MIDI work) — so build the layout math as a pure `core/` piece, not a canvas
+  helper; and it **ages toward non-octave tunings** (Bohlen-Pierce/Carlos, §11) far better than a piano.
+
+**Other scenes:** the generic oscilloscope/spectrum/level **floor**; a **stereo Lissajous/phase scope**
+(reflects the stereo/width work); per-lane **color bloom** (reusing `laneColor`); **harmony/consonance
+coloring** (deep, §15).
+
+**Convergence.** Centerpiece of the §20 share/player page; a captured frame doubles as the per-piece
+`og:image`; `MediaRecorder` → a WebM clip (native, later).
+
+**Watch-outs.** Must **never steal CPU from the audio** (rAF/GPU-offloaded; a **"visualizer off"**
+switch mirroring "Lite Instruments" — a workspace pref that never dirties the project); **decorative,
+never blocking**; respect `prefers-reduced-motion`; starts on the player's user gesture. Live-only, so
+no determinism concern (unlike exports). Pure client — **does not** step over "runs from plain files."
 
 <!-- add below -->

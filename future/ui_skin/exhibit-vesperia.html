@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Exhibit — Vesperia 1.0</title>
+<style>
+  /* ============ INSTRUMENT EXHIBIT — Vesperia (additive · resonant lowpass) ============
+     The composite skin on the REFERENCE voice — the simplest panel, and the
+     one that fixes the plain three-cluster baseline every other instrument is
+     read against. All vertical sliders (no enums, no drawbars, no knobs):
+       Oscillator [Timbre]  → the spectral-tilt over the additive partials,
+                              BIPOLAR (0.5 = neutral, centred detent);
+       Filter     [Lowpass] → Cutoff / Resonance / Env Amount / Key Track;
+       Envelope   [Amplitude] → A / D / S / R.
+     Canonical order — no LFO/Effects → the role-hue spectrum shows its gaps.
+     Retained design exhibit — self-contained, not product code. */
+  :root {
+    --pl: 20%; --ro: hsl(41, 100%, 62%); --glow: .7; --tgap: .10em; --mbh: 28;
+    --acc: hsl(358, 78%, 56%);
+    --arc: hsl(200, 70%, 55%);
+    --panel: hsl(220, 7%, var(--pl));
+    --panel-hi: hsl(220, 7%, calc(var(--pl) + 6%));
+    --panel-lo: hsl(220, 8%, calc(var(--pl) - 6%));
+    --ink: hsl(220, 12%, 88%);
+    --ink-dim: hsl(220, 8%, 62%);
+    --slot: hsl(222, 10%, calc(var(--pl) - 10%));
+    --tick: hsl(220, 8%, calc(var(--pl) + 26%));
+    --tick-maj: hsl(220, 8%, calc(var(--pl) + 38%));
+    --cap-a: hsl(220, 6%, 42%);
+    --cap-b: hsl(220, 7%, 20%);
+    --cap-c: hsl(220, 8%, 30%);
+    --boxln: hsl(220, 8%, calc(var(--pl) + 16%));
+  }
+  * { box-sizing: border-box; margin: 0; user-select: none; font-weight: 400; }
+  body { background: hsl(220, 7%, calc(var(--pl) - 7%)); color: var(--ink);
+         font: 14px/1.4 Tahoma, "Segoe UI", system-ui, sans-serif; padding: 1.2rem; }
+  header { max-width: 1160px; margin: 0 auto 1rem; }
+  h1 { font-size: 1.25rem; letter-spacing: .05em; }
+  .blurb { color: var(--ink-dim); font-size: .85rem; margin-top: .15rem; }
+  .meta { display: flex; flex-wrap: wrap; gap: .4rem 1rem; align-items: center; margin-top: .7rem;
+          font-size: .78rem; color: var(--ink-dim); background: var(--panel-lo);
+          border: 1px solid var(--panel-hi); border-radius: 6px; padding: .45rem .8rem; }
+  .meta label { display: flex; align-items: center; gap: .4rem; }
+  .meta input[type="range"] { width: 70px; accent-color: var(--acc); }
+  .meta .mv { color: var(--ro); font-variant-numeric: tabular-nums;
+              min-width: 3ch; text-align: right; }
+  .meta select { background: var(--panel); color: var(--ink); border: 1px solid var(--panel-hi);
+                 border-radius: 3px; padding: .12rem .25rem; font-size: .95em; }
+  .meta a { color: var(--ink-dim); margin-left: auto; }
+
+  .panetop { max-width: 1160px; margin: 0 auto; font-size: 14px;
+             display: flex; align-items: center; gap: .8em;
+             background: var(--panel-lo); border: 1px solid var(--panel-hi);
+             border-radius: 8px 8px 0 0; border-bottom: 0; padding: .45em .9em;
+             color: var(--ink-dim); font-size: .82rem; }
+  .panetop .swatch { width: .85em; height: .85em; border-radius: 3px; background: hsl(358, 60%, 55%); }
+  .panetop .kind { color: var(--ink); }
+  .panetop .desc { font-size: .88em; }
+  .panetop .patch { margin-left: auto; color: var(--ro); font-size: .9em; }
+  .panel { max-width: 1160px; margin: 0 auto; font-size: 14px;
+           background: var(--panel);
+           border: 1px solid var(--panel-hi); border-radius: 0 0 10px 10px;
+           box-shadow: 0 8px 30px rgba(0,0,0,.35), inset 0 1px 0 var(--panel-hi);
+           padding: 1.1em 1em 1em; display: flex; flex-wrap: wrap; gap: 1.7em 1.3em; align-items: flex-start; }
+
+  /* BOXED groups: fieldset frame, band = legend tab centered on the border */
+  .group { display: flex; flex-direction: column; align-items: center;
+           border: 1px solid var(--boxln); border-radius: .5em;
+           padding: 0 .7em .6em; }
+  .group h2 { font-size: .72em; letter-spacing: .14em; text-transform: uppercase;
+              color: hsl(220, 30%, 10%); background: hsl(var(--bh, 28), var(--bs, 60%), 54%);
+              padding: .26em .6em; border-radius: .22em;
+              align-self: center; margin: -.95em 0 .5em; position: relative;
+              box-shadow: -.4em 0 0 var(--panel), .4em 0 0 var(--panel); }
+  /* hue = ROLE (locked): Vesperia has no LFO/Effects → spectrum gaps */
+  .b-lfo    { --bh: 15;  --bs: 45%; }  /* muted rust   */
+  .b-osc    { --bh: 30;  --bs: 48%; }  /* muted orange */
+  .b-filter { --bh: 120; --bs: 30%; }  /* muted green  */
+  .b-env    { --bh: 190; --bs: 40%; }  /* muted cyan   */
+  .b-fx     { --bh: 215; --bs: 35%; }  /* muted blue   */
+  .monoband .group h2 { background: hsl(var(--mbh), 60%, 54%); }
+
+  /* SUBGROUPS: label-only chrome (locked); EVERY subgroup labeled. */
+  .subs { display: flex; gap: 1.1em; align-items: flex-start; }
+  .sub { display: flex; flex-direction: column; align-items: center; gap: .3em;
+         border-radius: .4em; }
+  .slrow { display: flex; gap: .6em; align-items: center; height: 1.1em; }
+  .sl { font-size: .62em; letter-spacing: .12em; text-transform: uppercase;
+        color: var(--ink-dim); }
+
+  /* ---- vertical slider (locked spec) ---- */
+  .bank { display: flex; gap: var(--tgap); align-items: flex-start; }
+  .vsl { display: flex; flex-direction: column; align-items: center; gap: .16em; }
+  .vslider { position: relative; width: var(--slw, 1.8em); height: 7.4em; cursor: pointer; touch-action: none; }
+  .vslider .slot { position: absolute; left: 50%; transform: translateX(-50%);
+                   top: 0; bottom: 0; width: .3em; border-radius: .15em; background: var(--slot);
+                   box-shadow: inset 0 1px 3px rgba(0,0,0,.7), inset 0 -1px 0 var(--panel-hi); }
+  .vslider .ticks { position: absolute; top: .42em; bottom: .42em; width: calc(50% - .15em);
+                    display: flex; flex-direction: column-reverse; justify-content: space-between; }
+  .vslider .ticks.l { left: 0; }
+  .vslider .ticks.r { right: 0; }
+  .vslider .ticks i { display: block; width: 100%; height: 1px; background: var(--tick); }
+  .vslider .ticks i.maj { height: 2px; background: var(--tick-maj); }
+  .vslider .cap { position: absolute; left: 50%; transform: translateX(-50%);
+                  width: var(--capw, 1.62em); height: .92em; border-radius: .13em;
+                  bottom: calc(var(--val, .5) * (100% - .92em));
+                  background: linear-gradient(180deg, var(--cap-a), var(--cap-b) 46%, var(--cap-c));
+                  border: 1px solid hsl(220,8%,12%);
+                  box-shadow: 0 2px 4px rgba(0,0,0,.55), inset 0 1px 0 hsla(0,0%,100%,.22); }
+  .vslider .cap::after { content: ''; position: absolute; left: 6%; right: 6%; top: 50%;
+                         height: 1.5px; margin-top: -.75px; background: hsl(220, 15%, 92%); }
+  /* bipolar slider: the tick at the detent (the zero) is amber — the accent
+     marks the neutral position without adding a slot bar */
+  .vslider .ticks i.det { background: var(--ro); }
+  .vsl .bl { font-size: .72em; color: var(--ink); letter-spacing: .03em; }
+  .vsl .ro { font-size: .7em; color: var(--ro); font-variant-numeric: tabular-nums;
+             width: 5.5ch; text-align: center; min-height: 1.2em; }
+
+  .ro input.edit {
+    width: 100%; font: inherit; color: var(--ro); background: hsl(220, 10%, 10%);
+    border: 1px solid var(--ro); border-radius: 2px; text-align: center;
+    padding: 0; outline: none; }
+  footer { max-width: 1160px; margin: .8rem auto 0; font-size: .72rem; color: var(--ink-dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Exhibit — Vesperia 1.0</h1>
+  <p class="blurb">The <b>reference voice</b> — additive partials through a resonant lowpass — and the
+    plainest panel: the three-cluster baseline every other instrument reads against. All <b>vertical
+    sliders</b>. <b>Timbre</b> is the spectral tilt over the partials, <b>bipolar</b> (0.5 = neutral,
+    centred detent — dblclick recentres). No LFO/Effects → the role-hue spectrum shows its gaps.</p>
+  <div class="meta">
+    <label>Panel <input type="range" id="mPanel" min="14" max="34" value="20"><span class="mv" id="mPanelV"></span></label>
+    <label>Tick gap <input type="range" id="mTgap" min="4" max="50" value="10"><span class="mv" id="mTgapV"></span></label>
+    <label>Bands <select id="mBands">
+      <option value="spectrum" selected>spectrum (muted)</option>
+      <option value="single">single hue</option></select></label>
+    <label>Band hue <input type="range" id="mBand" min="20" max="300" value="28"><span class="mv" id="mBandV"></span></label>
+    <label>Size <input type="range" id="mSize" min="85" max="135" value="125"><span class="mv" id="mSizeV"></span></label>
+    <a href="index.html">← gallery</a>
+  </div>
+</header>
+
+<div class="panetop">
+  <span class="swatch"></span><span>Lane 1</span>
+  <span class="kind">Vesperia</span><span class="desc">additive · resonant lowpass</span>
+  <span class="patch">Init</span>
+</div>
+<main class="panel" id="panel">
+  <!-- canonical order: (LFO —) → Oscillator → Filter → Envelope → (Effects —) -->
+  <section class="group b-osc">
+    <h2>Oscillator</h2>
+    <div class="subs">
+      <div class="sub"><div class="slrow"><span class="sl">Timbre</span></div>
+        <div class="bank">
+          <div class="vsl"><div class="vslider bip" data-val=".5" data-detent=".5" data-fmt="timbre" data-name="Timbre (spectral tilt over the harmonics; left darkens, right brightens, centre = default mix)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Tilt</span><span class="ro"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="group b-filter">
+    <h2>Filter</h2>
+    <div class="subs">
+      <div class="sub"><div class="slrow"><span class="sl">Lowpass</span></div>
+        <div class="bank">
+          <div class="vsl"><div class="vslider" data-val=".455" data-fmt="hz"  data-name="Cutoff (base, before key tracking)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Cutoff</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val="0"    data-fmt="q"   data-name="Resonance (peak at the cutoff; high values whistle)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Reso</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".365" data-fmt="oct" data-name="Env Amount (octaves the filter envelope opens cutoff above base at the attack)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Env</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val="1"    data-fmt="pct" data-name="Key Track (how much cutoff follows pitch; 1 = fully f0-relative)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">KeyTrk</span><span class="ro"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="group b-env">
+    <h2>Envelope</h2>
+    <div class="subs">
+      <div class="sub"><div class="slrow"><span class="sl">Amplitude</span></div>
+        <div class="bank">
+          <div class="vsl"><div class="vslider" data-val=".19"  data-fmt="ea" data-name="Attack (note-on to full level)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">A</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".726" data-fmt="ed" data-name="Decay (fall toward sustain; at Sustain 0 = the ring-down time)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">D</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val="0"    data-fmt="pct" data-name="Sustain (hold level; 0 = decay to silence, the struck-string behaviour)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">S</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".341" data-fmt="er" data-name="Release (fade once the key lifts)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">R</span><span class="ro"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+<footer>future/ui_skin exhibit — Vesperia, the reference voice, in the composite skin. Dblclick values to type; wheel = coarse, tilt = fine; Timbre is bipolar (dblclick recentres).</footer>
+
+<script>
+// Exhibit wiring — throwaway, not product code.
+(function () {
+  const $ = (s, r) => Array.from((r || document).querySelectorAll(s));
+
+  const secFmt = (lo, hi) => (t) => {
+    const s = lo * Math.pow(hi / lo, t);
+    return s < 1 ? Math.round(s * 1000) + ' ms' : s.toFixed(2) + ' s';
+  };
+  const secFmtC = (lo, hi) => (t) => {
+    const s = lo * Math.pow(hi / lo, t);
+    return s < 1 ? String(Math.round(s * 1000)) : s.toFixed(2) + 's';
+  };
+  const secParse = (lo, hi) => (str) => {
+    let v = num(str);
+    if (v == null) return null;
+    if (/(^|\d)\s*s\s*$/i.test(str) && !/ms\s*$/i.test(str)) v *= 1000;
+    const sec = Math.min(hi, Math.max(lo, v / 1000));
+    return Math.log(sec / lo) / Math.log(hi / lo);
+  };
+  const logFmt = (lo, hi, disp) => (t) => disp(lo * Math.pow(hi / lo, t));
+  const hzV = (t) => 120 * Math.pow(14000 / 120, t);
+  const qV = (t) => 0.5 + t * 17.5;
+  const octV = (t) => t * 4;
+  const timbreD = (t) => (t - 0.5) * 2; // −1 (dark) … +1 (bright)
+
+  const FMT = {
+    pct: t => Math.round(t * 100) + '%',
+    hz:  t => { const v = hzV(t); return v >= 1000 ? (v / 1000).toFixed(1) + ' kHz' : Math.round(v) + ' Hz'; },
+    q:   t => 'Q ' + qV(t).toFixed(1),
+    oct: t => octV(t).toFixed(2) + ' oct',
+    timbre: t => { const d = timbreD(t); return Math.abs(d) < 0.01 ? 'neutral (default mix)'
+                   : (d < 0 ? 'darker ' : 'brighter ') + Math.round(Math.abs(d) * 100) + '%'; },
+    ea:  secFmt(0.001, 1.5),
+    ed:  secFmt(0.02, 5),
+    er:  secFmt(0.01, 3),
+  };
+  const FMTC = {
+    pct: t => String(Math.round(t * 100)),
+    hz:  t => { const v = hzV(t); return v >= 1000 ? (v / 1000).toFixed(1) + 'k' : String(Math.round(v)); },
+    q:   t => qV(t).toFixed(1),
+    oct: t => octV(t).toFixed(2),
+    timbre: t => { const d = timbreD(t); return Math.abs(d) < 0.01 ? '0'
+                   : (d > 0 ? '+' : '−') + Math.round(Math.abs(d) * 100); },
+    ea:  secFmtC(0.001, 1.5),
+    ed:  secFmtC(0.02, 5),
+    er:  secFmtC(0.01, 3),
+  };
+  const num = (s) => { const v = parseFloat(String(s).replace(/[^\d.eE+-]/g, ' ')); return isFinite(v) ? v : null; };
+  const PARSE = {
+    pct: (s) => { const v = num(s); return v == null ? null : v / 100; },
+    hz:  (s) => { let v = num(s); if (v == null) return null; if (/k/i.test(s)) v *= 1000;
+                  v = Math.min(14000, Math.max(120, v)); return Math.log(v / 120) / Math.log(14000 / 120); },
+    q:   (s) => { const v = num(s); return v == null ? null : (Math.min(18, Math.max(0.5, v)) - 0.5) / 17.5; },
+    oct: (s) => { const v = num(s); return v == null ? null : Math.min(4, Math.max(0, v)) / 4; },
+    timbre: (s) => { if (/neut/i.test(s)) return 0.5; let v = num(s); if (v == null) return null;
+                     let d = v / 100; if (/dark/i.test(s)) d = -Math.abs(d); if (/bright/i.test(s)) d = Math.abs(d);
+                     return Math.min(1, Math.max(0, 0.5 + d / 2)); },
+    ea:  secParse(0.001, 1.5),
+    ed:  secParse(0.02, 5),
+    er:  secParse(0.01, 3),
+  };
+
+  // 11-tick ladders (majors at 0/5/10 by thickness). On a bipolar slider the
+  // tick at the detent (the zero) is tinted amber (the accent) — no slot bar.
+  $('.vslider .ticks').forEach((tk) => {
+    const sl = tk.closest('.vslider');
+    const det = sl && sl.classList.contains('bip') && sl.dataset.detent != null ? +sl.dataset.detent : null;
+    const detIdx = det != null ? Math.round(det * 10) : -1;
+    for (let i = 0; i < 11; i++) {
+      const m = document.createElement('i');
+      if (i % 5 === 0) m.className = 'maj';
+      if (i === detIdx) m.classList.add('det');
+      tk.append(m);
+    }
+  });
+
+  const editable = (el, fmtKey, setT) => {
+    if (!el || !PARSE[fmtKey]) return;
+    el.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      if (el.querySelector('input')) return;
+      const old = el.textContent;
+      const inp = document.createElement('input');
+      inp.className = 'edit';
+      inp.value = old;
+      el.textContent = '';
+      el.append(inp);
+      inp.focus();
+      inp.select();
+      let done = false;
+      const finish = (commit) => {
+        if (done) return;
+        done = true;
+        const t = commit ? PARSE[fmtKey](inp.value) : null;
+        inp.remove();
+        if (t != null) setT(Math.min(1, Math.max(0, t)));
+        else el.textContent = old;
+      };
+      inp.addEventListener('keydown', (ev) => {
+        ev.stopPropagation();
+        if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+        else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+      });
+      inp.addEventListener('blur', () => finish(true));
+    });
+  };
+
+  const nudgeWheel = (el, step) => {
+    el.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      if (e.deltaY) step(e.deltaY < 0 ? 1 : -1, false);
+      if (e.deltaX) step(e.deltaX > 0 ? 1 : -1, true);
+    }, { passive: false });
+  };
+
+  // Vertical sliders. data-detent = bipolar snap (typed entry bypasses).
+  $('.vslider').forEach((fd) => {
+    let v = +fd.dataset.val || 0;
+    const fmt = fd.dataset.fmt || 'pct';
+    const name = fd.dataset.name || '';
+    const detent = fd.dataset.detent != null ? +fd.dataset.detent : null;
+    const out = fd.parentElement.querySelector('.ro');
+    const sync = () => {
+      fd.style.setProperty('--val', v);
+      if (out && !out.querySelector('input')) out.textContent = FMTC[fmt](v);
+      const tip = name + ' — ' + FMT[fmt](v);
+      fd.title = tip;
+      if (out) out.title = tip + ' (double-click to type)';
+    };
+    const snap = (x, wheelBand) => {
+      x = Math.min(1, Math.max(0, x));
+      if (detent != null && Math.abs(x - detent) < wheelBand) return detent;
+      return x;
+    };
+    fd.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); // stop native drag/pan from hijacking a held slide
+      fd.setPointerCapture(e.pointerId);
+      const r = fd.getBoundingClientRect();
+      const move = (ev) => { v = snap(1 - (ev.clientY - r.top) / r.height, 0.035); sync(); };
+      move(e);
+      fd.addEventListener('pointermove', move);
+      fd.addEventListener('pointerup', () => fd.removeEventListener('pointermove', move), { once: true });
+    });
+    fd.addEventListener('dblclick', () => { if (detent != null) { v = detent; sync(); } });
+    nudgeWheel(fd, (dir, fine) => { v = snap(v + dir * (fine ? 0.005 : 0.04), 0.015); sync(); });
+    editable(out, fmt, (t) => { v = t; sync(); }); // typed = exact, no detent snap
+    fd._get = () => v;
+    fd._set = (t) => { v = t; sync(); };
+    sync();
+  });
+
+  // Belt-and-suspenders for the canvas-drag bug: never let native HTML drag start.
+  document.addEventListener('dragstart', (e) => e.preventDefault());
+
+  // Meta strip.
+  const root = document.documentElement;
+  const wire = (id, fn) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const mv = document.getElementById(id + 'V');
+    const go = () => {
+      const v = el.type === 'checkbox' ? el.checked : el.value;
+      if (mv) mv.textContent = v;
+      fn(v);
+    };
+    el.addEventListener('input', go);
+    el.addEventListener('change', go);
+    go();
+  };
+  wire('mPanel', (v) => root.style.setProperty('--pl', v + '%'));
+  wire('mTgap', (v) => root.style.setProperty('--tgap', (v / 100) + 'em'));
+  wire('mBands', (v) => document.querySelector('.panel').classList.toggle('monoband', v === 'single'));
+  wire('mBand', (v) => root.style.setProperty('--mbh', v));
+  wire('mSize', (v) => { document.querySelector('.panel').style.fontSize = (14 * v / 100) + 'px'; });
+})();
+</script>
+</body>
+</html>

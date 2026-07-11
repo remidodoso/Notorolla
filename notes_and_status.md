@@ -287,6 +287,99 @@ archive or the linked section. (Bigger features are in [future_directions.md](fu
 
 ---
 
+## The control-skin program (future/ui_skin/) — MOCKUPS COMPLETE; integration handoff (2026-07-10)
+
+**Status: the mockup phase is DONE.** Over 2026-07-09/10 the composer and an agent ran an iterative
+mockup program for a new control skin (the eventual replacement for the whole app's utilitarian look,
+starting with the instrument panes). **All seven instruments now have an exhibit** — the composer
+signed off each ("looks great" throughout; drawbar tabs "done"; Padlington 1.3 "TERRIFIC"). Everything
+lives in [future/ui_skin/](future/ui_skin/) as **self-contained, double-click-to-open throwaway
+fixtures** (no imports from `src/`, and nothing under `src/` may import from `future/` — see
+[future/README.md](future/README.md)): a gallery ([index.html](future/ui_skin/index.html)), the
+Round-1 style studies + Round-5 composite (the derivation), and the seven **instrument exhibits** —
+`exhibit-`**vesperia** / **zindel** / **wendelhorn** / **tervik** / **nayumi** / **boshwick** /
+**padlington**`.html`. **The exhibits ARE the visual spec** for the real UI; the round-by-round design
+record (every verdict, locked law, deferred idea) is [future_directions.md](future_directions.md) §13.
+Read both before implementing — the composer set these by hand over many rounds; they are not up for
+re-derivation.
+
+**These instrument exhibits are RETAINED permanently** (for now) — a **living design surface**, not a
+throwaway that gets deleted once the skin lands in the app. The section will keep receiving attention
+(further iteration on the skin, and likely new exhibits as instruments are added), so treat it as the
+standing reference/source-of-truth for the control skin **even past migration**. (The Round-1→5 style
+studies alongside them are the *historical* derivation.) Do **not** archive or remove the exhibits when
+the integration below is done.
+
+**Locked design laws (headline).** Lights glow / **text never glows**; colored text only
+mono-amber/green/cyan (readouts = amber, **fixed-width, unit-less**); Tahoma at weight 400 only; the
+**vertical slider is the canonical control** (11 ticks, majors by thickness, flush to the slot) —
+round knobs retreat to mixer strips; the **canonical group order LFO → Oscillator → Filter → Envelope
+→ Effects** with **hue = role** (muted spectrum rust/orange/green/cyan/blue — a role keeps its colour
+on every instrument, an absent role leaves a gap); every group a **boxed fieldset** with the colour
+band as a centered legend tab; **label-only subgroup chrome, every subgroup labeled**; defaults
+Panel 20 / Tick gap 10 / Size 125 with *everything kept parameterized* (CSS vars + meta dials); typed
+entry bypasses detents; wheel = coarse, wheel-tilt = fine; pointerdown handlers must `preventDefault`
+(+ a global `dragstart` block) or held drags hijack the canvas. **Laws locked during the roster pass
+(2026-07-10):** (a) **bipolar zero affordance = the amber detent tick** — the tick at the detent is
+tinted the accent (amber), no slot bar; the detent may be **off-centre** (Zindel Spread, Nayumi Size);
+(b) **many-way enums (>5) use a rotary with a readout WINDOW, no radial labels** (Boshwick's 9-way
+Type) — 3–5-way rotaries keep radial position labels; (c) a **tone-shaping "filter substitute" takes
+the green Filter slot even without a biquad** (Zindel Acceleration → band "Motion", Boshwick Tone →
+band "Tone", Nayumi's formant bank = the Filter); (d) **live inert dimming off any selector** (Boshwick
+Type, Padlington Source — dim + desaturate, still draggable); (e) the **drawbar tab** is a locked new
+widget species (Zindel — white/black numbered pull-tabs on chrome stems, 0–8 registration, 9-position
+stepped, powers-of-two harmonics white, up = louder). **Shared clusters** (Pitch Atk/Time, Lowpass,
+Amplitude, Stereo/Width) are reused verbatim across instruments — the concrete anchor for the §13
+shared-label roles.
+
+---
+
+### INTEGRATION HANDOFF — the next job (for whoever implements the skin in the real app)
+
+The mockups are the destination; this is how to get the real app there. **Discuss before implementing —
+nothing is built without the composer's "make it so" — and the composer performs all commits** (see the
+DO-NOT-MODIFY header). It's a **two-step**, in order:
+
+**Step 1 — the common-clusters instrument-pane refactor** (future_directions §13 "rework panels into
+COMMON CLUSTERS"; pure registry/UI, **zero DSP change**). Restructure the kind-aware pane in
+[ui/instrumentpane.js](src/js/ui/instrumentpane.js) so every kind assembles from **shared param-group
+builders** (`ampEnvelopeParams()`, `filterParams()`, `pitchAtkParams()`, …) laid out in the canonical
+order with hue = role. **Each exhibit already fixes its instrument's exact group/subgroup mapping —
+port those**: Vesperia = Oscillator[Timbre] · Filter[Lowpass] · Envelope[Amplitude]; Zindel =
+Oscillator[Drawbars · Tone] · Motion(green filter-role)[Acceleration] · Envelope; Wendelhorn =
+LFO[Ensemble] · Oscillator[Saws · Pitch] · Filter[Lowpass] · Envelope · Effects[Stereo] (all five
+hues); Tervik = Oscillator[Routing · Op 1·2·3] · Envelope[Env 1·2·3] (envelopes extracted; Follow →
+"1 → 2" copy buttons); Nayumi = LFO[Vibrato] · Oscillator[Voice · Breath] · Filter[Formant] ·
+Envelope; Boshwick = Oscillator[Voice · Pitch] · Tone(green filter-role)[Colour] · Envelope; Padlington
+= Oscillator[Source · Pad · Pitch] · Filter · Envelope · Effects[Stereo]. This refactor is also the
+natural home for the **shared-label "roles"** (§13 — a timbre/brightness/filter-sweep tag per control).
+
+**Step 2 — the skin itself**, on the refactored pane + the widgets in [ui/knob.js](src/js/ui/knob.js).
+Implement the vocabulary as real widgets driven by the registry metadata: **vertical slider**
+(uni-polar + **bipolar with the amber detent tick**, off-centre allowed), **rotary switch** (≤5 →
+radial labels; >5 → readout window, e.g. Boshwick Type), **drawbar tabs** (Zindel), toggles; **round
+knobs only in mixer-strip contexts** (pan/send). Wire inert via the existing `spec.inert(patch)`
+mechanism (Boshwick/Padlington). Carry the interaction laws verbatim — wheel = coarse / tilt = fine,
+**dblclick-to-type readouts**, and the **pointerdown `preventDefault` + global `dragstart` block**
+(the canvas-drag-hijack fix; MUST carry over). Then the skin spreads **app-wide** (transport, toolbars,
+mixer, panes) — later.
+
+**Real-app editing upgrades already agreed** (needed by the skin, §13): dblclick-to-type readouts;
+**Tervik Fine** display precision 2 → 3–4 decimals; **typed values bypass `makeKnob` detents** (the
+detent radius makes |Tervik fine| < 0.06 unreachable by drag — the PWM-beating range lives inside the
+snap zone); a per-param detent radius.
+
+**Deferred / reserved design items** (still open, resolve with the composer during implementation):
+FM **operator-diagram labels** for Tervik's Algorithm rotary (replacing text position labels); a
+persistent **app-wide UI-scale** setting; per-instrument **identity** (logo / faceplate chrome); the
+**key-up-pluck** envelope generator (§13 — a scheduled release-transient voice). Plus minor mapping
+calls flagged this session but not blocking: Wendelhorn Detune-in-Oscillator vs. with the Ensemble;
+Stereo/Width as a lone Effects box; Nayumi Grit in Oscillator vs. an Effects box; Boshwick's per-type
+**inert map** (currently Pitch Env → {kick, tom}, Snap → {snare} — a proposal, since the registry
+carries no explicit Boshwick `inert` predicates yet) and whether Snap belongs in Oscillator vs. Tone.
+
+---
+
 ## File map
 
 The source lives under `src/js/`, grouped by role: **core/** (pure model + music logic, headless-testable), **audio/** (Web Audio engine + effects + patches), **ui/** (DOM/canvas views + widgets), **export/** (file encoders), and **app/** (the feature-controller layer — see the note below). `main.js` is the composition root.
@@ -1237,8 +1330,9 @@ gibberish (degree ≠ MIDI note off 12).
 _(Actionable parked items are in the **Deferred work / TODO** section near the top; this is the
 standing list of broader gaps. Already-fixed bugs live in the archive.)_
 
-- **Partial lane controls**: **Mute / Solo** and **adding lanes** are in. Still deferred:
-  **removing** lanes (likely a right-click menu), volume, naming, per-lane instrument.
+- **Partial lane controls**: Mute/Solo, adding lanes, per-lane **gain + pan** (lane-head knobs →
+  mixer strips), and **per-lane instrument** (with patch identity) are in. Still deferred:
+  **removing** lanes (likely a right-click menu), lane **naming**.
 - **No phasing**: lanes share one combined loop; independent per-lane loop lengths
   (Reich-style phasing) is a future option.
 - **Interactive lane editing — partial**: drag-reorder/position within a lane, move/copy between
@@ -1247,10 +1341,8 @@ standing list of broader gaps. Already-fixed bugs live in the archive.)_
   model is shaped to extend to a list of ids, but the gesture/multi-select that feeds it isn't built).
 - **Per-tile playhead sync** (edits committing at the next tile rather than the next whole
   pass) is tied to interactive lane editing — deferred.
-- One octave per grid by default; **microtones / alternate scales** not built (the tuning
-  seam is ready for them).
-- **Save / pattern browser** not built; localStorage is a stand-in.
-- **MIDI** not wired.
+- One octave per grid, monophonic — by design for now (polyphony is future_directions §7).
+- **Live MIDI I/O** not wired (deferred by decision; **export to .mid is built** — see Export to MIDI).
 - Cursor "Glyph" mode is shaky for 3/8 and 1/2 (Unicode coverage) — **SMuFL** later.
 
 ## Conventions

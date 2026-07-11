@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Control-skin mockups — instrument exhibits</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { background: hsl(220, 7%, 15%); color: hsl(220, 12%, 88%);
+         font: 15px/1.5 "Segoe UI", system-ui, sans-serif; padding: 2rem; }
+  main { max-width: 880px; margin: 0 auto; }
+  h1 { font-size: 1.3rem; font-weight: 600; letter-spacing: .03em; }
+  .sub { color: hsl(220, 8%, 62%); font-size: .9rem; margin: .3rem 0 1.6rem; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 1rem; }
+  a.card { display: block; text-decoration: none; color: inherit;
+           background: hsl(220, 7%, 20%); border: 1px solid hsl(220, 7%, 28%);
+           border-radius: 10px; padding: 1rem 1.2rem;
+           transition: border-color .15s, transform .15s; }
+  a.card:hover { border-color: hsl(220, 30%, 55%); transform: translateY(-2px); }
+  .card h2 { font-size: 1rem; font-weight: 600; display: flex; align-items: center; gap: .6rem; }
+  .chip { width: 1.5rem; height: 1.5rem; border-radius: 5px; display: inline-block; flex: none; }
+  .a .chip { background: linear-gradient(135deg, hsl(220,7%,30%) 55%, hsl(358,78%,56%) 55%); }
+  .b .chip { background: conic-gradient(hsl(145,68%,50%), hsl(28,80%,55%), hsl(210,70%,55%), hsl(285,60%,60%), hsl(145,68%,50%)); }
+  .c .chip { background: linear-gradient(135deg, hsl(215,6%,28%) 55%, hsl(175,60%,45%) 55%); }
+  .d .chip { background: repeating-conic-gradient(hsl(210,4%,50%) 0 15deg, hsl(210,5%,26%) 15deg 30deg); border-radius: 50%; }
+  .card p { color: hsl(220, 8%, 66%); font-size: .84rem; margin-top: .5rem; }
+  .howto { margin-top: 1.8rem; color: hsl(220, 8%, 62%); font-size: .84rem;
+           background: hsl(220, 7%, 18%); border: 1px solid hsl(220, 7%, 26%);
+           border-radius: 8px; padding: .9rem 1.1rem; }
+  .howto b { color: hsl(220, 12%, 84%); }
+  code { background: hsl(220, 8%, 12%); border-radius: 3px; padding: .05em .35em; font-size: .92em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Control-skin mockups</h1>
+  <p class="sub">The control skin (future_directions §13). Self-contained fixtures, wired to nothing
+    but life — every control drags; lamps light; the meter runs. The <b>instrument exhibits are the
+    retained, living design spec</b> (kept even past migration into the app); the Round-1→5 studies
+    below are the historical derivation.</p>
+
+  <h2 style="font-size:1rem; margin-bottom:.6rem;">Instrument exhibits</h2>
+  <div class="cards" style="margin-bottom:1.6rem;">
+    <a class="card e" href="exhibit-boshwick.html"><h2><span class="chip" style="background:linear-gradient(135deg, hsl(30,48%,54%) 50%, hsl(120,30%,54%) 50% 75%, hsl(190,40%,54%) 75%);"></span>Exhibit · Boshwick 1.0</h2>
+      <p>The percussion outlier — the <b>Type</b> rotary swaps the whole topology, so most knobs go <b>inert per type</b> (turn Type: <b>Pitch Env</b> lights for Kick/Tom, <b>Snap</b> for Snare — the live inert-dimming stress test). Nine types → Type shows its value in a <b>readout window</b> (no radial labels). Tone-shaping (Tone·Snap) takes the green <b>filter-role</b> slot; no LFO/Effects → rust + blue gaps.</p></a>
+    <a class="card e" href="exhibit-nayumi.html"><h2><span class="chip" style="background:linear-gradient(135deg, hsl(15,45%,54%) 25%, hsl(30,48%,54%) 25% 50%, hsl(120,30%,54%) 50% 75%, hsl(190,40%,54%) 75%);"></span>Exhibit · Nayumi 1.0</h2>
+      <p>The richest voice — source–filter vocal synthesis read by role: <b>Vibrato</b> = the rust <b>LFO</b>, the glottal source (<b>Voice</b> + <b>Breath</b>) = the <b>Oscillator</b>, and the <b>vowel formant bank IS the Filter</b> (Vowel 5-way rotary · Size · Resonance · Soprano). <b>Size</b> uses the amber detent tick at its off-centre neutral. No Effects → blue gap.</p></a>
+    <a class="card e" href="exhibit-wendelhorn.html"><h2><span class="chip" style="background:linear-gradient(135deg, hsl(15,45%,54%) 20%, hsl(30,48%,54%) 20% 40%, hsl(120,30%,54%) 40% 60%, hsl(190,40%,54%) 60% 80%, hsl(215,35%,54%) 80%);"></span>Exhibit · Wendelhorn 1.0</h2>
+      <p>The brass supersaw ensemble — the first panel that <b>fills all five role hues</b> (no gaps) and the strongest <b>shared-cluster</b> showcase: <b>Ensemble</b> = the rust <b>LFO</b> (pitch-LFO chorus), <b>Pitch Atk/Time</b> = Padlington's Oscillator sub-cluster (bipolar, <b>amber detent tick</b>), <b>Lowpass</b> = Vesperia's cluster, <b>Stereo</b> = a blue <b>Effects</b> box like Padlington's Width. Only the LFO is instrument-specific.</p></a>
+    <a class="card e" href="exhibit-vesperia.html"><h2><span class="chip" style="background:linear-gradient(135deg, hsl(30,48%,54%) 33%, hsl(120,30%,54%) 33% 66%, hsl(190,40%,54%) 66%);"></span>Exhibit · Vesperia 1.0</h2>
+      <p>The <b>reference voice</b> and the plainest panel — the three-cluster baseline every other instrument reads against. All <b>vertical sliders</b>: Oscillator [Timbre — <b>bipolar</b>, centred detent] → Filter [Lowpass] → Envelope [Amplitude]. No LFO/Effects → the role-hue spectrum shows its gaps. Dblclick to type; wheel = coarse, tilt = fine.</p></a>
+    <a class="card e" href="exhibit-zindel.html"><h2><span class="chip" style="background:linear-gradient(135deg, hsl(30,48%,54%) 40%, hsl(120,30%,54%) 40% 70%, hsl(190,40%,54%) 70%);"></span>Exhibit · Zindel 1.0</h2>
+      <p>The <b>drawbar additive organ</b> — the drawbar widget in <b>two versions</b> (meta <b>Drawbars</b>): <b>plain</b> (a neat group of ordinary sliders) or <b>tabs</b> (white/black numbered pull-tabs on chrome stems, <b>0–8 registration</b>, <b>9-position clicks</b>, packed as a manual). <b>up = louder</b> on both. <b>Acceleration</b> takes the green <b>filter-role</b> slot (the "filter substitute"; band tab "Motion"); no LFO/Effects → spectrum gaps. Spread's zero sits off-center (detent at the semantic zero).</p></a>
+    <a class="card e" href="exhibit-tervik.html"><h2><span class="chip" style="background:linear-gradient(135deg, hsl(30,48%,54%) 50%, hsl(190,40%,54%) 50%);"></span>Exhibit · Tervik 1.1</h2>
+      <p>The 3-op FM instrument with <b>envelopes extracted into a separate Envelope section</b> (Env 1·2·3) — <b>wide sliders won the treatment trial</b>. Follow checkboxes replaced by <b>1 → 2 / 1 → 3 copy buttons</b> (target flashes). Coarse ratio = <b>stepped slider</b> (snaps to exact ratios); Algorithm rotary w/ breathing room (<b>op-diagram labels deferred</b>); no Filter/Effects → the role-hue spectrum shows its gaps.</p></a>
+    <a class="card e" href="exhibit-padlington.html"><h2><span class="chip" style="background:linear-gradient(135deg, hsl(15,45%,54%) 25%, hsl(30,48%,54%) 25% 50%, hsl(120,30%,54%) 50% 75%, hsl(190,40%,54%) 75%);"></span>Exhibit · Padlington 1.3</h2>
+      <p>The composite skin on a <b>real instrument panel</b> — the <b>production-target look</b>: canonical group order (Oscillator → Filter → Envelope → Effects), <b>hue = role</b>, boxed fieldset groups with centered legend tabs, <b>label-only subgroup chrome</b> (every subgroup labeled — Amplitude, Lowpass), <b>live inert dimming</b> (turn Source). Speculative elements removed.</p></a>
+  </div>
+
+  <h2 style="font-size:1rem; margin-bottom:.6rem;">Round 5 — the composite</h2>
+  <div class="cards" style="margin-bottom:1.6rem;">
+    <a class="card e" href="skin-e-composite.html"><h2><span class="chip" style="background:linear-gradient(135deg, hsl(28,70%,54%) 30%, hsl(220,7%,30%) 30% 70%, hsl(41,100%,55%) 70%);"></span>E · Round 5 Composite</h2>
+      <p>Ticks restored (R4 bug); <b>per-slider values back, unit-less</b> (5ch windows fit the column — units in the rollover); <b>wide Jupiter-8 caps</b>; rotary switches with <b>position labels</b> (text + glyph demos); <b>black-on-color header bands</b> — per-group tasteful palette vs single hue (meta). Dblclick to type, wheel/tilt, Tick-gap dial, knob size ladder all retained.</p></a>
+  </div>
+
+  <h2 style="font-size:1rem; margin-bottom:.6rem;">Round 1 — the four directions (reference)</h2>
+  <div class="cards">
+    <a class="card a" href="skin-a-stage.html"><h2><span class="chip"></span>A · Stage Piano</h2>
+      <p>The RD-2000 reading — charcoal, crisp white legends, <b>LED-indexed sliders</b> (the value shown luminously, riding the cap), sparse red accents.</p></a>
+    <a class="card b" href="skin-b-roland.html"><h2><span class="chip"></span>B · Color-Coded</h2>
+      <p>The Roland-colors reading — each <b>cluster carries a functional accent hue</b> (envelope green, filter orange, pitch blue…) in its chip, track fill, and readouts. Color says which system you're touching.</p></a>
+    <a class="card c" href="skin-c-rackmix.html"><h2><span class="chip"></span>C · Rack Mixer</h2>
+      <p>The TotalMix reading — flat and crisp, 1px borders, <b>real tick scales</b>, LCD-style readouts, denser. Legibility from contrast and scale marks, not glow.</p></a>
+    <a class="card d" href="skin-d-machined.html"><h2><span class="chip"></span>D · Machined</h2>
+      <p>The literal <b>top-down view of a real thing</b> — knurled knobs, grip-grooved fader caps in recessed slots, a brushed panel with corner screws, engraved legends.</p></a>
+  </div>
+
+  <p class="howto"><b>How to review:</b> open each skin and <b>drag everything</b> — sliders, drawbars,
+    knobs (vertical drag; the ± knobs snap to their center detent, double-click resets), toggles.
+    Use the <b>meta strip</b> at the top to tune the skin live: <b>Panel</b> = background lightness
+    (the "medium-dark gray, not black" dial), <b>Accent</b> = hue (in B it shifts the whole palette),
+    <b>Size</b> = control scale, <b>Glow</b> = LED/lamp intensity. React per-element — "A's knobs,
+    C's faders, B's colors" is exactly the kind of feedback Round 2 composites from, and meta-strip
+    positions you like are spec numbers (just report them).</p>
+</main>
+</body>
+</html>

@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Exhibit — Boshwick 1.0</title>
+<style>
+  /* ============ INSTRUMENT EXHIBIT — Boshwick (808 percussion) ============
+     The composite skin on the OUTLIER — a monotimbral drum synth whose Type
+     rotary swaps the whole topology, so most knobs go INERT per type. This is
+     the live inert-dimming stress test (turn Type: PitchEnv lights only for
+     Kick/Tom, Snap only for Snare). Nine types is past the rotary's 3–5 label
+     range, so TYPE shows its value in a READOUT WINDOW (no radial labels).
+     Role reading of a drum synth:
+       Oscillator [Voice] → Type (rotary) · Tune (bipolar, ±18 st) · Pitch Track;
+                  [Pitch] → Pitch Env (downward sweep; inert off Kick/Tom).
+       Filter     [Tone]  → Tone · Snap — the tone-shaping takes the green
+                            filter-role slot (like Zindel's Motion); Snap inert
+                            off Snare.
+       Envelope   [Amplitude] → Decay · Punch (the hit contour).
+     No LFO/Effects → rust + blue gaps. Retained design exhibit — self-contained, not product code. */
+  :root {
+    --pl: 20%; --ro: hsl(41, 100%, 62%); --glow: .7; --tgap: .10em; --mbh: 28;
+    --acc: hsl(358, 78%, 56%);
+    --arc: hsl(200, 70%, 55%);
+    --panel: hsl(220, 7%, var(--pl));
+    --panel-hi: hsl(220, 7%, calc(var(--pl) + 6%));
+    --panel-lo: hsl(220, 8%, calc(var(--pl) - 6%));
+    --ink: hsl(220, 12%, 88%);
+    --ink-dim: hsl(220, 8%, 62%);
+    --slot: hsl(222, 10%, calc(var(--pl) - 10%));
+    --tick: hsl(220, 8%, calc(var(--pl) + 26%));
+    --tick-maj: hsl(220, 8%, calc(var(--pl) + 38%));
+    --cap-a: hsl(220, 6%, 42%);
+    --cap-b: hsl(220, 7%, 20%);
+    --cap-c: hsl(220, 8%, 30%);
+    --boxln: hsl(220, 8%, calc(var(--pl) + 16%));
+  }
+  * { box-sizing: border-box; margin: 0; user-select: none; font-weight: 400; }
+  body { background: hsl(220, 7%, calc(var(--pl) - 7%)); color: var(--ink);
+         font: 14px/1.4 Tahoma, "Segoe UI", system-ui, sans-serif; padding: 1.2rem; }
+  header { max-width: 1160px; margin: 0 auto 1rem; }
+  h1 { font-size: 1.25rem; letter-spacing: .05em; }
+  .blurb { color: var(--ink-dim); font-size: .85rem; margin-top: .15rem; }
+  .meta { display: flex; flex-wrap: wrap; gap: .4rem 1rem; align-items: center; margin-top: .7rem;
+          font-size: .78rem; color: var(--ink-dim); background: var(--panel-lo);
+          border: 1px solid var(--panel-hi); border-radius: 6px; padding: .45rem .8rem; }
+  .meta label { display: flex; align-items: center; gap: .4rem; }
+  .meta input[type="range"] { width: 70px; accent-color: var(--acc); }
+  .meta .mv { color: var(--ro); font-variant-numeric: tabular-nums;
+              min-width: 3ch; text-align: right; }
+  .meta select { background: var(--panel); color: var(--ink); border: 1px solid var(--panel-hi);
+                 border-radius: 3px; padding: .12rem .25rem; font-size: .95em; }
+  .meta a { color: var(--ink-dim); margin-left: auto; }
+
+  .panetop { max-width: 1160px; margin: 0 auto; font-size: 14px;
+             display: flex; align-items: center; gap: .8em;
+             background: var(--panel-lo); border: 1px solid var(--panel-hi);
+             border-radius: 8px 8px 0 0; border-bottom: 0; padding: .45em .9em;
+             color: var(--ink-dim); font-size: .82rem; }
+  .panetop .swatch { width: .85em; height: .85em; border-radius: 3px; background: hsl(0, 52%, 54%); }
+  .panetop .kind { color: var(--ink); }
+  .panetop .desc { font-size: .88em; }
+  .panetop .patch { margin-left: auto; color: var(--ro); font-size: .9em; }
+  .panel { max-width: 1160px; margin: 0 auto; font-size: 14px;
+           background: var(--panel);
+           border: 1px solid var(--panel-hi); border-radius: 0 0 10px 10px;
+           box-shadow: 0 8px 30px rgba(0,0,0,.35), inset 0 1px 0 var(--panel-hi);
+           padding: 1.1em 1em 1em; display: flex; flex-wrap: wrap; gap: 1.7em 1.3em; align-items: flex-start; }
+
+  /* BOXED groups: fieldset frame, band = legend tab centered on the border */
+  .group { display: flex; flex-direction: column; align-items: center;
+           border: 1px solid var(--boxln); border-radius: .5em;
+           padding: 0 .7em .6em; }
+  .group h2 { font-size: .72em; letter-spacing: .14em; text-transform: uppercase;
+              color: hsl(220, 30%, 10%); background: hsl(var(--bh, 28), var(--bs, 60%), 54%);
+              padding: .26em .6em; border-radius: .22em;
+              align-self: center; margin: -.95em 0 .5em; position: relative;
+              box-shadow: -.4em 0 0 var(--panel), .4em 0 0 var(--panel); }
+  /* hue = ROLE (locked): Boshwick has no LFO/Effects → rust + blue gaps */
+  .b-lfo    { --bh: 15;  --bs: 45%; }  /* muted rust   */
+  .b-osc    { --bh: 30;  --bs: 48%; }  /* muted orange */
+  .b-filter { --bh: 120; --bs: 30%; }  /* muted green  */
+  .b-env    { --bh: 190; --bs: 40%; }  /* muted cyan   */
+  .b-fx     { --bh: 215; --bs: 35%; }  /* muted blue   */
+  .monoband .group h2 { background: hsl(var(--mbh), 60%, 54%); }
+
+  /* SUBGROUPS: label-only chrome (locked); EVERY subgroup labeled. */
+  .subs { display: flex; gap: 1.1em; align-items: flex-start; }
+  .sub { display: flex; flex-direction: column; align-items: center; gap: .3em;
+         border-radius: .4em; }
+  .slrow { display: flex; gap: .6em; align-items: center; height: 1.1em; }
+  .sl { font-size: .62em; letter-spacing: .12em; text-transform: uppercase;
+        color: var(--ink-dim); }
+
+  /* ---- vertical slider (locked spec) ---- */
+  .bank { display: flex; gap: var(--tgap); align-items: flex-start; }
+  .vsl { display: flex; flex-direction: column; align-items: center; gap: .16em; }
+  /* inert per type: dim + desaturate, still draggable (as Padlington's Source dimming) */
+  .vsl.dim { opacity: .3; filter: grayscale(.6); transition: opacity .15s, filter .15s; }
+  .vslider { position: relative; width: var(--slw, 1.8em); height: 7.4em; cursor: pointer; touch-action: none; }
+  .vslider .slot { position: absolute; left: 50%; transform: translateX(-50%);
+                   top: 0; bottom: 0; width: .3em; border-radius: .15em; background: var(--slot);
+                   box-shadow: inset 0 1px 3px rgba(0,0,0,.7), inset 0 -1px 0 var(--panel-hi); }
+  .vslider .ticks { position: absolute; top: .42em; bottom: .42em; width: calc(50% - .15em);
+                    display: flex; flex-direction: column-reverse; justify-content: space-between; }
+  .vslider .ticks.l { left: 0; }
+  .vslider .ticks.r { right: 0; }
+  .vslider .ticks i { display: block; width: 100%; height: 1px; background: var(--tick); }
+  .vslider .ticks i.maj { height: 2px; background: var(--tick-maj); }
+  /* bipolar slider: the tick at the detent (the zero/nominal) is amber */
+  .vslider .ticks i.det { background: var(--ro); }
+  .vslider .cap { position: absolute; left: 50%; transform: translateX(-50%);
+                  width: var(--capw, 1.62em); height: .92em; border-radius: .13em;
+                  bottom: calc(var(--val, .5) * (100% - .92em));
+                  background: linear-gradient(180deg, var(--cap-a), var(--cap-b) 46%, var(--cap-c));
+                  border: 1px solid hsl(220,8%,12%);
+                  box-shadow: 0 2px 4px rgba(0,0,0,.55), inset 0 1px 0 hsla(0,0%,100%,.22); }
+  .vslider .cap::after { content: ''; position: absolute; left: 6%; right: 6%; top: 50%;
+                         height: 1.5px; margin-top: -.75px; background: hsl(220, 15%, 92%); }
+  .vsl .bl { font-size: .72em; color: var(--ink); letter-spacing: .03em; }
+  .vsl .ro { font-size: .7em; color: var(--ro); font-variant-numeric: tabular-nums;
+             width: 5.5ch; text-align: center; min-height: 1.2em; }
+
+  /* ---- rotary switch (Type) — 9-way; too many for radial labels, so the
+     current value shows in a readout window below (like Round 4's fixed window) ---- */
+  .rsww { display: flex; flex-direction: column; align-items: center; gap: .2em;
+          --kd: 2.3em; padding: .8em 1.2em .1em; }
+  .rsww .bl { margin-top: 1.15em; font-size: .7em; color: var(--ink); letter-spacing: .03em; }
+  .rsww .ro { font-size: .7em; color: var(--ro); width: 7.5ch; text-align: center;
+              font-variant-numeric: tabular-nums; min-height: 1.2em; }
+  .rswitch { width: var(--kd); height: var(--kd); border-radius: 50%; cursor: pointer; touch-action: none;
+             position: relative;
+             background: radial-gradient(circle at 32% 28%, hsl(220,6%,34%), hsl(220,8%,15%) 72%);
+             border: 1px solid hsl(220,8%,10%);
+             box-shadow: 0 3px 7px rgba(0,0,0,.55), inset 0 1px 1px hsla(0,0%,100%,.14); }
+  .rswitch .face { position: absolute; inset: 0; border-radius: 50%;
+                   transform: rotate(var(--rot, 0deg)); }
+  .rswitch .face::after { content: ''; position: absolute; left: 50%; top: 6%; width: 2.5px; height: 38%;
+                          transform: translateX(-50%); border-radius: 2px; background: hsl(220, 15%, 92%); }
+  .rswitch .ptick { position: absolute; inset: 0; transform: rotate(var(--a)); pointer-events: none; }
+  .rswitch .ptick::before { content: ''; position: absolute; left: calc(50% - 1px); top: -.3em;
+                            width: 2px; height: .22em; background: var(--tick-maj); }
+  .rswitch .ptick.on::before { background: var(--ro); }
+
+  .ro input.edit {
+    width: 100%; font: inherit; color: var(--ro); background: hsl(220, 10%, 10%);
+    border: 1px solid var(--ro); border-radius: 2px; text-align: center;
+    padding: 0; outline: none; }
+  footer { max-width: 1160px; margin: .8rem auto 0; font-size: .72rem; color: var(--ink-dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Exhibit — Boshwick 1.0</h1>
+  <p class="blurb">The percussion outlier — a monotimbral drum synth whose <b>Type</b> rotary swaps the
+    whole topology, so most knobs go <b>inert per type</b>: turn Type and watch <b>Pitch Env</b> light
+    only for Kick/Tom and <b>Snap</b> only for Snare (the live inert-dimming stress test). Nine types is
+    past the rotary's label range, so Type shows its value in a <b>readout window</b>. The tone-shaping
+    (<b>Tone · Snap</b>) takes the green <b>filter-role</b> slot (like Zindel's Motion); no LFO/Effects →
+    rust + blue gaps.</p>
+  <div class="meta">
+    <label>Panel <input type="range" id="mPanel" min="14" max="34" value="20"><span class="mv" id="mPanelV"></span></label>
+    <label>Tick gap <input type="range" id="mTgap" min="4" max="50" value="10"><span class="mv" id="mTgapV"></span></label>
+    <label>Bands <select id="mBands">
+      <option value="spectrum" selected>spectrum (muted)</option>
+      <option value="single">single hue</option></select></label>
+    <label>Band hue <input type="range" id="mBand" min="20" max="300" value="28"><span class="mv" id="mBandV"></span></label>
+    <label>Size <input type="range" id="mSize" min="85" max="135" value="125"><span class="mv" id="mSizeV"></span></label>
+    <a href="index.html">← gallery</a>
+  </div>
+</header>
+
+<div class="panetop">
+  <span class="swatch"></span><span>Lane 6</span>
+  <span class="kind">Boshwick</span><span class="desc">808 percussion</span>
+  <span class="patch">Init</span>
+</div>
+<main class="panel" id="panel">
+  <!-- canonical order: (LFO —) → Oscillator → Filter(Tone) → Envelope → (Effects —) -->
+  <section class="group b-osc">
+    <h2>Oscillator</h2>
+    <div class="subs">
+      <div class="sub"><div class="slrow"><span class="sl">Voice</span></div>
+        <div class="bank">
+          <div class="rsww">
+            <div class="rswitch"
+                 data-opts="Kick,Tom,Snare,Hat,Clap,Cowbell,Rimshot,Clave,Cymbal"
+                 data-ids="kick,tom,snare,hat,clap,cowbell,rim,clave,cymbal"
+                 data-idx="0" data-labels="off" data-inert="1"
+                 data-name="Type (which drum; Hat & Cymbal honour note length)"><div class="face"></div></div>
+            <span class="bl">Type</span>
+            <span class="ro"></span>
+          </div>
+          <div class="vsl"><div class="vslider bip" data-val=".5" data-detent=".5" data-fmt="tune" data-name="Tune (pitch offset around the drum's nominal tuning, ±1.5 octaves)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Tune</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val="1" data-fmt="pct" data-name="Pitch Track (0 = a fixed drum on every row; 1 = the note pitch transposes it, rel. C4)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">PTrk</span><span class="ro"></span></div>
+        </div>
+      </div>
+      <div class="sub"><div class="slrow"><span class="sl">Pitch</span></div>
+        <div class="bank">
+          <div class="vsl" data-active-types="kick,tom"><div class="vslider" data-val=".5" data-fmt="pct" data-name="Pitch Env (downward pitch-sweep depth at the attack; kick = thump → deep drop. Inert for noise/metallic types)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">PEnv</span><span class="ro"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="group b-filter">
+    <h2>Tone</h2>
+    <div class="subs">
+      <div class="sub"><div class="slrow"><span class="sl">Colour</span></div>
+        <div class="bank">
+          <div class="vsl"><div class="vslider" data-val=".5" data-fmt="pct" data-name="Tone (kick = body drive, pure sub → growly 808; others = brightness / filter centre)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Tone</span><span class="ro"></span></div>
+          <div class="vsl" data-active-types="snare"><div class="vslider" data-val=".5" data-fmt="pct" data-name="Snap (noise↔body balance — the snare snappy. Inert for pure types)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Snap</span><span class="ro"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="group b-env">
+    <h2>Envelope</h2>
+    <div class="subs">
+      <div class="sub"><div class="slrow"><span class="sl">Amplitude</span></div>
+        <div class="bank">
+          <div class="vsl"><div class="vslider" data-val=".5" data-fmt="pct" data-name="Decay (length of the hit, per type; for Hat/Cymbal this is the open length — a short note chokes it)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Decay</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".4" data-fmt="pct" data-name="Punch (attack transient — kick knock + beater click; others = click/snap emphasis)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Punch</span><span class="ro"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+<footer>future/ui_skin exhibit — Boshwick in the composite skin. Dblclick values to type; wheel = coarse, tilt = fine; Type is a 9-way rotary (drag/wheel steps, click cycles) driving the per-type inert dimming; Tune recentres to nominal on dblclick.</footer>
+
+<script>
+// Exhibit wiring — throwaway, not product code.
+(function () {
+  const $ = (s, r) => Array.from((r || document).querySelectorAll(s));
+
+  const FMT = {
+    pct: t => Math.round(t * 100) + '%',
+    tune: t => { const st = Math.round((t - 0.5) * 36); return st === 0 ? 'nominal' : (st > 0 ? '+' : '−') + Math.abs(st) + ' st'; },
+  };
+  const FMTC = {
+    pct: t => String(Math.round(t * 100)),
+    tune: t => { const st = Math.round((t - 0.5) * 36); return st === 0 ? '0' : (st > 0 ? '+' : '−') + Math.abs(st); },
+  };
+  const num = (s) => { const v = parseFloat(String(s).replace(/[^\d.eE+-]/g, ' ')); return isFinite(v) ? v : null; };
+  const PARSE = {
+    pct: (s) => { const v = num(s); return v == null ? null : v / 100; },
+    tune: (s) => { if (/nom/i.test(s)) return 0.5; const v = num(s); return v == null ? null
+                   : Math.min(1, Math.max(0, 0.5 + Math.min(18, Math.max(-18, v)) / 36)); },
+  };
+
+  // Per-type inert dimming: a control tagged data-active-types dims unless the
+  // current Type is in its list (the Padlington Source-dimming move, per type).
+  const updateInert = (typeId) => {
+    $('[data-active-types]').forEach((el) => {
+      const act = el.dataset.activeTypes.split(',');
+      el.classList.toggle('dim', !act.includes(typeId));
+    });
+  };
+
+  // 11-tick ladders (majors at 0/5/10 by thickness). On a bipolar slider the
+  // tick at the detent (the nominal) is tinted amber (the accent) — no slot bar.
+  $('.vslider .ticks').forEach((tk) => {
+    const sl = tk.closest('.vslider');
+    const det = sl && sl.classList.contains('bip') && sl.dataset.detent != null ? +sl.dataset.detent : null;
+    const detIdx = det != null ? Math.round(det * 10) : -1;
+    for (let i = 0; i < 11; i++) {
+      const m = document.createElement('i');
+      if (i % 5 === 0) m.className = 'maj';
+      if (i === detIdx) m.classList.add('det');
+      tk.append(m);
+    }
+  });
+
+  const editable = (el, fmtKey, setT) => {
+    if (!el || !PARSE[fmtKey]) return;
+    el.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      if (el.querySelector('input')) return;
+      const old = el.textContent;
+      const inp = document.createElement('input');
+      inp.className = 'edit';
+      inp.value = old;
+      el.textContent = '';
+      el.append(inp);
+      inp.focus();
+      inp.select();
+      let done = false;
+      const finish = (commit) => {
+        if (done) return;
+        done = true;
+        const t = commit ? PARSE[fmtKey](inp.value) : null;
+        inp.remove();
+        if (t != null) setT(Math.min(1, Math.max(0, t)));
+        else el.textContent = old;
+      };
+      inp.addEventListener('keydown', (ev) => {
+        ev.stopPropagation();
+        if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+        else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+      });
+      inp.addEventListener('blur', () => finish(true));
+    });
+  };
+
+  const nudgeWheel = (el, step) => {
+    el.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      if (e.deltaY) step(e.deltaY < 0 ? 1 : -1, false);
+      if (e.deltaX) step(e.deltaX > 0 ? 1 : -1, true);
+    }, { passive: false });
+  };
+
+  // Vertical sliders. data-detent = bipolar snap (typed entry bypasses).
+  $('.vslider').forEach((fd) => {
+    let v = +fd.dataset.val || 0;
+    const fmt = fd.dataset.fmt || 'pct';
+    const name = fd.dataset.name || '';
+    const detent = fd.dataset.detent != null ? +fd.dataset.detent : null;
+    const out = fd.parentElement.querySelector('.ro');
+    const sync = () => {
+      fd.style.setProperty('--val', v);
+      if (out && !out.querySelector('input')) out.textContent = FMTC[fmt](v);
+      const tip = name + ' — ' + FMT[fmt](v);
+      fd.title = tip;
+      if (out) out.title = tip + ' (double-click to type)';
+    };
+    const snap = (x, wheelBand) => {
+      x = Math.min(1, Math.max(0, x));
+      if (detent != null && Math.abs(x - detent) < wheelBand) return detent;
+      return x;
+    };
+    fd.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); // stop native drag/pan from hijacking a held slide
+      fd.setPointerCapture(e.pointerId);
+      const r = fd.getBoundingClientRect();
+      const move = (ev) => { v = snap(1 - (ev.clientY - r.top) / r.height, 0.035); sync(); };
+      move(e);
+      fd.addEventListener('pointermove', move);
+      fd.addEventListener('pointerup', () => fd.removeEventListener('pointermove', move), { once: true });
+    });
+    fd.addEventListener('dblclick', () => { if (detent != null) { v = detent; sync(); } });
+    nudgeWheel(fd, (dir, fine) => { v = snap(v + dir * (fine ? 0.005 : 0.04), 0.015); sync(); });
+    editable(out, fmt, (t) => { v = t; sync(); }); // typed = exact, no detent snap
+    fd._get = () => v;
+    fd._set = (t) => { v = t; sync(); };
+    sync();
+  });
+
+  // Rotary switch (Type) — value in a readout window, no radial labels (9-way);
+  // drives the per-type inert dimming.
+  $('.rswitch').forEach((sw) => {
+    const opts = (sw.dataset.opts || '').split(',');
+    const ids = sw.dataset.ids ? sw.dataset.ids.split(',') : opts;
+    const showLabels = sw.dataset.labels !== 'off';
+    const drivesInert = sw.dataset.inert === '1';
+    const out = sw.parentElement.querySelector('.ro');
+    const n = opts.length;
+    let idx = Math.min(n - 1, Math.max(0, +sw.dataset.idx || 0));
+    const ticks = [];
+    for (let i = 0; i < n; i++) {
+      const a = -135 + (i * 270) / (n - 1);
+      const p = document.createElement('i');
+      p.className = 'ptick';
+      p.style.setProperty('--a', a + 'deg');
+      sw.append(p);
+      ticks.push(p);
+    }
+    const sync = () => {
+      sw.style.setProperty('--rot', (-135 + (idx * 270) / (n - 1)) + 'deg');
+      ticks.forEach((p, i) => p.classList.toggle('on', i === idx));
+      if (out) out.textContent = opts[idx];
+      sw.title = (sw.dataset.name || '') + ' — ' + opts[idx];
+      if (drivesInert) updateInert(ids[idx]);
+    };
+    sw.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      sw.setPointerCapture(e.pointerId);
+      const y0 = e.clientY, i0 = idx;
+      let moved = false;
+      const move = (ev) => {
+        const d = Math.round((y0 - ev.clientY) / 24);
+        if (d !== 0) moved = true;
+        idx = Math.min(n - 1, Math.max(0, i0 + d));
+        sync();
+      };
+      sw.addEventListener('pointermove', move);
+      sw.addEventListener('pointerup', () => {
+        sw.removeEventListener('pointermove', move);
+        if (!moved) { idx = (idx + 1) % n; sync(); }
+      }, { once: true });
+    });
+    nudgeWheel(sw, (dir) => { idx = Math.min(n - 1, Math.max(0, idx + dir)); sync(); });
+    sync();
+  });
+
+  // Belt-and-suspenders for the canvas-drag bug: never let native HTML drag start.
+  document.addEventListener('dragstart', (e) => e.preventDefault());
+
+  // Meta strip.
+  const root = document.documentElement;
+  const wire = (id, fn) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const mv = document.getElementById(id + 'V');
+    const go = () => {
+      const v = el.type === 'checkbox' ? el.checked : el.value;
+      if (mv) mv.textContent = v;
+      fn(v);
+    };
+    el.addEventListener('input', go);
+    el.addEventListener('change', go);
+    go();
+  };
+  wire('mPanel', (v) => root.style.setProperty('--pl', v + '%'));
+  wire('mTgap', (v) => root.style.setProperty('--tgap', (v / 100) + 'em'));
+  wire('mBands', (v) => document.querySelector('.panel').classList.toggle('monoband', v === 'single'));
+  wire('mBand', (v) => root.style.setProperty('--mbh', v));
+  wire('mSize', (v) => { document.querySelector('.panel').style.fontSize = (14 * v / 100) + 'px'; });
+})();
+</script>
+</body>
+</html>

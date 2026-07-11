@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Exhibit — Zindel 1.0</title>
+<style>
+  /* ============ INSTRUMENT EXHIBIT — Zindel (drawbar additive organ) ============
+     The Padlington-1.3 / Tervik-1.1 skin applied to Zindel. The star is the
+     DRAWBAR widget, shown in TWO versions (meta-switchable, "Drawbars"):
+       • plain  — a neat group of ordinary vertical sliders (ticks, machined
+                  cap, % readout, harmonic-number label) — no organ cosplay;
+       • tabs   — the drawbar vision: white/black numbered pull-tabs on chrome
+                  stems, 0–8 registration readout, 9-position (stepped) clicks,
+                  packed tight as a manual. white = powers-of-two harmonics
+                  (1·2·4·8), black = the rest (Hammond's own coloring for 8'..1').
+     up = LOUDER kept on both (skin consistency; not authentic pull-toward).
+     Canonical order — Zindel has no LFO/Effects, so the spectrum shows gaps;
+     ACCELERATION takes the green FILTER-ROLE slot (the registry calls it "the
+     filter substitute"), band tab "Motion" to stay honest. Retained design exhibit — self-contained, not product code. */
+  :root {
+    --pl: 20%; --ro: hsl(41, 100%, 62%); --glow: .7; --tgap: .10em; --mbh: 28;
+    --acc: hsl(358, 78%, 56%);
+    --arc: hsl(200, 70%, 55%);
+    --panel: hsl(220, 7%, var(--pl));
+    --panel-hi: hsl(220, 7%, calc(var(--pl) + 6%));
+    --panel-lo: hsl(220, 8%, calc(var(--pl) - 6%));
+    --ink: hsl(220, 12%, 88%);
+    --ink-dim: hsl(220, 8%, 62%);
+    --slot: hsl(222, 10%, calc(var(--pl) - 10%));
+    --tick: hsl(220, 8%, calc(var(--pl) + 26%));
+    --tick-maj: hsl(220, 8%, calc(var(--pl) + 38%));
+    --cap-a: hsl(220, 6%, 42%);
+    --cap-b: hsl(220, 7%, 20%);
+    --cap-c: hsl(220, 8%, 30%);
+    --boxln: hsl(220, 8%, calc(var(--pl) + 16%));
+  }
+  * { box-sizing: border-box; margin: 0; user-select: none; font-weight: 400; }
+  body { background: hsl(220, 7%, calc(var(--pl) - 7%)); color: var(--ink);
+         font: 14px/1.4 Tahoma, "Segoe UI", system-ui, sans-serif; padding: 1.2rem; }
+  header { max-width: 1160px; margin: 0 auto 1rem; }
+  h1 { font-size: 1.25rem; letter-spacing: .05em; }
+  .blurb { color: var(--ink-dim); font-size: .85rem; margin-top: .15rem; }
+  .meta { display: flex; flex-wrap: wrap; gap: .4rem 1rem; align-items: center; margin-top: .7rem;
+          font-size: .78rem; color: var(--ink-dim); background: var(--panel-lo);
+          border: 1px solid var(--panel-hi); border-radius: 6px; padding: .45rem .8rem; }
+  .meta label { display: flex; align-items: center; gap: .4rem; }
+  .meta input[type="range"] { width: 70px; accent-color: var(--acc); }
+  .meta .mv { color: var(--ro); font-variant-numeric: tabular-nums;
+              min-width: 3ch; text-align: right; }
+  .meta select { background: var(--panel); color: var(--ink); border: 1px solid var(--panel-hi);
+                 border-radius: 3px; padding: .12rem .25rem; font-size: .95em; }
+  .meta a { color: var(--ink-dim); margin-left: auto; }
+
+  .panetop { max-width: 1160px; margin: 0 auto; font-size: 14px;
+             display: flex; align-items: center; gap: .8em;
+             background: var(--panel-lo); border: 1px solid var(--panel-hi);
+             border-radius: 8px 8px 0 0; border-bottom: 0; padding: .45em .9em;
+             color: var(--ink-dim); font-size: .82rem; }
+  .panetop .swatch { width: .85em; height: .85em; border-radius: 3px; background: hsl(45, 60%, 52%); }
+  .panetop .kind { color: var(--ink); }
+  .panetop .desc { font-size: .88em; }
+  .panetop .patch { margin-left: auto; color: var(--ro); font-size: .9em; }
+  .panel { max-width: 1160px; margin: 0 auto; font-size: 14px;
+           background: var(--panel);
+           border: 1px solid var(--panel-hi); border-radius: 0 0 10px 10px;
+           box-shadow: 0 8px 30px rgba(0,0,0,.35), inset 0 1px 0 var(--panel-hi);
+           padding: 1.1em 1em 1em; display: flex; flex-wrap: wrap; gap: 1.7em 1.3em; align-items: flex-start; }
+
+  /* BOXED groups: fieldset frame, band = legend tab centered on the border */
+  .group { display: flex; flex-direction: column; align-items: center;
+           border: 1px solid var(--boxln); border-radius: .5em;
+           padding: 0 .7em .6em; }
+  .group h2 { font-size: .72em; letter-spacing: .14em; text-transform: uppercase;
+              color: hsl(220, 30%, 10%); background: hsl(var(--bh, 28), var(--bs, 60%), 54%);
+              padding: .26em .6em; border-radius: .22em;
+              align-self: center; margin: -.95em 0 .5em; position: relative;
+              box-shadow: -.4em 0 0 var(--panel), .4em 0 0 var(--panel); }
+  /* hue = ROLE (locked): Zindel has no LFO/Effects → spectrum gaps */
+  .b-lfo    { --bh: 15;  --bs: 45%; }  /* muted rust   */
+  .b-osc    { --bh: 30;  --bs: 48%; }  /* muted orange */
+  .b-filter { --bh: 120; --bs: 30%; }  /* muted green  */
+  .b-env    { --bh: 190; --bs: 40%; }  /* muted cyan   */
+  .b-fx     { --bh: 215; --bs: 35%; }  /* muted blue   */
+  .monoband .group h2 { background: hsl(var(--mbh), 60%, 54%); }
+
+  /* SUBGROUPS: label-only chrome (locked); EVERY subgroup labeled. */
+  .subs { display: flex; gap: 1.1em; align-items: flex-start; }
+  .sub { display: flex; flex-direction: column; align-items: center; gap: .3em;
+         border-radius: .4em; }
+  .slrow { display: flex; gap: .6em; align-items: center; height: 1.1em; }
+  .sl { font-size: .62em; letter-spacing: .12em; text-transform: uppercase;
+        color: var(--ink-dim); }
+
+  /* ---- vertical slider (locked spec) ---- */
+  .bank { display: flex; gap: var(--tgap); align-items: flex-start; }
+  .vsl { display: flex; flex-direction: column; align-items: center; gap: .16em; }
+  .vslider { position: relative; width: var(--slw, 1.8em); height: 7.4em; cursor: pointer; touch-action: none; }
+  .vslider .slot { position: absolute; left: 50%; transform: translateX(-50%);
+                   top: 0; bottom: 0; width: .3em; border-radius: .15em; background: var(--slot);
+                   box-shadow: inset 0 1px 3px rgba(0,0,0,.7), inset 0 -1px 0 var(--panel-hi); }
+  .vslider .ticks { position: absolute; top: .42em; bottom: .42em; width: calc(50% - .15em);
+                    display: flex; flex-direction: column-reverse; justify-content: space-between; }
+  .vslider .ticks.l { left: 0; }
+  .vslider .ticks.r { right: 0; }
+  .vslider .ticks i { display: block; width: 100%; height: 1px; background: var(--tick); }
+  .vslider .ticks i.maj { height: 2px; background: var(--tick-maj); }
+  .vslider .cap { position: absolute; left: 50%; transform: translateX(-50%);
+                  width: var(--capw, 1.62em); height: .92em; border-radius: .13em;
+                  bottom: calc(var(--val, .5) * (100% - .92em));
+                  background: linear-gradient(180deg, var(--cap-a), var(--cap-b) 46%, var(--cap-c));
+                  border: 1px solid hsl(220,8%,12%);
+                  box-shadow: 0 2px 4px rgba(0,0,0,.55), inset 0 1px 0 hsla(0,0%,100%,.22); }
+  .vslider .cap::after { content: ''; position: absolute; left: 6%; right: 6%; top: 50%;
+                         height: 1.5px; margin-top: -.75px; background: hsl(220, 15%, 92%); }
+  .vsl .bl { font-size: .72em; color: var(--ink); letter-spacing: .03em; }
+  .vsl .ro { font-size: .7em; color: var(--ro); font-variant-numeric: tabular-nums;
+             width: 5.5ch; text-align: center; min-height: 1.2em; }
+
+  /* ---- the DRAWBAR widget (tab version) ----
+     A colored pull-tab (white/black, numbered) riding a chrome stem. No side
+     tick ladders — drawbars are a separate species (like mixer faders); the
+     stem depth + the numbered tab + the 0–8 readout carry the position. Packed
+     tight as a manual. up = louder (tab high = drawbar pulled out full). */
+  .dbbank { display: flex; gap: .16em; align-items: flex-start; }
+  .dbbank.plain { display: none; gap: var(--tgap); }        /* meta shows one bank at a time */
+  .db-plain .dbbank.tab { display: none; }
+  .db-plain .dbbank.plain { display: flex; }
+  .drawbar { width: 2.05em; height: 7.9em; }
+  .drawbar .slot { width: .5em; background: var(--slot);
+                   box-shadow: inset 0 1px 3px rgba(0,0,0,.75); }
+  .drawbar .dstem { position: absolute; left: 50%; transform: translateX(-50%); bottom: 0;
+                    width: .42em; border-radius: .21em .21em 0 0;
+                    height: calc(var(--val, .5) * (100% - 1.35em) + .68em);
+                    background: linear-gradient(90deg, hsl(220,6%,30%), hsl(220,8%,66%) 45%, hsl(220,6%,34%));
+                    box-shadow: inset 0 0 0 1px hsl(220,10%,16%); }
+  .drawbar .cap { position: absolute; left: 50%; transform: translateX(-50%);
+                  width: 1.85em; height: 1.35em; border-radius: .14em;
+                  bottom: calc(var(--val, .5) * (100% - 1.35em));
+                  background: var(--tabcol); border: 1px solid hsl(220,10%,12%);
+                  box-shadow: 0 2px 5px rgba(0,0,0,.6), inset 0 1px 0 hsla(0,0%,100%,.28),
+                              inset 0 -.32em 0 -.16em rgba(0,0,0,.28);
+                  display: flex; align-items: flex-start; justify-content: center; }
+  .drawbar .cap .num { font-size: .74em; line-height: 1.5; color: var(--tabink);
+                       font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+  .drawbar.wtab { --tabcol: hsl(42, 16%, 87%); --tabink: hsl(220, 22%, 16%); }
+  .drawbar.btab { --tabcol: hsl(220, 10%, 15%); --tabink: hsl(42, 18%, 85%); }
+
+  .ro input.edit {
+    width: 100%; font: inherit; color: var(--ro); background: hsl(220, 10%, 10%);
+    border: 1px solid var(--ro); border-radius: 2px; text-align: center;
+    padding: 0; outline: none; }
+  footer { max-width: 1160px; margin: .8rem auto 0; font-size: .72rem; color: var(--ink-dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Exhibit — Zindel 1.0</h1>
+  <p class="blurb">The drawbar additive organ, with the <b>drawbar widget in two versions</b> (meta
+    <b>Drawbars</b>): <b>plain</b> — a neat group of ordinary sliders — or <b>tabs</b> — white/black
+    numbered pull-tabs on chrome stems, <b>0–8 registration</b>, <b>9-position clicks</b>, packed as a
+    manual (white = powers-of-two harmonics 1·2·4·8, black = the rest). <b>up = louder</b> on both.
+    <b>Acceleration</b> takes the green <b>filter-role</b> slot (the "filter substitute") — band tab
+    "Motion" to stay honest. No LFO/Effects → the role-hue spectrum shows its gaps.</p>
+  <div class="meta">
+    <label>Drawbars <select id="mDraw">
+      <option value="tab" selected>drawbar tabs</option>
+      <option value="plain">plain sliders</option></select></label>
+    <label>Panel <input type="range" id="mPanel" min="14" max="34" value="20"><span class="mv" id="mPanelV"></span></label>
+    <label>Tick gap <input type="range" id="mTgap" min="4" max="50" value="10"><span class="mv" id="mTgapV"></span></label>
+    <label>Bands <select id="mBands">
+      <option value="spectrum" selected>spectrum (muted)</option>
+      <option value="single">single hue</option></select></label>
+    <label>Band hue <input type="range" id="mBand" min="20" max="300" value="28"><span class="mv" id="mBandV"></span></label>
+    <label>Size <input type="range" id="mSize" min="85" max="135" value="125"><span class="mv" id="mSizeV"></span></label>
+    <a href="index.html">← gallery</a>
+  </div>
+</header>
+
+<div class="panetop">
+  <span class="swatch"></span><span>Lane 3</span>
+  <span class="kind">Zindel</span><span class="desc">drawbar additive organ</span>
+  <span class="patch">Full Organ*</span>
+</div>
+<main class="panel" id="panel">
+  <!-- canonical order: (LFO —) → Oscillator → Filter(Motion) → Envelope → (Effects —) -->
+  <section class="group b-osc">
+    <h2>Oscillator</h2>
+    <div class="subs">
+      <div class="sub"><div class="slrow"><span class="sl">Drawbars</span></div>
+        <!-- TAB version (default) -->
+        <div class="bank dbbank tab">
+          <div class="vsl"><div class="vslider drawbar wtab" data-db="1" data-steps="9" data-val="1"    data-fmt="db" data-name="Drawbar 1 — harmonic 1 (fundamental, 8′)"><div class="slot"></div><div class="dstem"></div><div class="cap"><span class="num">1</span></div></div><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider drawbar wtab" data-db="2" data-steps="9" data-val=".5"   data-fmt="db" data-name="Drawbar 2 — harmonic 2 (octave, 4′)"><div class="slot"></div><div class="dstem"></div><div class="cap"><span class="num">2</span></div></div><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider drawbar btab" data-db="3" data-steps="9" data-val=".375" data-fmt="db" data-name="Drawbar 3 — harmonic 3 (12th, 2⅔′)"><div class="slot"></div><div class="dstem"></div><div class="cap"><span class="num">3</span></div></div><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider drawbar wtab" data-db="4" data-steps="9" data-val=".125" data-fmt="db" data-name="Drawbar 4 — harmonic 4 (15th, 2′)"><div class="slot"></div><div class="dstem"></div><div class="cap"><span class="num">4</span></div></div><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider drawbar btab" data-db="5" data-steps="9" data-val=".25"  data-fmt="db" data-name="Drawbar 5 — harmonic 5 (17th, 1⅗′)"><div class="slot"></div><div class="dstem"></div><div class="cap"><span class="num">5</span></div></div><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider drawbar btab" data-db="6" data-steps="9" data-val=".125" data-fmt="db" data-name="Drawbar 6 — harmonic 6 (19th, 1⅓′)"><div class="slot"></div><div class="dstem"></div><div class="cap"><span class="num">6</span></div></div><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider drawbar btab" data-db="7" data-steps="9" data-val="0"    data-fmt="db" data-name="Drawbar 7 — harmonic 7 (no Hammond footage)"><div class="slot"></div><div class="dstem"></div><div class="cap"><span class="num">7</span></div></div><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider drawbar wtab" data-db="8" data-steps="9" data-val=".125" data-fmt="db" data-name="Drawbar 8 — harmonic 8 (22nd, 1′)"><div class="slot"></div><div class="dstem"></div><div class="cap"><span class="num">8</span></div></div><span class="ro"></span></div>
+        </div>
+        <!-- PLAIN version (meta) -->
+        <div class="bank dbbank plain">
+          <div class="vsl"><div class="vslider" data-val="1"   data-fmt="pct" data-name="Harmonic 1 level"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">1</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".55" data-fmt="pct" data-name="Harmonic 2 level"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">2</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".35" data-fmt="pct" data-name="Harmonic 3 level"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">3</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".15" data-fmt="pct" data-name="Harmonic 4 level"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">4</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".28" data-fmt="pct" data-name="Harmonic 5 level"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">5</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".08" data-fmt="pct" data-name="Harmonic 6 level"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">6</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".05" data-fmt="pct" data-name="Harmonic 7 level"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">7</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".1"  data-fmt="pct" data-name="Harmonic 8 level"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">8</span><span class="ro"></span></div>
+        </div>
+      </div>
+      <div class="sub"><div class="slrow"><span class="sl">Tone</span></div>
+        <div class="bank">
+          <div class="vsl"><div class="vslider" data-val="0" data-fmt="fm" data-name="Modulation (FM brightness: 0 = pure sine partials, up = harmonic sidebands)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Mod</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".333" data-detent=".333" data-fmt="spread" data-name="Spread (partial spacing off the integer harmonics; 0 = harmonic, + = inharmonic/bell)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Sprd</span><span class="ro"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="group b-filter">
+    <h2>Motion</h2>
+    <div class="subs">
+      <div class="sub"><div class="slrow"><span class="sl">Acceleration</span></div>
+        <div class="bank">
+          <div class="vsl"><div class="vslider" data-val=".25" data-fmt="pct" data-name="Acceleration (upper partials run the envelope faster — they decay first, darkening the tone over time; the filter substitute)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Accel</span><span class="ro"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="group b-env">
+    <h2>Envelope</h2>
+    <div class="subs">
+      <div class="sub"><div class="slrow"><span class="sl">Amplitude</span></div>
+        <div class="bank">
+          <div class="vsl"><div class="vslider" data-val=".22"  data-fmt="ea" data-name="Attack (per partial)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">A</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".458" data-fmt="ed" data-name="Decay"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">D</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".8"   data-fmt="pct" data-name="Sustain (high = organ hold)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">S</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val=".314" data-fmt="er" data-name="Release"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">R</span><span class="ro"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+<footer>future/ui_skin exhibit — Zindel in the composite skin. Dblclick values to type; wheel = coarse, tilt = fine; drawbar tabs click to 0–8; meta <b>Drawbars</b> flips plain ↔ tabs.</footer>
+
+<script>
+// Exhibit wiring — throwaway, not product code.
+(function () {
+  const $ = (s, r) => Array.from((r || document).querySelectorAll(s));
+
+  const secFmt = (lo, hi) => (t) => {
+    const s = lo * Math.pow(hi / lo, t);
+    return s < 1 ? Math.round(s * 1000) + ' ms' : s.toFixed(2) + ' s';
+  };
+  const secFmtC = (lo, hi) => (t) => {
+    const s = lo * Math.pow(hi / lo, t);
+    return s < 1 ? String(Math.round(s * 1000)) : s.toFixed(2) + 's';
+  };
+  const secParse = (lo, hi) => (str) => {
+    let v = num(str);
+    if (v == null) return null;
+    if (/(^|\d)\s*s\s*$/i.test(str) && !/ms\s*$/i.test(str)) v *= 1000;
+    const sec = Math.min(hi, Math.max(lo, v / 1000));
+    return Math.log(sec / lo) / Math.log(hi / lo);
+  };
+  const spreadOf = (t) => -0.3 + t * 0.9; // registry range for `spread`
+
+  const FMT = {
+    pct: t => Math.round(t * 100) + '%',
+    fm:  t => t <= 0 ? 'sine (pure partials)' : Math.round(t * 100) + '% FM',
+    spread: t => { const v = spreadOf(t); return Math.abs(v) < 0.005 ? 'harmonic'
+                   : (v > 0 ? '+' : '−') + Math.abs(v * 100).toFixed(0) + '% spread'; },
+    db:  t => { const n = Math.round(t * 8); return n + ' — drawbar ' + n + '/8'; },
+    ea:  secFmt(0.001, 1.5),
+    ed:  secFmt(0.02, 5),
+    er:  secFmt(0.01, 3),
+  };
+  const FMTC = {
+    pct: t => String(Math.round(t * 100)),
+    fm:  t => t <= 0 ? 'sine' : String(Math.round(t * 100)),
+    spread: t => { const v = spreadOf(t); return Math.abs(v) < 0.005 ? '0'
+                   : (v > 0 ? '+' : '−') + Math.abs(v * 100).toFixed(0); },
+    db:  t => String(Math.round(t * 8)),
+    ea:  secFmtC(0.001, 1.5),
+    ed:  secFmtC(0.02, 5),
+    er:  secFmtC(0.01, 3),
+  };
+  const num = (s) => { const v = parseFloat(String(s).replace(/[^\d.eE+-]/g, ' ')); return isFinite(v) ? v : null; };
+  const PARSE = {
+    pct: (s) => { const v = num(s); return v == null ? null : v / 100; },
+    fm:  (s) => { if (/sine/i.test(s)) return 0; const v = num(s); return v == null ? null : v / 100; },
+    spread: (s) => { if (/harm/i.test(s)) return 1 / 3; const v = num(s);
+                     return v == null ? null : (v / 100 + 0.3) / 0.9; },
+    db:  (s) => { const v = num(s); return v == null ? null : Math.min(8, Math.max(0, v)) / 8; },
+    ea:  secParse(0.001, 1.5),
+    ed:  secParse(0.02, 5),
+    er:  secParse(0.01, 3),
+  };
+
+  // 11-tick ladders (majors at 0/5/10 by thickness). Drawbar tabs have none.
+  $('.vslider .ticks').forEach((tk) => {
+    for (let i = 0; i < 11; i++) {
+      const m = document.createElement('i');
+      if (i % 5 === 0) m.className = 'maj';
+      tk.append(m);
+    }
+  });
+
+  const editable = (el, fmtKey, setT) => {
+    if (!el || !PARSE[fmtKey]) return;
+    el.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      if (el.querySelector('input')) return;
+      const old = el.textContent;
+      const inp = document.createElement('input');
+      inp.className = 'edit';
+      inp.value = old;
+      el.textContent = '';
+      el.append(inp);
+      inp.focus();
+      inp.select();
+      let done = false;
+      const finish = (commit) => {
+        if (done) return;
+        done = true;
+        const t = commit ? PARSE[fmtKey](inp.value) : null;
+        inp.remove();
+        if (t != null) setT(Math.min(1, Math.max(0, t)));
+        else el.textContent = old;
+      };
+      inp.addEventListener('keydown', (ev) => {
+        ev.stopPropagation();
+        if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+        else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+      });
+      inp.addEventListener('blur', () => finish(true));
+    });
+  };
+
+  const nudgeWheel = (el, step) => {
+    el.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      if (e.deltaY) step(e.deltaY < 0 ? 1 : -1, false);
+      if (e.deltaX) step(e.deltaX > 0 ? 1 : -1, true);
+    }, { passive: false });
+  };
+
+  // Vertical sliders (incl. drawbar tabs). data-detent = bipolar snap at a
+  // semantic zero anywhere on the track (typed entry bypasses); data-steps =
+  // STEPPED slider (drawbar tabs = 9 positions → the 0–8 registration clicks).
+  $('.vslider').forEach((fd) => {
+    let v = +fd.dataset.val || 0;
+    const fmt = fd.dataset.fmt || 'pct';
+    const name = fd.dataset.name || '';
+    const detent = fd.dataset.detent != null ? +fd.dataset.detent : null;
+    const steps = fd.dataset.steps != null ? +fd.dataset.steps : null;
+    const out = fd.parentElement.querySelector('.ro');
+    const sync = () => {
+      fd.style.setProperty('--val', v);
+      if (out && !out.querySelector('input')) out.textContent = FMTC[fmt](v);
+      const tip = name + ' — ' + FMT[fmt](v);
+      fd.title = tip;
+      if (out) out.title = tip + ' (double-click to type)';
+    };
+    const snap = (x, wheelBand) => {
+      x = Math.min(1, Math.max(0, x));
+      if (steps != null) return Math.round(x * (steps - 1)) / (steps - 1);
+      if (detent != null && Math.abs(x - detent) < wheelBand) return detent;
+      return x;
+    };
+    fd.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); // stop native drag/pan from hijacking a held slide
+      fd.setPointerCapture(e.pointerId);
+      const r = fd.getBoundingClientRect();
+      const move = (ev) => { v = snap(1 - (ev.clientY - r.top) / r.height, 0.035); sync(); };
+      move(e);
+      fd.addEventListener('pointermove', move);
+      fd.addEventListener('pointerup', () => fd.removeEventListener('pointermove', move), { once: true });
+    });
+    fd.addEventListener('dblclick', () => { if (detent != null) { v = detent; sync(); } });
+    nudgeWheel(fd, (dir, fine) => {
+      const inc = steps != null ? 1 / (steps - 1) : (fine ? 0.005 : 0.04);
+      v = snap(v + dir * inc, 0.015);
+      sync();
+    });
+    editable(out, fmt, (t) => { v = steps != null ? snap(t, 0) : t; sync(); }); // typed = exact, no detent snap
+    if (steps != null) v = snap(v, 0); // drawbar tabs sit exactly on a click from the start
+    fd._get = () => v;
+    fd._set = (t) => { v = t; sync(); };
+    sync();
+  });
+
+  // Belt-and-suspenders for the canvas-drag bug: never let native HTML drag start.
+  document.addEventListener('dragstart', (e) => e.preventDefault());
+
+  // Meta strip.
+  const root = document.documentElement;
+  const wire = (id, fn) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const mv = document.getElementById(id + 'V'); // numeric readout, if present
+    const go = () => {
+      const v = el.type === 'checkbox' ? el.checked : el.value;
+      if (mv) mv.textContent = v;
+      fn(v);
+    };
+    el.addEventListener('input', go);
+    el.addEventListener('change', go);
+    go();
+  };
+  wire('mDraw', (v) => document.getElementById('panel').classList.toggle('db-plain', v === 'plain'));
+  wire('mPanel', (v) => root.style.setProperty('--pl', v + '%'));
+  wire('mTgap', (v) => root.style.setProperty('--tgap', (v / 100) + 'em'));
+  wire('mBands', (v) => document.querySelector('.panel').classList.toggle('monoband', v === 'single'));
+  wire('mBand', (v) => root.style.setProperty('--mbh', v));
+  wire('mSize', (v) => { document.querySelector('.panel').style.fontSize = (14 * v / 100) + 'px'; });
+})();
+</script>
+</body>
+</html>
