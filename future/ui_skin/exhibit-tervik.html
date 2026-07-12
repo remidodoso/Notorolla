@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Exhibit — Tervik 1.1</title>
+<title>Exhibit — Tervik 1.2</title>
 <style>
   /* ============ INSTRUMENT EXHIBIT — Tervik (3-op FM) ============
      The Padlington-1.3 skin applied to Tervik, with the big structural
@@ -13,9 +13,14 @@
      order — Tervik has no Filter/Effects, so the spectrum simply has gaps
      (hue = role).
      1.1: WIDE SLIDERS won the envelope trial (narrow/knob variants
-     retired); rotary switch got breathing room + larger position labels
-     (DEFERRED: numbered-op-box + line algorithm diagrams); fixed the
-     held-drag-hijacks-the-canvas bug (preventDefault + dragstart block).
+     retired); rotary switch got breathing room + larger position labels;
+     fixed the held-drag-hijacks-the-canvas bug (preventDefault + dragstart).
+     1.2: the deferred op-diagram idea LANDS — the Algorithm rotary is
+     replaced by a BACKLIT-LCD picker (a lit amber/green glass with the FM
+     operator graph, TX81Z-style, dark-on-lit) driven by a PLAIN ROTARY
+     ENCODER below it (unlimited turn, wraps 1→2→3→4→1). It slots into the
+     left of the Routing sub, to the left of Fdbk. (Reusable elsewhere as a
+     friendlier "picker" — e.g. a side knob + a low-profile wide display.)
      Retained design exhibit — self-contained, not product code. */
   :root {
     --pl: 20%; --ro: hsl(41, 100%, 62%); --glow: .7; --tgap: .10em; --mbh: 28;
@@ -128,30 +133,36 @@
   .vsl .ro { font-size: .7em; color: var(--ro); font-variant-numeric: tabular-nums;
              width: 5.5ch; text-align: center; min-height: 1.2em; }
 
-  /* ---- rotary switch (Algorithm) ----
-     1.1 verdict: more breathing room (esp. right, where Pair/Par labels
-     live) + larger position labels. DEFERRED: replace the position labels
-     with classic numbered-operator-box + connection-line algorithm diagrams. */
-  .rsww { display: flex; flex-direction: column; align-items: center; gap: .2em;
-          --kd: 2.3em; padding: .8em 1.7em .1em 1.2em; }
-  .rsww .bl { margin-top: 1.15em; font-size: .7em; color: var(--ink); letter-spacing: .03em; }
-  .rswitch { width: var(--kd); height: var(--kd); border-radius: 50%; cursor: pointer; touch-action: none;
-             position: relative;
-             background: radial-gradient(circle at 32% 28%, hsl(220,6%,34%), hsl(220,8%,15%) 72%);
-             border: 1px solid hsl(220,8%,10%);
-             box-shadow: 0 3px 7px rgba(0,0,0,.55), inset 0 1px 1px hsla(0,0%,100%,.14); }
-  .rswitch .face { position: absolute; inset: 0; border-radius: 50%;
-                   transform: rotate(var(--rot, 0deg)); }
-  .rswitch .face::after { content: ''; position: absolute; left: 50%; top: 6%; width: 2.5px; height: 38%;
-                          transform: translateX(-50%); border-radius: 2px; background: hsl(220, 15%, 92%); }
-  .rswitch .ptick { position: absolute; inset: 0; transform: rotate(var(--a)); pointer-events: none; }
-  .rswitch .ptick::before { content: ''; position: absolute; left: calc(50% - 1px); top: -.3em;
-                            width: 2px; height: .22em; background: var(--tick-maj); }
-  .rswitch .ptick.on::before { background: var(--ro); }
-  .rswitch .plab { position: absolute; font-size: .66em; color: var(--ink-dim);
-                   transform: translate(-50%, -50%); white-space: nowrap;
-                   pointer-events: none; letter-spacing: .02em; }
-  .rswitch .plab.on { color: var(--ro); }
+  /* ---- Algorithm picker (1.2): a backlit LCD graph + a rotary ENCODER ----
+     The deferred op-diagram idea. Positive LCD (dark graphics on a lit
+     amber/green glass, FS1R-style); the plain knob is an ENCODER — free spin,
+     wraps 1→2→3→4→1 (the LCD is the display, the knob just picks). Colours are
+     the v1.1 mockup defaults. */
+  .fmpick { display: flex; flex-direction: column; align-items: center; gap: .95em; padding: 0 .3em; }
+  .lcd { position: relative; width: 9.2em; height: 6em; border-radius: .4em; overflow: hidden;
+         --ah: 68; --sat: 46%; --lit-l: 56%;
+         --lit: hsl(var(--ah), var(--sat), var(--lit-l));
+         --lit-hi: hsl(var(--ah), var(--sat), calc(var(--lit-l) + 8%));
+         --dark: hsl(var(--ah), 22%, 15%);
+         background: radial-gradient(130% 90% at 50% 22%, var(--lit-hi), transparent 62%),
+                     linear-gradient(180deg, var(--lit-hi), var(--lit) 55%, hsl(var(--ah), var(--sat), calc(var(--lit-l) - 8%)));
+         border: 1px solid hsl(var(--ah), 25%, 22%);
+         box-shadow: 0 0 .5em hsla(var(--ah), 80%, 55%, .35), inset 0 1px 0 hsla(0,0%,100%,.28),
+                     inset 0 -1px 3px hsla(var(--ah), 40%, 20%, .5), 0 2px 8px rgba(0,0,0,.5); }
+  .lcd svg { position: absolute; top: 1.05em; left: .2em; right: .2em; bottom: 1.5em; display: block; color: var(--dark); }
+  .lcd svg text { fill: currentColor; }
+  .lcd .hdr { position: absolute; top: .38em; left: .55em; font-size: .5em; letter-spacing: .22em; color: hsl(var(--ah), 22%, 26%); }
+  .lcd .cap { position: absolute; bottom: .32em; left: .55em; right: .55em; display: flex; align-items: baseline; gap: .4em; color: var(--dark); }
+  .lcd .cap .num { font-size: 1.15em; font-variant-numeric: tabular-nums; line-height: 1; }
+  .lcd .cap .nm { font-size: .62em; letter-spacing: .16em; text-transform: uppercase; }
+  .fmknob { --kd: 2.5em; width: var(--kd); height: var(--kd); border-radius: 50%; position: relative;
+            cursor: ns-resize; touch-action: none;
+            background: radial-gradient(circle at 32% 28%, hsl(220,6%,36%), hsl(220,8%,13%) 72%);
+            border: 1px solid hsl(220,8%,9%);
+            box-shadow: 0 3px 8px rgba(0,0,0,.55), inset 0 1px 1px hsla(0,0%,100%,.14); }
+  /* No index mark — a smooth encoder (the LCD shows the selection, not the knob). */
+  .fmknob .face { position: absolute; inset: 0; border-radius: 50%; }
+  .fmpick .bl { font-size: .7em; color: var(--ink); letter-spacing: .03em; }
 
   .ro input.edit {
     width: 100%; font: inherit; color: var(--ro); background: hsl(220, 10%, 10%);
@@ -162,13 +173,17 @@
 </head>
 <body>
 <header>
-  <h1>Exhibit — Tervik 1.1</h1>
+  <h1>Exhibit — Tervik 1.2</h1>
   <p class="blurb">The 3-op FM instrument with <b>envelopes extracted into their own Envelope section</b>
-    (Env 1 · Env 2 · Env 3) — 1.1: <b>wide sliders won the trial</b> (narrow/knob variants retired). Push
-    <b>1 → 2</b> / <b>1 → 3</b> to copy Env 1's settings (the target flashes). The Algorithm rotary got
-    breathing room + larger position labels; proper <b>numbered-operator-box algorithm diagrams are
-    deferred</b>. Also fixed: a held slider drag can no longer turn into a native canvas drag. No Filter
-    or Effects on this instrument — the spectrum shows its gaps (hue = role).</p>
+    (Env 1 · Env 2 · Env 3); push <b>1 → 2</b> / <b>1 → 3</b> to copy Env 1's settings (the target flashes).
+    <b>1.2: the Algorithm control is now a backlit-LCD picker</b> — a lit amber/green glass showing the FM
+    <b>operator graph</b> (numbered boxes + connection lines + carrier output bus, TX81Z-style, dark-on-lit),
+    driven by a <b>plain rotary encoder</b> (unlimited turn, wraps 1→2→3→4→1). It sits at the <b>left of the
+    Routing sub</b>. TX81Z drawing convention — outline boxes, plain lines (<b>no arrows</b>), carriers on a
+    solid <b>output bar</b>; two modulators onto one carrier converge into the "Y". Meta <b>Algo size</b>
+    scales the graph clear of the caption. Tervik's "Feedback" isn't per-operator (it brightens Ops 2 & 3's
+    wave), so the slider is renamed <b>Shape</b> and no operator carries a feedback loop. No Filter/Effects —
+    the spectrum shows its gaps (hue = role).</p>
   <div class="meta">
     <label>Panel <input type="range" id="mPanel" min="14" max="34" value="20"><span class="mv" id="mPanelV"></span></label>
     <label>Tick gap <input type="range" id="mTgap" min="4" max="50" value="10"><span class="mv" id="mTgapV"></span></label>
@@ -177,6 +192,8 @@
       <option value="single">single hue</option></select></label>
     <label>Band hue <input type="range" id="mBand" min="20" max="300" value="28"><span class="mv" id="mBandV"></span></label>
     <label>Size <input type="range" id="mSize" min="85" max="135" value="125"><span class="mv" id="mSizeV"></span></label>
+    <label>Algo size <input type="range" id="mGfx" min="55" max="110" value="64"><span class="mv" id="mGfxV"></span></label>
+    <label>Y offset <input type="range" id="mGy" min="-34" max="12" value="-19"><span class="mv" id="mGyV"></span></label>
     <a href="index.html">← gallery</a>
   </div>
 </header>
@@ -193,11 +210,16 @@
     <div class="subs">
       <div class="sub"><div class="slrow"><span class="sl">Routing</span></div>
         <div class="bank">
-          <div class="rsww">
-            <div class="rswitch" data-opts="Stack,Y,Pair,Par" data-idx="2" data-name="Algorithm (operator routing)"><div class="face"></div></div>
+          <div class="fmpick">
+            <div class="lcd">
+              <svg class="algosvg"></svg>
+              <div class="hdr">ALGORITHM</div>
+              <div class="cap"><span class="num"></span><span class="nm"></span></div>
+            </div>
+            <div class="fmknob" data-idx="2" data-name="Algorithm — turn to pick the operator routing (encoder: wraps around)"><div class="face"></div></div>
             <span class="bl">Algo</span>
           </div>
-          <div class="vsl"><div class="vslider" data-val="0" data-fmt="pct" data-name="Feedback (Ops 2 & 3 morph sine → saw)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Fdbk</span><span class="ro"></span></div>
+          <div class="vsl"><div class="vslider" data-val="0" data-fmt="pct" data-name="Shape (the waveshape of Ops 2 & 3: morphs their oscillator from a pure sine up toward a bright band-limited saw — adds upper harmonics as a brightness/grit control. Op 1 stays a pure sine.)"><div class="ticks l"></div><div class="slot"></div><div class="ticks r"></div><div class="cap"></div></div><span class="bl">Shape</span><span class="ro"></span></div>
         </div>
       </div>
       <div class="sub"><div class="slrow"><span class="sl">Op 1</span></div>
@@ -399,53 +421,96 @@
     sync();
   });
 
-  // Rotary switch (Algorithm) with position labels.
-  $('.rswitch').forEach((sw) => {
-    const opts = (sw.dataset.opts || '').split(',');
-    const n = opts.length;
-    let idx = Math.min(n - 1, Math.max(0, +sw.dataset.idx || 0));
-    const ticks = [], labs = [];
-    for (let i = 0; i < n; i++) {
-      const a = -135 + (i * 270) / (n - 1);
-      const p = document.createElement('i');
-      p.className = 'ptick';
-      p.style.setProperty('--a', a + 'deg');
-      sw.append(p);
-      ticks.push(p);
-      const l = document.createElement('span');
-      l.className = 'plab';
-      l.textContent = opts[i];
-      const rad = ((a - 180) * Math.PI) / 180;
-      l.style.left = (50 - Math.sin(rad) * 86) + '%';
-      l.style.top = (50 + Math.cos(rad) * 86) + '%';
-      sw.append(l);
-      labs.push(l);
+  // Algorithm picker (1.2): a backlit-LCD operator graph + a rotary ENCODER.
+  // The four graphs are Tervik's real 3-op routings (audio.js TERVIK_ALGOS). The
+  // Yamaha (TX81Z) drawing convention: numbered outline boxes, plain connection
+  // lines (NO arrowheads), a modulator sits above its carrier and a line runs
+  // between them (two modulators onto one carrier converge onto its top — the
+  // "Y"); carriers drop to a solid OUTPUT BAR. Feedback isn't per-operator here
+  // (it brightens Ops 2 & 3's wave), so no operator carries a feedback loop.
+  // `--gfx` (meta "Algo size") scales the graph so it clears the caption.
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const svgEl = (tag, attrs) => { const e = document.createElementNS(SVGNS, tag); for (const k in attrs) if (attrs[k] !== '') e.setAttribute(k, attrs[k]); return e; };
+  const BW = 18, BH = 14, LEG = 10, ROW = BH + LEG, BARH = 3.5, C = 60;
+  const redraws = [];
+  let GFX = 0.64;                                  // graph scale (meta "Algo size")
+  let GYOFF = -19;                                 // graph vertical offset in viewBox units (meta "Y offset"; − = up)
+  const ALGOS = [
+    { n: 1, name: 'Stack',    box: { 3: [C, 0], 2: [C, ROW], 1: [C, 2 * ROW] }, mods: [[3, 2], [2, 1]], carr: [1] },
+    { n: 2, name: 'Y',        box: { 2: [C - 17, 0], 3: [C + 17, 0], 1: [C, ROW] }, mods: [[2, 1], [3, 1]], carr: [1] },
+    { n: 3, name: 'Pair',     box: { 3: [C - 17, 0], 2: [C - 17, ROW], 1: [C + 17, ROW] }, mods: [[3, 2]], carr: [2, 1] },
+    { n: 4, name: 'Parallel', box: { 1: [C - 24, 0], 2: [C, 0], 3: [C + 24, 0] }, mods: [], carr: [1, 2, 3] },
+  ];
+  function geometry(algo) {
+    const box = algo.box, boxes = [], segs = [];
+    const top = (p) => p[1] - BH / 2, bot = (p) => p[1] + BH / 2;
+    // modulation: a line from the modulator's bottom-centre to the carrier's
+    // top-centre (vertical when stacked; two of them converge into a "Y").
+    for (const [f, t] of algo.mods) { const a = box[f], b = box[t]; segs.push([a[0], bot(a), b[0], top(b)]); }
+    // carriers drop LEG to the solid output bar
+    const cxs = algo.carr.map((id) => box[id][0]);
+    const busY = Math.max(...algo.carr.map((id) => bot(box[id]))) + LEG;
+    for (const id of algo.carr) { const c = box[id]; segs.push([c[0], bot(c), c[0], busY]); }
+    const bar = [Math.min(...cxs) - 9, Math.max(...cxs) + 9, busY];
+    for (const id of Object.keys(box)) boxes.push({ id: +id, x: box[id][0], y: box[id][1] });
+    return { boxes, segs, bar };
+  }
+  function renderGraph(svg, algo) {
+    const VW = 120, VH = 92;
+    svg.setAttribute('viewBox', `0 0 ${VW} ${VH}`);
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    const { boxes, segs, bar } = geometry(algo);
+    let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+    const grow = (x, y) => { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); };
+    for (const b of boxes) { grow(b.x - BW / 2, b.y - BH / 2); grow(b.x + BW / 2, b.y + BH / 2); }
+    for (const s of segs) { grow(s[0], s[1]); grow(s[2], s[3]); }
+    grow(bar[0], bar[2]); grow(bar[1], bar[2] + BARH);
+    const ccx = (minX + maxX) / 2, ccy = (minY + maxY) / 2;
+    const gg = svgEl('g', { transform: `translate(${VW / 2} ${(VH / 2 + GYOFF).toFixed(2)}) scale(${GFX.toFixed(3)}) translate(${(-ccx).toFixed(2)} ${(-ccy).toFixed(2)})` });
+    svg.append(gg);
+    for (const s of segs) gg.append(svgEl('line', { x1: s[0], y1: s[1], x2: s[2], y2: s[3], stroke: 'currentColor', 'stroke-width': 1.6, 'stroke-linecap': 'round' }));
+    gg.append(svgEl('rect', { x: bar[0], y: bar[2], width: bar[1] - bar[0], height: BARH, rx: 0.6, fill: 'currentColor' }));  // the output bar (no arrow)
+    for (const b of boxes) {
+      gg.append(svgEl('rect', { x: b.x - BW / 2, y: b.y - BH / 2, width: BW, height: BH, rx: 2, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.6 }));
+      const tx = svgEl('text', { x: b.x, y: b.y + 0.5, 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-family': 'Tahoma, sans-serif', 'font-size': 9 });
+      tx.textContent = b.id; gg.append(tx);
     }
-    const sync = () => {
-      sw.style.setProperty('--rot', (-135 + (idx * 270) / (n - 1)) + 'deg');
-      ticks.forEach((p, i) => p.classList.toggle('on', i === idx));
-      labs.forEach((l, i) => l.classList.toggle('on', i === idx));
-      sw.title = (sw.dataset.name || '') + ' — ' + opts[idx];
+  }
+  $('.fmpick').forEach((pick) => {
+    const svg = pick.querySelector('.algosvg');
+    const knob = pick.querySelector('.fmknob');
+    const face = pick.querySelector('.fmknob .face');
+    const num = pick.querySelector('.cap .num');
+    const nm = pick.querySelector('.cap .nm');
+    const L = ALGOS.length;
+    let idx = ((+knob.dataset.idx || 0) % L + L) % L;
+    let rot = 0;                                   // free-spin angle (encoder has no end stop)
+    const STEP = 26;                               // px of drag per detent
+    const show = () => {
+      const a = ALGOS[idx];
+      renderGraph(svg, a); num.textContent = a.n; nm.textContent = a.name;
+      face.style.transform = `rotate(${rot}deg)`;
+      knob.title = `${knob.dataset.name || ''} — ${a.n} ${a.name}`;
     };
-    sw.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      sw.setPointerCapture(e.pointerId);
-      const y0 = e.clientY, i0 = idx;
-      let moved = false;
+    const stepBy = (d) => { idx = ((idx + d) % L + L) % L; };
+    knob.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); knob.setPointerCapture(e.pointerId);
+      let lastY = e.clientY, acc = 0, moved = false;
       const move = (ev) => {
-        const d = Math.round((y0 - ev.clientY) / 24);
-        if (d !== 0) moved = true;
-        idx = Math.min(n - 1, Math.max(0, i0 + d));
-        sync();
+        const dy = lastY - ev.clientY; lastY = ev.clientY;
+        rot += dy * 1.5; acc += dy; if (Math.abs(dy) > 1) moved = true;
+        while (acc >= STEP) { acc -= STEP; stepBy(1); }
+        while (acc <= -STEP) { acc += STEP; stepBy(-1); }
+        show();
       };
-      sw.addEventListener('pointermove', move);
-      sw.addEventListener('pointerup', () => {
-        sw.removeEventListener('pointermove', move);
-        if (!moved) { idx = (idx + 1) % n; sync(); }
-      }, { once: true });
+      const up = () => { knob.removeEventListener('pointermove', move); knob.removeEventListener('pointerup', up); if (!moved) { stepBy(1); rot += 90; show(); } };
+      knob.addEventListener('pointermove', move);
+      knob.addEventListener('pointerup', up);
     });
-    nudgeWheel(sw, (dir) => { idx = Math.min(n - 1, Math.max(0, idx + dir)); sync(); });
-    sync();
+    knob.addEventListener('dragstart', (e) => e.preventDefault());
+    nudgeWheel(knob, (dir) => { stepBy(dir); rot += dir * 90; show(); });
+    redraws.push(show);   // re-render when the "Algo size" meta changes
+    show();
   });
 
   // COPY buttons: Env 1 → Env N, then flash the target subgroup as feedback.
@@ -488,6 +553,8 @@
   });
   wire('mBand', (v) => root.style.setProperty('--mbh', v));
   wire('mSize', (v) => { document.querySelector('.panel').style.fontSize = (14 * v / 100) + 'px'; });
+  wire('mGfx', (v) => { GFX = v / 100; redraws.forEach((f) => f()); });
+  wire('mGy', (v) => { GYOFF = +v; redraws.forEach((f) => f()); });
 })();
 </script>
 </body>

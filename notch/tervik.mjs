@@ -143,19 +143,22 @@ function targetsOf(osc, gains) {
   ok(expStep && near(expStep[1], expected, 1e-3), `modulator depth = index×modFreq (${expected})`);
 }
 
-// 8) Follow Op 1: when follow2=on, Op2's modulator uses Op1's ADSR (decay tau = d1),
-//    not its own d2.
+// 8) The live "Follow Op 1" mode is gone (replaced by a one-shot Copy button):
+//    each op always uses its OWN envelope — Op2's modulator decay tau = its own d2.
 {
-  const { oscs } = capture({ algo: 'stack', follow2: true, d1: 1.4, d2: 0.05 });
+  const { oscs } = capture({ algo: 'stack', d1: 1.4, d2: 0.05 });
   const modGain = oscs[1]._conns[0].dest;
   const tgt = modGain.gain._sched.find((s) => s[0] === 'tgt' && s[3] != null);
-  ok(tgt && near(tgt[3], 1.4, 1e-6), 'follow on → Op2 uses Op1 decay (1.4), not its own');
+  ok(tgt && near(tgt[3], 0.05, 1e-6), 'Op2 uses its own decay (0.05)');
 }
+// 8b) Legacy migration: a saved patch with follow2 on copies Env 1 into Env 2, so
+//     the old "followed Op 1" sound survives (d2 becomes d1); the key is dropped.
 {
-  const { oscs } = capture({ algo: 'stack', follow2: false, d1: 1.4, d2: 0.05 });
-  const modGain = oscs[1]._conns[0].dest;
-  const tgt = modGain.gain._sched.find((s) => s[0] === 'tgt' && s[3] != null);
-  ok(tgt && near(tgt[3], 0.05, 1e-6), 'follow off → Op2 uses its own decay (0.05)');
+  const p = normalizePatch({ kind: 'tervik', follow2: true, d1: 1.4, d2: 0.05 });
+  ok(near(p.d2, 1.4, 1e-9), 'follow2:true migrates → Env 2 copies Env 1 (d2 = 1.4)');
+  ok(p.follow2 === undefined, 'follow2 key dropped after migration');
+  const q = normalizePatch({ kind: 'tervik', d1: 1.4, d3: 0.05 });
+  ok(near(q.d3, 0.05, 1e-9), 'no follow3 → Env 3 stays independent (d3 = 0.05)');
 }
 
 // 9) Feedback buckets cached per context (same ctx, two notes, one wave object).
@@ -185,9 +188,9 @@ function targetsOf(osc, gains) {
 // 11) defaultPatch tervik has all op params present + finite.
 {
   const p = defaultPatch('tervik');
-  const keys = ['coarse1','fine1','level1','a1','d1','s1','r1','coarse2','fine2','level2','follow2','a2','d2','s2','r2','coarse3','fine3','level3','follow3','a3','d3','s3','r3','algo','feedback'];
+  const keys = ['coarse1','fine1','level1','a1','d1','s1','r1','coarse2','fine2','level2','a2','d2','s2','r2','coarse3','fine3','level3','a3','d3','s3','r3','algo','feedback'];
   ok(keys.every((k) => p[k] !== undefined), 'default tervik patch has every param');
-  ok(typeof p.follow2 === 'boolean' && typeof p.follow3 === 'boolean', 'follow flags are booleans');
+  ok(p.follow2 === undefined && p.follow3 === undefined, 'follow flags are gone (replaced by Copy buttons)');
 }
 
 // 12) Vesperia/Zindel/Wendelhorn regression: still build their own voice counts.

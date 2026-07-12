@@ -33,6 +33,7 @@ const secsC = (v) => (v < 1 ? String(Math.round(v * 1000)) : `${v.toFixed(2)}s`)
 const hzC = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(Math.round(v)));
 const qC = (v) => v.toFixed(1);
 const octC = (v) => v.toFixed(2);
+const scentsC = (v) => { const c = Math.round(v); return Math.abs(c) < 0.5 ? '0' : `${c > 0 ? '+' : '−'}${Math.abs(c)}`; };
 
 // Typed-entry parsers for the skin's dblclick-to-type readouts (§13 locked law).
 // Each returns the param's native VALUE clamped to [lo,hi], or null on garbage
@@ -45,6 +46,8 @@ const pctParse = (lo, hi) => (s) => { const v = numOf(s); return v == null ? nul
 const secsParse = (lo, hi) => (s) => { let v = numOf(s); if (v == null) return null; if (/\d\s*s\s*$/i.test(s) && !/ms\s*$/i.test(s)) v *= 1000; return clampv(v / 1000, lo, hi); };
 const hzParse = (lo, hi) => (s) => { let v = numOf(s); if (v == null) return null; if (/k/i.test(s)) v *= 1000; return clampv(v, lo, hi); };
 const plainParse = (lo, hi) => (s) => { const v = numOf(s); return v == null ? null : clampv(v, lo, hi); };
+// Signed cents: "off"/"0" → 0, else a bare (signed) number of cents.
+const scentsParse = (s) => { if (/^\s*(off|0)\s*$/i.test(s)) return 0; const v = numOf(s); return v == null ? null : clampv(v, -200, 200); };
 
 // --- shared param-cluster builders (§13 "common clusters") --------------------
 // A kind composes its editable params from these so a cluster present in many
@@ -57,17 +60,42 @@ const plainParse = (lo, hi) => (s) => { const v = numOf(s); return v == null ? n
 // a `detent` value mark a centred (or off-centre) neutral. Short `label` = the
 // glyph under the slider; the full name lives in `title` (the rollover).
 
-// Amplitude ADSR (role: Envelope · sub: Amplitude).
-function ampEnvelopeParams() {
+// Amplitude ADSR (role: Envelope · sub: Amplitude). Ranges are overridable per
+// kind (a pad wants a longer attack/release than the reference voice) while the
+// labels/curves/feel stay identical everywhere.
+function ampEnvelopeParams({ attackMax = 1.5, decayMax = 5, releaseMax = 3 } = {}) {
   return [
-    { key: 'attack', role: 'env', sub: 'Amplitude', label: 'A', min: 0.001, max: 1.5, log: true, fmt: secs, fmtc: secsC, parse: secsParse(0.001, 1.5),
+    { key: 'attack', role: 'env', sub: 'Amplitude', label: 'A', min: 0.001, max: attackMax, log: true, fmt: secs, fmtc: secsC, parse: secsParse(0.001, attackMax),
       title: 'Attack — time from note-on to full level.' },
-    { key: 'decay', role: 'env', sub: 'Amplitude', label: 'D', min: 0.02, max: 5, log: true, fmt: secs, fmtc: secsC, parse: secsParse(0.02, 5),
+    { key: 'decay', role: 'env', sub: 'Amplitude', label: 'D', min: 0.02, max: decayMax, log: true, fmt: secs, fmtc: secsC, parse: secsParse(0.02, decayMax),
       title: 'Decay — how quickly the level falls toward the sustain after the attack. (At Sustain 0 this is the ring-down time.)' },
     { key: 'sustain', role: 'env', sub: 'Amplitude', label: 'S', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1),
       title: 'Sustain — level the note holds at while sounding. 0 = decay to silence (the struck-string behaviour).' },
-    { key: 'release', role: 'env', sub: 'Amplitude', label: 'R', min: 0.01, max: 3, log: true, fmt: secs, fmtc: secsC, parse: secsParse(0.01, 3),
+    { key: 'release', role: 'env', sub: 'Amplitude', label: 'R', min: 0.01, max: releaseMax, log: true, fmt: secs, fmtc: secsC, parse: secsParse(0.01, releaseMax),
       title: 'Release — fade time once the note ends.' },
+  ];
+}
+
+// Pitch attack (role: Oscillator · sub: Pitch) — the signed ±cents approach that
+// settles onto pitch. Shared keys/labels across Wendelhorn + Padlington, so
+// cross-kind Copy/Paste ferries the gesture (§13 shared clusters).
+function pitchAtkParams() {
+  return [
+    { key: 'pitchAtk', role: 'osc', sub: 'Pitch', label: 'Atk', widget: 'bipolar', detent: 0, min: -200, max: 200, fmt: scents, fmtc: scentsC, parse: scentsParse,
+      title: 'Pitch Atk — the note starts this many cents off pitch and settles. Positive = from above (brass / the vocal approach), negative = the scoop. 0 = off.' },
+    { key: 'pitchAtkTime', role: 'osc', sub: 'Pitch', label: 'Time', min: 0.01, max: 1, log: true, fmt: secs, fmtc: secsC, parse: secsParse(0.01, 1),
+      title: 'Pitch Time — how long the pitch attack takes to settle (exponential decay).' },
+  ];
+}
+
+// Stereo width (role: Effects · sub: Stereo) — a single mono-safe spread slider.
+// The storage `key` is overridable: the visual/metadata cluster is shared, but a
+// kind keeps its existing DSP key (Padlington `width`, Wendelhorn `stereo`) so no
+// voice code or saved patch has to change. (Unifying the key — for cross-kind
+// Copy/Paste of the gesture — is a future §13 shared-labels item.)
+function stereoParams({ key = 'width', title = 'Width — stereo spread; the voice’s two decorrelated read-heads pan apart. 0 = mono-centred (mono-safe).' } = {}) {
+  return [
+    { key, role: 'fx', sub: 'Stereo', label: 'Width', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1), title },
   ];
 }
 
@@ -132,8 +160,10 @@ const VESPERIA_PARAMS = [
 
 const ZINDEL_DEFAULTS = {
   // Drawbar levels (harmonics 1–8). Default = Hammond-ish: a full fundamental
-  // and octave with a touch of 3rd and 5th "color", the rest low.
-  d1: 1.0, d2: 0.55, d3: 0.35, d4: 0.15, d5: 0.28, d6: 0.08, d7: 0.05, d8: 0.1,
+  // and octave with a touch of 3rd and 5th "color", the rest low. Quantised onto
+  // the 0–8 registration grid (eighths) that the drawbar widget clicks to — the
+  // prior near values (.55/.35/.15/.28/.08/.05/.1) rounded to their nearest tab.
+  d1: 1.0, d2: 0.5, d3: 0.375, d4: 0.125, d5: 0.25, d6: 0.125, d7: 0, d8: 0.125,
 
   // Tone. Modulation is the FM index — 0 = pure sine partials, up = brighter
   // (harmonic sidebands, 1:1 carrier:modulator). Spread stretches the partial
@@ -153,34 +183,40 @@ const ZINDEL_DEFAULTS = {
   acceleration: 0.25,
 };
 
-const fm = (v) => (v <= 0 ? 'sine' : `${Math.round(v * 100)}%`);
-const ratio = (v) => (Math.abs(v) < 0.005 ? 'harmonic' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(0)}%`);
+// Drawbar registration (0–8): the stored level is 0..1, displayed/clicked as n/8.
+const zdrawFmt = (v) => { const n = Math.round(v * 8); return `${n} — drawbar ${n}/8`; };
+const zdrawFmtC = (v) => String(Math.round(v * 8));
+const zdrawParse = (s) => { const v = numOf(s); return v == null ? null : clampv(Math.round(v), 0, 8) / 8; };
+const zfmFmt = (v) => (v <= 0 ? 'sine (pure partials)' : `${Math.round(v * 100)}% FM`);
+const zfmFmtC = (v) => (v <= 0 ? 'sine' : String(Math.round(v * 100)));
+const zfmParse = (s) => { if (/sine/i.test(s)) return 0; const v = numOf(s); return v == null ? null : clampv(v / 100, 0, 1); };
+const zspreadFmt = (v) => (Math.abs(v) < 0.005 ? 'harmonic' : `${v > 0 ? '+' : '−'}${Math.abs(v * 100).toFixed(0)}% spread`);
+const zspreadFmtC = (v) => (Math.abs(v) < 0.005 ? '0' : `${v > 0 ? '+' : '−'}${Math.abs(v * 100).toFixed(0)}`);
+const zspreadParse = (s) => { if (/harm/i.test(s)) return 0; const v = numOf(s); return v == null ? null : clampv(v / 100, -0.3, 0.6); };
 
-// Eight drawbar params (harmonics 1–8), linear 0..1, shown as a row of faders.
+// Eight drawbars (harmonics 1–8): the skin's drawbar tab, a 9-position (0–8)
+// stepped fader. The label is the harmonic number (printed on the tab); the
+// widget whitens the powers-of-two tabs (1/2/4/8).
 const ZINDEL_DRAWBARS = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => ({
-  key: `d${k}`, group: 'Drawbars', label: String(k), bar: true, min: 0, max: 1, fmt: pct,
-  title: `Level of harmonic ${k}.`,
+  key: `d${k}`, role: 'osc', sub: 'Drawbars', label: String(k), widget: 'drawbar', positions: 9, min: 0, max: 1,
+  fmt: zdrawFmt, fmtc: zdrawFmtC, parse: zdrawParse,
+  title: `Drawbar ${k} — level of harmonic ${k} (0–8 registration).`,
 }));
 
+// Zindel maps onto: Oscillator [Drawbars · Tone] · Motion (the green filter-role
+// slot, its band relabelled — Acceleration is the filter substitute) · Envelope.
 const ZINDEL_PARAMS = [
   ...ZINDEL_DRAWBARS,
 
-  { key: 'modulation', group: 'Tone', label: 'Modulation', min: 0, max: 1, fmt: fm,
-    title: 'FM brightness: each partial is a sine carrier with a 1:1 sine modulator. 0 = pure sine; up adds harmonic sidebands (richer/brassier).' },
-  { key: 'spread', group: 'Tone', label: 'Spread', min: -0.3, max: 0.6, fmt: ratio,
-    title: 'Stretches the spacing of the partials off the integer harmonics. 0 = pure harmonic; positive detunes them apart (bell/metallic).' },
+  { key: 'modulation', role: 'osc', sub: 'Tone', label: 'Mod', min: 0, max: 1, fmt: zfmFmt, fmtc: zfmFmtC, parse: zfmParse,
+    title: 'Modulation — FM brightness: each partial is a sine carrier with a 1:1 sine modulator. 0 = pure sine; up adds harmonic sidebands (richer/brassier).' },
+  { key: 'spread', role: 'osc', sub: 'Tone', label: 'Sprd', widget: 'bipolar', detent: 0, min: -0.3, max: 0.6, fmt: zspreadFmt, fmtc: zspreadFmtC, parse: zspreadParse,
+    title: 'Spread — stretches the spacing of the partials off the integer harmonics. 0 = pure harmonic; positive detunes them apart (bell/metallic).' },
 
-  { key: 'attack', group: 'Amp Envelope', label: 'Attack', min: 0.001, max: 1.5, log: true, fmt: secs,
-    title: 'Time from note-on to full level (applied per partial).' },
-  { key: 'decay', group: 'Amp Envelope', label: 'Decay', min: 0.02, max: 5, log: true, fmt: secs,
-    title: 'How quickly each partial falls toward the sustain after the attack.' },
-  { key: 'sustain', group: 'Amp Envelope', label: 'Sustain', min: 0, max: 1, fmt: pct,
-    title: 'Level the partials hold at while the note sounds. High = organ hold.' },
-  { key: 'release', group: 'Amp Envelope', label: 'Release', min: 0.01, max: 3, log: true, fmt: secs,
-    title: 'Fade time once the note ends.' },
+  { key: 'acceleration', role: 'filter', band: 'Motion', sub: 'Acceleration', label: 'Accel', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1),
+    title: 'Acceleration — how much faster the upper partials run the envelope; they decay first, darkening the tone over time (the filter substitute).' },
 
-  { key: 'acceleration', group: 'Motion', label: 'Acceleration', min: 0, max: 1, fmt: pct,
-    title: 'How much faster the upper partials run the envelope — they decay first, darkening the tone over time (the filter substitute).' },
+  ...ampEnvelopeParams(),
 ];
 
 // --- Wendelhorn: a brass "supersaw" ensemble. Seven detuned, random-phase
@@ -216,38 +252,25 @@ const WENDELHORN_DEFAULTS = {
   pitchAtkTime: 0.08,
 };
 
+const rateHz = (v) => `${v.toFixed(2)} Hz`;
+const rateHzC = (v) => v.toFixed(2);
+
+// Wendelhorn is the first panel to use all five role hues: LFO [Ensemble] ·
+// Oscillator [Saws · Pitch] · Filter [Lowpass] · Envelope · Effects [Stereo].
+// Pitch/Lowpass/Amplitude/Stereo are the shared clusters (verbatim reuse).
 const WENDELHORN_PARAMS = [
-  { key: 'detune', group: 'Ensemble', label: 'Detune', min: 0, max: 1, fmt: pct,
-    title: 'Width of the detuned saw stack (Szabo-style irregular spacing; the side saws also swell in as you open it).' },
-  { key: 'ensemble', group: 'Ensemble', label: 'Ensemble', min: 0, max: 1, fmt: pct,
-    title: 'Depth of the slow per-saw pitch modulation — more on the outer saws, none on the center — for an ensemble shimmer.' },
-  { key: 'speed', group: 'Ensemble', label: 'Speed', min: 0.1, max: 5, log: true, fmt: (v) => `${v.toFixed(2)} Hz`,
-    title: 'Rate of the ensemble modulation. Each saw is jittered slightly so they drift independently.' },
-  { key: 'stereo', group: 'Ensemble', label: 'Stereo', min: 0, max: 1, fmt: pct,
-    title: 'Spreads the saws across the stereo field by detune (flat → left, sharp → right).' },
+  { key: 'ensemble', role: 'lfo', sub: 'Ensemble', label: 'Depth', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1),
+    title: 'Ensemble — depth of the slow per-saw pitch modulation (more on the outer saws, none on the centre): the ensemble shimmer.' },
+  { key: 'speed', role: 'lfo', sub: 'Ensemble', label: 'Speed', min: 0.1, max: 5, log: true, fmt: rateHz, fmtc: rateHzC, parse: plainParse(0.1, 5),
+    title: 'Speed — rate of the ensemble modulation. Each saw is jittered slightly so they drift independently.' },
 
-  { key: 'pitchAtk', group: 'Pitch', label: 'Pitch Atk', min: -200, max: 200, fmt: scents,
-    title: 'Pitch attack: the note starts this many cents off pitch and settles. Positive = from above (the synth-brass blip / vocal approach), negative = from below (the scoop). 0 = off.' },
-  { key: 'pitchAtkTime', group: 'Pitch', label: 'Pitch Time', min: 0.01, max: 1, log: true, fmt: secs,
-    title: 'How long the pitch attack takes to settle (exponential decay).' },
+  { key: 'detune', role: 'osc', sub: 'Saws', label: 'Detune', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1),
+    title: 'Detune — width of the detuned saw stack (Szabo-style irregular spacing; the side saws swell in as it opens).' },
 
-  { key: 'cutoff', group: 'Filter', label: 'Cutoff', min: 120, max: 14000, log: true, fmt: hz,
-    title: 'Lowpass cutoff (base, before key tracking).' },
-  { key: 'reso', group: 'Filter', label: 'Resonance', min: 0.5, max: 18, fmt: (v) => `Q ${v.toFixed(1)}`,
-    title: 'Filter resonance — the brass "blat" lives here.' },
-  { key: 'filterEnv', group: 'Filter', label: 'Env Amount', min: 0, max: 4, fmt: (v) => `${v.toFixed(2)} oct`,
-    title: 'How far the filter envelope opens the cutoff above base at the attack, then settles (the brass swell).' },
-  { key: 'keyTrack', group: 'Filter', label: 'Key Track', min: 0, max: 1, fmt: pct,
-    title: 'How much the cutoff follows pitch: 0 = fixed Hz, 1 = fully relative to each note.' },
-
-  { key: 'attack', group: 'Amp Envelope', label: 'Attack', min: 0.001, max: 1.5, log: true, fmt: secs,
-    title: 'Time from note-on to full level.' },
-  { key: 'decay', group: 'Amp Envelope', label: 'Decay', min: 0.02, max: 5, log: true, fmt: secs,
-    title: 'How quickly the level falls toward the sustain after the attack.' },
-  { key: 'sustain', group: 'Amp Envelope', label: 'Sustain', min: 0, max: 1, fmt: pct,
-    title: 'Level the note holds at while sounding.' },
-  { key: 'release', group: 'Amp Envelope', label: 'Release', min: 0.01, max: 3, log: true, fmt: secs,
-    title: 'Fade time once the note ends.' },
+  ...pitchAtkParams(),
+  ...lowpassParams(),
+  ...ampEnvelopeParams(),
+  ...stereoParams({ key: 'stereo', title: 'Stereo — a mono-safe M/S widen: pan spread by saw index + a centre scoop gated by side energy. 0 = mono.' }),
 ];
 
 // --- Tervik: a lightweight 3-operator FM synth (cheap polyphony, FM complexity).
@@ -259,11 +282,14 @@ const WENDELHORN_PARAMS = [
 // Ops 2 & 3 from sine toward a band-limited saw — a cheap stand-in for operator
 // feedback. DSP in audio.js buildTervikVoice. -------------------------------
 
+// Full names — the Algorithm control is the backlit-LCD picker (ui/fmalgo.js),
+// which shows the operator graph + the name, so no short-label workaround. The id
+// is what the DSP dispatches on (audio.js TERVIK_ALGOS).
 const TERVIK_ALGO_OPTS = [
-  { id: 'stack',    label: 'Stack  3→2→1' },
-  { id: 'y',        label: 'Y  (2+3)→1' },
-  { id: 'pair',     label: 'Pair  3→2 · 1' },
-  { id: 'parallel', label: 'Parallel  1·2·3' },
+  { id: 'stack',    label: 'Stack' },
+  { id: 'y',        label: 'Y' },
+  { id: 'pair',     label: 'Pair' },
+  { id: 'parallel', label: 'Parallel' },
 ];
 
 // Operator frequency ratio = COARSE + FINE. Coarse snaps to exact values (so you
@@ -279,47 +305,70 @@ export const TERVIK_RATIOS = [0.25, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 
 const TERVIK_DEFAULTS = {
   algo: 'pair',
   feedback: 0,
-  coarse1: 1,  fine1: 0,  level1: 0.5,                 a1: 0.002, d1: 1.4,  s1: 0, r1: 0.18,
-  coarse2: 1,  fine2: 0,  level2: 0.5, follow2: false, a2: 0.002, d2: 1.4,  s2: 0, r2: 0.18,
-  coarse3: 14, fine3: 0,  level3: 0.35, follow3: false, a3: 0.001, d3: 0.18, s3: 0, r3: 0.10,
+  coarse1: 1,  fine1: 0,  level1: 0.5,  a1: 0.002, d1: 1.4,  s1: 0, r1: 0.18,
+  coarse2: 1,  fine2: 0,  level2: 0.5,  a2: 0.002, d2: 1.4,  s2: 0, r2: 0.18,
+  coarse3: 14, fine3: 0,  level3: 0.35, a3: 0.001, d3: 0.18, s3: 0, r3: 0.10,
 };
 
 const xratio = (v) => `${v.toFixed(2)}×`;
-const fineFmt = (v) => (Math.abs(v) < 0.005 ? '0' : `${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}`);
-const followFmt = (v) => (v ? 'follow Op 1' : 'own ADSR');
+const xratioC = (v) => v.toFixed(2);
+const xratioParse = (s) => { const v = numOf(s); return v == null ? null : nearestStep(TERVIK_RATIOS, clampv(v, TERVIK_RATIOS[0], TERVIK_RATIOS[TERVIK_RATIOS.length - 1])); };
+// Fine shows 3 decimals (the PWM-beating range is |fine| ≈ 0.001–0.01, invisible
+// at 2 dp); typed entry lands exact, bypassing the detent (the Tervik-Fine lesson).
+const fineFmt = (v) => (Math.abs(v) < 0.0005 ? '0' : `${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(3)}`);
+const fineFmtC = (v) => (Math.abs(v) < 0.0005 ? '0' : `${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(3).replace(/^0/, '')}`);
 
-// The per-operator params (Coarse + Fine ratio, Level, [Follow Op 1], A D S R).
-// Op 1 has no Follow toggle — it IS the reference envelope.
-function tervikOpParams(n, group) {
-  const P = [
-    { key: `coarse${n}`, group, label: 'Coarse', steps: TERVIK_RATIOS, fmt: xratio,
-      title: `Op ${n} frequency ratio (coarse). Snaps to exact values — integers = harmonic, 0.25/0.5 = sub-octaves.` },
-    { key: `fine${n}`, group, label: 'Fine', knob: true, min: -1, max: 1, reset: 0, detents: [0], fmt: fineFmt,
-      title: `Op ${n} fine ratio offset (added to Coarse). 0 = exactly the coarse ratio; off-zero = inharmonic/bell. Double-click to reset.` },
-    { key: `level${n}`, group, label: 'Level', min: 0, max: 1, fmt: pct,
-      title: n === 1 ? 'Output level of this carrier.' : 'Level — as a carrier its volume, as a modulator its FM depth (the "amount" when following Op 1).' },
+// The per-operator OSCILLATOR params (Coarse + Fine ratio, Level). Coarse is the
+// stepped ratio slider (snaps to the exact TERVIK_RATIOS); Fine is bipolar.
+function tervikOpParams(n) {
+  const sub = `Op ${n}`;
+  return [
+    { key: `coarse${n}`, role: 'osc', sub, label: 'Coarse', steps: TERVIK_RATIOS, fmt: xratio, fmtc: xratioC, parse: xratioParse,
+      title: `Op ${n} Coarse — frequency ratio, snaps to exact values (integers = harmonic, 0.25/0.5 = sub-octaves).` },
+    { key: `fine${n}`, role: 'osc', sub, label: 'Fine', widget: 'bipolar', detent: 0, min: -1, max: 1, fmt: fineFmt, fmtc: fineFmtC, parse: plainParse(-1, 1),
+      title: `Op ${n} Fine — ratio offset added to Coarse. 0 = exactly the coarse ratio; off-zero = inharmonic/bell. Type an exact value to reach the beating range.` },
+    { key: `level${n}`, role: 'osc', sub, label: 'Level', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1),
+      title: n === 1 ? 'Op 1 Level — output level of the carrier.' : `Op ${n} Level — as a carrier its volume, as a modulator its FM depth.` },
   ];
-  if (n !== 1) P.push({ key: `follow${n}`, group, label: 'Follow Op 1', bool: true, fmt: followFmt,
-    title: 'On: shape this op with Op 1’s envelope (Level is the amount). Off: use this op’s own ADSR below.' });
-  // Ops 2 & 3's own ADSR is inert (dimmed) while Follow Op 1 shapes them instead.
-  const inert = n === 1 ? undefined : (p) => !!p[`follow${n}`];
-  P.push(
-    { key: `a${n}`, group, label: 'A', min: 0.001, max: 1.5, log: true, fmt: secs, inert, title: `Op ${n} attack.` },
-    { key: `d${n}`, group, label: 'D', min: 0.005, max: 5, log: true, fmt: secs, inert, title: `Op ${n} decay.` },
-    { key: `s${n}`, group, label: 'S', min: 0, max: 1, fmt: pct, inert, title: `Op ${n} sustain.` },
-    { key: `r${n}`, group, label: 'R', min: 0.005, max: 3, log: true, fmt: secs, inert, title: `Op ${n} release.` },
-  );
-  return P;
 }
 
+// The per-operator ENVELOPE params (A D S R), pulled into a separate Envelope
+// section (the trad-synth EG reading). Env 2 & 3 carry a one-shot COPY button
+// (`subButton`) that snapshots Env 1's settings — replacing the old live "Follow
+// Op 1" mode (copy, not a mode). Op 1's ADSR is also the amp/reference envelope.
+function tervikEnvParams(n) {
+  const sub = `Env ${n}`;
+  const first = {
+    key: `a${n}`, role: 'env', sub, label: 'A', min: 0.001, max: 1.5, log: true, fmt: secs, fmtc: secsC, parse: secsParse(0.001, 1.5),
+    title: `Env ${n} attack.`,
+  };
+  if (n !== 1) first.subButton = {
+    label: `1 → ${n}`, from: ['a1', 'd1', 's1', 'r1'], to: [`a${n}`, `d${n}`, `s${n}`, `r${n}`],
+    title: `Copy Env 1's settings into Env ${n} (replaces the old Follow Op 1 toggle).`,
+  };
+  return [
+    first,
+    { key: `d${n}`, role: 'env', sub, label: 'D', min: 0.005, max: 5, log: true, fmt: secs, fmtc: secsC, parse: secsParse(0.005, 5), title: `Env ${n} decay.` },
+    { key: `s${n}`, role: 'env', sub, label: 'S', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1), title: `Env ${n} sustain.` },
+    { key: `r${n}`, role: 'env', sub, label: 'R', min: 0.005, max: 3, log: true, fmt: secs, fmtc: secsC, parse: secsParse(0.005, 3), title: `Env ${n} release.` },
+  ];
+}
+
+// Tervik has no LFO/Filter/Effects → the role-hue spectrum shows gaps (orange
+// Oscillator + cyan Envelope only). Routing (Algorithm rotary + Feedback) leads
+// the Oscillator group; the three operators follow; the envelopes are their own
+// section.
 const TERVIK_PARAMS = [
-  { key: 'algo', group: 'FM', label: 'Algorithm', sel: true, options: TERVIK_ALGO_OPTS,
-    title: 'Operator routing: how Ops 2 & 3 feed Op 1 (the carrier) or the output directly.' },
-  { key: 'feedback', group: 'FM', label: 'Feedback', min: 0, max: 1, fmt: pct,
-    title: 'Morphs Ops 2 & 3 from sine toward a bright saw — a cheap stand-in for operator feedback (grit/brightness). Op 1 stays a pure sine.' },
-  ...tervikOpParams(1, 'Op 1'),
-  ...tervikOpParams(2, 'Op 2'),
-  ...tervikOpParams(3, 'Op 3'),
+  { key: 'algo', role: 'osc', sub: 'Routing', label: 'Algo', sel: true, widget: 'algo', options: TERVIK_ALGO_OPTS,
+    title: 'Algorithm — operator routing: how Ops 2 & 3 feed Op 1 (the carrier) or the output directly.' },
+  { key: 'feedback', role: 'osc', sub: 'Routing', label: 'Shape', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1),
+    title: 'Shape — the waveshape of Ops 2 & 3: morphs their oscillator from a pure sine toward a bright band-limited saw (adds upper harmonics — a brightness/grit control). Op 1 stays a pure sine.' },
+  ...tervikOpParams(1),
+  ...tervikOpParams(2),
+  ...tervikOpParams(3),
+  ...tervikEnvParams(1),
+  ...tervikEnvParams(2),
+  ...tervikEnvParams(3),
 ];
 
 // --- Nayumi: a breathy formant "voice" (oohs/ahhs) by source–filter synthesis —
@@ -354,34 +403,39 @@ const NAYUMI_DEFAULTS = {
   release: 0.45,
 };
 
+const nsizeWord = (v) => (v < 0.97 ? 'larger' : v > 1.03 ? 'smaller' : 'neutral');
+const nsizeFmt = (v) => `${nsizeWord(v)} — ${v.toFixed(2)}× tract`;
+const nsizeFmtC = (v) => v.toFixed(2);
+const vibRateFmt = (v) => `${v.toFixed(1)} Hz`;
+const vibRateFmtC = (v) => v.toFixed(1);
+
+// Nayumi maps onto: LFO [Vibrato] · Oscillator [Voice · Breath] · Filter
+// [Formant] (the vowel formant bank IS the green filter; Vowel is a 5-way rotary,
+// Size a bipolar with an OFF-CENTRE detent at neutral 1.0) · Envelope.
 const NAYUMI_PARAMS = [
-  { key: 'vowel', group: 'Formant', label: 'Vowel', sel: true, options: NAYUMI_VOWEL_OPTS,
-    title: 'Which vowel the formant bank shapes (ooh/oh/ah/eh/ee).' },
-  { key: 'size', group: 'Formant', label: 'Size', min: 0.8, max: 1.3,
-    fmt: (v) => (v < 0.97 ? 'larger' : v > 1.03 ? 'smaller' : 'neutral'),
-    title: 'Vocal-tract size — scales every formant. Low = larger/darker (toward male), high = smaller/brighter (toward female/child). The carrier is unchanged.' },
-  { key: 'formantQ', group: 'Formant', label: 'Resonance', min: 2, max: 24, fmt: (v) => `Q ${v.toFixed(1)}`,
-    title: 'How sharp/pronounced the vowel is. High = strongly vowel-like and hollow; low = smeared toward a plain tone.' },
-  { key: 'soprano', group: 'Formant', label: 'Soprano', min: 0, max: 1, fmt: pct,
-    title: 'Soprano rounding: as a note climbs toward a vowel’s first formant the timbre rounds off to a pure, fluty tone (the formant tunes onto the fundamental, upper formants and breath fade). Engages per vowel; 0 = off (no high-note change).' },
-  { key: 'breath', group: 'Breath', label: 'Breath', min: 0, max: 1, fmt: pct,
-    title: 'Airy noise mixed in (aspiration through the formants, plus air on top). Up = whispery/blown; down = clear/sung.' },
-  { key: 'bright', group: 'Voice', label: 'Brightness', min: 0, max: 1, fmt: pct,
-    title: 'Lowpass on the glottal source — darker to brighter tone before the formants.' },
-  { key: 'grit', group: 'Voice', label: 'Grit', min: 0, max: 1, fmt: pct,
-    title: 'Lo-fi bit-crush — the vintage Fairlight-sampler graininess. Higher blurs the vowel toward a hollow, "blown" character.' },
-  { key: 'vibRate', group: 'Vibrato', label: 'Rate', min: 3, max: 8, fmt: hz,
-    title: 'Vibrato speed.' },
-  { key: 'vibDepth', group: 'Vibrato', label: 'Depth', min: 0, max: 60, fmt: cents,
-    title: 'Vibrato depth in cents. A little keeps a held vowel alive.' },
-  { key: 'attack', group: 'Amp Envelope', label: 'Attack', min: 0.001, max: 2, log: true, fmt: secs,
-    title: 'Onset time — a soft attack gives the choral swell.' },
-  { key: 'decay', group: 'Amp Envelope', label: 'Decay', min: 0.02, max: 5, log: true, fmt: secs,
-    title: 'Fall toward the sustain level after the attack.' },
-  { key: 'sustain', group: 'Amp Envelope', label: 'Sustain', min: 0, max: 1, fmt: pct,
-    title: 'Level the note holds at while sounding.' },
-  { key: 'release', group: 'Amp Envelope', label: 'Release', min: 0.01, max: 3, log: true, fmt: secs,
-    title: 'Fade once the note ends.' },
+  { key: 'vibRate', role: 'lfo', sub: 'Vibrato', label: 'Rate', min: 3, max: 8, fmt: vibRateFmt, fmtc: vibRateFmtC, parse: plainParse(3, 8),
+    title: 'Vibrato Rate — speed.' },
+  { key: 'vibDepth', role: 'lfo', sub: 'Vibrato', label: 'Depth', min: 0, max: 60, fmt: cents, fmtc: (v) => String(Math.round(v)), parse: plainParse(0, 60),
+    title: 'Vibrato Depth — in cents; a little keeps a held vowel alive.' },
+
+  { key: 'bright', role: 'osc', sub: 'Voice', label: 'Bright', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1),
+    title: 'Brightness — lowpass on the glottal source before the formants (dark → bright).' },
+  { key: 'grit', role: 'osc', sub: 'Voice', label: 'Grit', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1),
+    title: 'Grit — lo-fi bit-crush (the vintage Fairlight graininess); higher blurs the vowel toward a hollow, "blown" character.' },
+
+  { key: 'breath', role: 'osc', sub: 'Breath', label: 'Breath', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1),
+    title: 'Breath — airy noise mixed in (aspiration through the formants + air on top); up = whispery/blown, down = clear/sung.' },
+
+  { key: 'vowel', role: 'filter', sub: 'Formant', label: 'Vowel', sel: true, options: NAYUMI_VOWEL_OPTS,
+    title: 'Vowel — which vowel the formant bank shapes (ooh/oh/ah/eh/ee).' },
+  { key: 'size', role: 'filter', sub: 'Formant', label: 'Size', widget: 'bipolar', detent: 1.0, min: 0.8, max: 1.3, fmt: nsizeFmt, fmtc: nsizeFmtC, parse: plainParse(0.8, 1.3),
+    title: 'Size — vocal-tract scale: low = larger/darker (toward male), high = smaller/brighter (toward female/child); centre = neutral. The carrier is unchanged.' },
+  { key: 'formantQ', role: 'filter', sub: 'Formant', label: 'Reso', min: 2, max: 24, fmt: q, fmtc: qC, parse: plainParse(2, 24),
+    title: 'Resonance — vowel sharpness (bandpass Q). High = strongly vowel-like and hollow; low = smeared toward a plain tone.' },
+  { key: 'soprano', role: 'filter', sub: 'Formant', label: 'Sopr', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1),
+    title: 'Soprano — high-note rounding onto a pure, fluty tone (the formant tunes onto the fundamental, upper formants + breath fade); 0 = off.' },
+
+  ...ampEnvelopeParams({ attackMax: 2 }),
 ];
 
 // --- Boshwick: a multipurpose 808-style percussion synth (no samples). One
@@ -414,25 +468,37 @@ const BOSHWICK_DEFAULTS = {
   snap: 0.5,        // noise↔body balance (snare); inert for pure types
 };
 
-const boshTuneFmt = (v) => { const st = Math.round((v - 0.5) * 2 * 18); return st === 0 ? 'nominal' : `${st > 0 ? '+' : '−'}${Math.abs(st)} st`; };
+// Tune is bipolar around the nominal pitch (detent 0.5), shown in semitones.
+const boshTuneSt = (v) => Math.round((v - 0.5) * 36); // ±18 st = ±1.5 oct
+const boshTuneFmt = (v) => { const st = boshTuneSt(v); return st === 0 ? 'nominal' : `${st > 0 ? '+' : '−'}${Math.abs(st)} st`; };
+const boshTuneFmtC = (v) => { const st = boshTuneSt(v); return st === 0 ? '0' : `${st > 0 ? '+' : '−'}${Math.abs(st)}`; };
+const boshTuneParse = (s) => { if (/nom/i.test(s)) return 0.5; const st = numOf(s); return st == null ? null : clampv(0.5 + clampv(st, -18, 18) / 36, 0, 1); };
 
+// Boshwick maps onto: Oscillator [Voice (the 9-way Type rotary — past the radial-
+// label range, so it shows a readout WINDOW — plus Tune/PitchTrack) · Pitch] ·
+// Tone (the green filter-role slot, band relabelled; the tone-shaping "filter
+// substitute") · Envelope. Type drives live per-type inert dimming: Pitch Env
+// lights only for Kick/Tom, Snap only for Snare (the current inert proposal).
 const BOSHWICK_PARAMS = [
-  { key: 'type', group: 'Voice', label: 'Type', sel: true, options: BOSHWICK_TYPE_OPTS,
-    title: 'Which drum this voice is. Hat & Cymbal honour note length (short = closed/choked, long = open); the rest are one-shot hits.' },
-  { key: 'tune', group: 'Voice', label: 'Tune', min: 0, max: 1, fmt: boshTuneFmt,
-    title: 'Pitch offset around the drum’s nominal tuning (±1.5 octaves).' },
-  { key: 'pitchTrack', group: 'Voice', label: 'Pitch Track', min: 0, max: 1, fmt: pct,
-    title: '0 = a fixed drum on every row; 1 = the note pitch transposes it (playable toms / melodic kick), relative to C4.' },
-  { key: 'decay', group: 'Envelope', label: 'Decay', min: 0, max: 1, fmt: pct,
-    title: 'Length of the hit (mapped per type). For Hat/Cymbal this is the *open* length — a short note chokes it.' },
-  { key: 'punch', group: 'Envelope', label: 'Punch', min: 0, max: 1, fmt: pct,
-    title: 'Attack transient. Kick: an oscillator "knock" spike + a strong beater click (none → prominent snap); others: click/snap emphasis.' },
-  { key: 'pitchEnv', group: 'Pitch', label: 'Pitch Env', min: 0, max: 1, fmt: pct,
-    title: 'Downward pitch-sweep depth at the attack. Kick: tight thump → deep dubby drop (~9×, up to 140 ms); tom: milder. Inert for noise/metallic types.' },
-  { key: 'tone', group: 'Tone', label: 'Tone', min: 0, max: 1, fmt: pct,
-    title: 'Kick: body drive — pure sine sub (0) to growly saturated 808 (1). Others: brightness/colour (tom click, filter centre for hat/snare/clap/cowbell).' },
-  { key: 'snap', group: 'Tone', label: 'Snap', min: 0, max: 1, fmt: pct,
-    title: 'Noise↔body balance — the snare "snappy". Inert for pure types.' },
+  { key: 'type', role: 'osc', sub: 'Voice', label: 'Type', sel: true, options: BOSHWICK_TYPE_OPTS,
+    title: 'Type — which drum this voice is. Hat & Cymbal honour note length (short = closed/choked, long = open); the rest are one-shot hits.' },
+  { key: 'tune', role: 'osc', sub: 'Voice', label: 'Tune', widget: 'bipolar', detent: 0.5, min: 0, max: 1, fmt: boshTuneFmt, fmtc: boshTuneFmtC, parse: boshTuneParse,
+    title: 'Tune — pitch offset around the drum’s nominal tuning (±1.5 octaves).' },
+  { key: 'pitchTrack', role: 'osc', sub: 'Voice', label: 'PTrk', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1),
+    title: 'Pitch Track — 0 = a fixed drum on every row; 1 = the note pitch transposes it (playable toms / melodic kick), relative to C4.' },
+
+  { key: 'pitchEnv', role: 'osc', sub: 'Pitch', label: 'PEnv', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1), inert: (p) => p.type !== 'kick' && p.type !== 'tom',
+    title: 'Pitch Env — downward pitch-sweep depth at the attack. Kick: tight thump → deep dubby drop; tom: milder. Inert for noise/metallic types.' },
+
+  { key: 'tone', role: 'filter', band: 'Tone', sub: 'Colour', label: 'Tone', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1),
+    title: 'Tone — Kick: body drive, pure sine sub (0) → growly saturated 808 (1). Others: brightness/colour (tom click, filter centre for hat/snare/clap/cowbell).' },
+  { key: 'snap', role: 'filter', band: 'Tone', sub: 'Colour', label: 'Snap', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1), inert: (p) => p.type !== 'snare',
+    title: 'Snap — noise↔body balance, the snare "snappy". Inert for pure types.' },
+
+  { key: 'decay', role: 'env', sub: 'Amplitude', label: 'Decay', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1),
+    title: 'Decay — length of the hit (mapped per type). For Hat/Cymbal this is the *open* length — a short note chokes it.' },
+  { key: 'punch', role: 'env', sub: 'Amplitude', label: 'Punch', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1),
+    title: 'Punch — attack transient. Kick: an oscillator "knock" spike + a strong beater click; others: click/snap emphasis.' },
 ];
 
 // --- Padlington: a PadSynth pad (Paul Nasca's algorithm). A harmonic PROFILE
@@ -490,53 +556,37 @@ const PAD_SOURCE_OPTS = [
   { id: 'tilt', label: 'Tilt' },
 ];
 
-const stretchFmt = (v) => (Math.abs(v) < 0.0005 ? 'harmonic' : `${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(3)}`);
+// Stretch = a bipolar inharmonicity (0 = harmonic). Compact drops the leading 0.
+const stretchFmt = (v) => (Math.abs(v) < 0.00005 ? 'harmonic' : `${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(3)}`);
+const stretchFmtC = (v) => (Math.abs(v) < 0.00005 ? '0' : `${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(3).replace(/^0/, '')}`);
+const stretchParse = (s) => { if (/harmonic/i.test(s)) return 0; const v = numOf(s); return v == null ? null : clampv(v, -0.05, 0.05); };
 
+// Padlington maps onto the canonical roles: Oscillator [Source | Pad | Pitch] ·
+// Filter (shared Lowpass) · Envelope (shared Amplitude, pad-length) · Effects
+// [Stereo]. Source/Vowel are rotary switches (enums); Stretch/Pitch Atk bipolar.
 const PADLINGTON_PARAMS = [
-  { key: 'source', group: 'Source', label: 'Source', sel: true, options: PAD_SOURCE_OPTS,
-    title: 'Harmonic profile the pad is baked from: Saw (all harmonics, 1/k), Square (odd harmonics only), Choir (vowel formants), Tilt (a bare 1/k^e rolloff).' },
-  { key: 'vowel', group: 'Source', label: 'Vowel', sel: true, options: NAYUMI_VOWEL_OPTS, inert: (p) => p.source !== 'choir',
-    title: 'Choir source only: which vowel shapes the harmonic profile (ooh/oh/ah/eh/ee). Inert for other sources.' },
-  { key: 'size', group: 'Source', label: 'Size', min: 0.8, max: 1.3, inert: (p) => p.source !== 'choir',
-    fmt: (v) => (v < 0.97 ? 'larger' : v > 1.03 ? 'smaller' : 'neutral'),
-    title: 'Choir source only: vocal-tract size — scales every formant. Low = larger/darker, high = smaller/brighter.' },
-  { key: 'tilt', group: 'Source', label: 'Tilt', min: 0.5, max: 3, fmt: (v) => `1/k^${v.toFixed(2)}`, inert: (p) => p.source !== 'tilt',
-    title: 'Tilt source only: the spectral rolloff exponent. Low = bright (slow rolloff), high = dark, nearly a pure tone.' },
-  { key: 'harmonics', group: 'Source', label: 'Harmonics', min: 8, max: 128, log: true, fmt: (v) => `${Math.round(v)}`,
-    title: 'How many harmonics the bake includes (automatically band-limited at Nyquist).' },
+  { key: 'source', role: 'osc', sub: 'Source', label: 'Source', sel: true, options: PAD_SOURCE_OPTS,
+    title: 'Source — harmonic profile the pad is baked from: Saw (all harmonics, 1/k), Square (odd harmonics), Choir (vowel formants), Tilt (a bare 1/k^e rolloff).' },
+  { key: 'vowel', role: 'osc', sub: 'Source', label: 'Vowel', sel: true, options: NAYUMI_VOWEL_OPTS, inert: (p) => p.source !== 'choir',
+    title: 'Vowel — Choir source only: which vowel shapes the profile (ooh/oh/ah/eh/ee). Inert for other sources.' },
+  { key: 'size', role: 'osc', sub: 'Source', label: 'Size', min: 0.8, max: 1.3, fmt: (v) => `×${v.toFixed(2)}`, fmtc: (v) => v.toFixed(2), parse: plainParse(0.8, 1.3), inert: (p) => p.source !== 'choir',
+    title: 'Size — Choir source only: vocal-tract size, scales every formant. Low = larger/darker, high = smaller/brighter.' },
+  { key: 'tilt', role: 'osc', sub: 'Source', label: 'Tilt', min: 0.5, max: 3, fmt: (v) => `1/k^${v.toFixed(2)}`, fmtc: (v) => v.toFixed(2), parse: plainParse(0.5, 3), inert: (p) => p.source !== 'tilt',
+    title: 'Tilt — Tilt source only: the spectral rolloff exponent. Low = bright (slow rolloff), high = dark, nearly a pure tone.' },
+  { key: 'harmonics', role: 'osc', sub: 'Source', label: 'Harm', min: 8, max: 128, log: true, fmt: (v) => `${Math.round(v)} harmonics`, fmtc: (v) => String(Math.round(v)), parse: plainParse(8, 128),
+    title: 'Harmonics — how many the bake includes (automatically band-limited at Nyquist).' },
 
-  { key: 'bandwidth', group: 'Pad', label: 'Bandwidth', min: 1, max: 120, log: true, fmt: cents,
-    title: 'Width of each harmonic’s Gaussian smear, in cents — THE lushness knob. Narrow = clear and static; wide = thick, chorused, shimmering.' },
-  { key: 'bwScale', group: 'Pad', label: 'BW Scale', min: 0, max: 2, fmt: (v) => `k^${v.toFixed(2)}`,
-    title: 'How the smear grows up the harmonic series: 1 = constant in cents (natural), toward 0 = upper harmonics stay clearer, toward 2 = upper harmonics wash out.' },
-  { key: 'stretch', group: 'Pad', label: 'Stretch', knob: true, min: -0.05, max: 0.05, reset: 0, detents: [0], fmt: stretchFmt,
-    title: 'Inharmonicity: partial k lands at f·k^(1+s). 0 = exactly harmonic; positive stretches the partials sharp (bell/gamelan), negative compresses them flat. Double-click to reset.' },
+  { key: 'bandwidth', role: 'osc', sub: 'Pad', label: 'BW', min: 1, max: 120, log: true, fmt: cents, fmtc: (v) => String(Math.max(1, Math.round(v))), parse: plainParse(1, 120),
+    title: 'Bandwidth — each harmonic’s Gaussian smear in cents; THE lushness knob. Narrow = clear/static; wide = thick, chorused, shimmering.' },
+  { key: 'bwScale', role: 'osc', sub: 'Pad', label: 'Scale', min: 0, max: 2, fmt: (v) => `k^${v.toFixed(2)}`, fmtc: (v) => v.toFixed(2), parse: plainParse(0, 2),
+    title: 'BW Scale — how the smear grows up the series: 1 = constant cents (natural), toward 0 = upper harmonics stay clearer, toward 2 = they wash out.' },
+  { key: 'stretch', role: 'osc', sub: 'Pad', label: 'Stretch', widget: 'bipolar', detent: 0, min: -0.05, max: 0.05, fmt: stretchFmt, fmtc: stretchFmtC, parse: stretchParse,
+    title: 'Stretch — inharmonicity: partial k lands at f·k^(1+s). 0 = harmonic; positive stretches partials sharp (bell/gamelan), negative compresses them flat.' },
 
-  { key: 'pitchAtk', group: 'Pitch', label: 'Pitch Atk', min: -200, max: 200, fmt: scents,
-    title: 'Pitch attack: the note starts this many cents off pitch and settles. Positive = from above (brass / the vocal approach), negative = from below (the scoop). 0 = off.' },
-  { key: 'pitchAtkTime', group: 'Pitch', label: 'Pitch Time', min: 0.01, max: 1, log: true, fmt: secs,
-    title: 'How long the pitch attack takes to settle (exponential decay) — pairs nicely with a slow pad attack.' },
-
-  { key: 'width', group: 'Stereo', label: 'Width', min: 0, max: 1, fmt: pct,
-    title: 'Stereo spread — the voice’s two decorrelated read-heads pan apart. 0 = mono-centered (mono-safe).' },
-
-  { key: 'cutoff', group: 'Filter', label: 'Cutoff', min: 120, max: 14000, log: true, fmt: hz,
-    title: 'Lowpass cutoff (base, before key tracking).' },
-  { key: 'reso', group: 'Filter', label: 'Resonance', min: 0.5, max: 18, fmt: (v) => `Q ${v.toFixed(1)}`,
-    title: 'Filter resonance — a peak at the cutoff. High values whistle/ring.' },
-  { key: 'filterEnv', group: 'Filter', label: 'Env Amount', min: 0, max: 4, fmt: (v) => `${v.toFixed(2)} oct`,
-    title: 'How far the filter envelope opens the cutoff above its base at the attack, then settles.' },
-  { key: 'keyTrack', group: 'Filter', label: 'Key Track', min: 0, max: 1, fmt: pct,
-    title: 'How much the cutoff follows pitch: 0 = fixed Hz, 1 = fully relative to each note.' },
-
-  { key: 'attack', group: 'Amp Envelope', label: 'Attack', min: 0.001, max: 3, log: true, fmt: secs,
-    title: 'Time from note-on to full level — a slow attack gives the pad swell.' },
-  { key: 'decay', group: 'Amp Envelope', label: 'Decay', min: 0.02, max: 5, log: true, fmt: secs,
-    title: 'How quickly the level falls toward the sustain after the attack.' },
-  { key: 'sustain', group: 'Amp Envelope', label: 'Sustain', min: 0, max: 1, fmt: pct,
-    title: 'Level the note holds at while sounding.' },
-  { key: 'release', group: 'Amp Envelope', label: 'Release', min: 0.01, max: 5, log: true, fmt: secs,
-    title: 'Fade time once the note ends — a long release lets pads overlap.' },
+  ...pitchAtkParams(),
+  ...lowpassParams(),
+  ...ampEnvelopeParams({ attackMax: 3, releaseMax: 5 }),
+  ...stereoParams(),
 ];
 
 // --- The registry. Each entry: id, display label, a one-line description (shown
@@ -593,7 +643,7 @@ export function normalizePatch(obj) {
   const kind = obj && obj.kind && INSTRUMENTS[obj.kind] ? obj.kind : DEFAULT_KIND;
   const p = defaultPatch(kind);
   if (obj && typeof obj === 'object') {
-    if (kind === 'tervik') obj = migrateTervikRatios(obj); // legacy single ratioN → coarseN + fineN
+    if (kind === 'tervik') obj = migrateTervikFollow(migrateTervikRatios(obj)); // legacy ratioN → coarse/fine; follow mode → copied env
     for (const spec of instrument(kind).params) {
       const v = obj[spec.key];
       if (spec.bool) {
@@ -628,6 +678,21 @@ function migrateTervikRatios(obj) {
       const c = nearestStep(TERVIK_RATIOS, o[`ratio${n}`]);
       o[`coarse${n}`] = c;
       o[`fine${n}`] = Math.min(1, Math.max(-1, o[`ratio${n}`] - c));
+    }
+  }
+  return o;
+}
+
+// Migrate a pre-copy Tervik patch: the old live "Follow Op 1" mode is gone (Ops
+// 2 & 3 now always use their own envelope). A patch that had follow2/follow3 on
+// was sounding Op N with Op 1's ADSR — so copy Env 1 into Env N to preserve that
+// exact sound, then let the follow key fall away (it's no longer in the params).
+function migrateTervikFollow(obj) {
+  let o = obj;
+  for (const n of [2, 3]) {
+    if (o[`follow${n}`]) {
+      if (o === obj) o = { ...obj };
+      for (const p of ['a', 'd', 's', 'r']) o[`${p}${n}`] = o[`${p}1`];
     }
   }
   return o;

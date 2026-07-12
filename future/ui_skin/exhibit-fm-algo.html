@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Exhibit — FM Algorithm Selector 1.1</title>
+<style>
+  /* ============ CONTROL MOCKUP — FM Algorithm selector (v1.1) ============
+     A NEW control species for Tervik's Algorithm (replacing the text rotary):
+       • a backlit LCD — a LIT amber/green glass with DARK graphics (positive LCD,
+         FS1R-style) showing the standard FM operator GRAPH (numbered boxes +
+         connection lines + a carrier output bus), TX81Z/DX-style;
+       • a machined SELECTOR knob below, with clear space from the glass.
+     The four graphs are Tervik's real 3-op routings (audio.js TERVIK_ALGOS):
+       1 Stack 3→2→1   2 Y (2+3)→1   3 Pair 3→2 · 1   4 Parallel 1·2·3
+     v1.1: positive LCD (dark-on-lit); UNIFORM leg length on a strict grid; graph
+     auto-centres in the glass clear of the caption; knob spaced off the display.
+     Three style variations; the meta strip tunes tint / brightness / glow / size.
+     Self-contained throwaway fixture — not product code. */
+  :root {
+    --ah: 68;                                   /* backlight tint (amber 45 … green 95) */
+    --sat: 46%;
+    --lit-l: 56%;                               /* glass brightness */
+    --lit: hsl(var(--ah), var(--sat), var(--lit-l));
+    --lit-hi: hsl(var(--ah), var(--sat), calc(var(--lit-l) + 8%));
+    --dark: hsl(var(--ah), 22%, 15%);           /* the graphics (dark ink on the glass) */
+    --glow: 0.45;                               /* backlight bleed 0..1 */
+    --pl: 20%;
+    --panel: hsl(220, 7%, var(--pl));
+    --panel-hi: hsl(220, 7%, calc(var(--pl) + 6%));
+    --panel-lo: hsl(220, 8%, calc(var(--pl) - 6%));
+    --ink: hsl(220, 12%, 88%);
+    --ink-dim: hsl(220, 8%, 62%);
+    --tick: hsl(220, 8%, calc(var(--pl) + 26%));
+    --tick-maj: hsl(220, 8%, calc(var(--pl) + 40%));
+    --scale: 1;
+  }
+  * { box-sizing: border-box; margin: 0; user-select: none; font-weight: 400; }
+  body { background: hsl(220, 7%, calc(var(--pl) - 7%)); color: var(--ink);
+         font: 14px/1.4 Tahoma, "Segoe UI", system-ui, sans-serif; padding: 1.2rem; }
+  header, main, footer { max-width: 1160px; margin-left: auto; margin-right: auto; }
+  h1 { font-size: 1.25rem; letter-spacing: .05em; }
+  .blurb { color: var(--ink-dim); font-size: .85rem; margin-top: .15rem; max-width: 60rem; }
+  .meta { display: flex; flex-wrap: wrap; gap: .4rem 1rem; align-items: center; margin-top: .7rem;
+          font-size: .78rem; color: var(--ink-dim); background: var(--panel-lo);
+          border: 1px solid var(--panel-hi); border-radius: 6px; padding: .45rem .8rem; }
+  .meta label { display: flex; align-items: center; gap: .4rem; }
+  .meta input[type="range"] { width: 84px; accent-color: hsl(var(--ah), 60%, 52%); }
+  .meta .mv { color: hsl(var(--ah), 55%, 62%); font-variant-numeric: tabular-nums; min-width: 3ch; text-align: right; }
+  .meta a { color: var(--ink-dim); margin-left: auto; }
+
+  main { margin-top: 1.1rem; display: flex; flex-wrap: wrap; gap: 1.4rem; align-items: flex-start; }
+  .card { background: var(--panel); border: 1px solid var(--panel-hi); border-radius: 10px;
+          box-shadow: 0 8px 26px rgba(0,0,0,.32), inset 0 1px 0 var(--panel-hi);
+          padding: 1.1em 1.3em 1.3em; display: flex; flex-direction: column; align-items: center; gap: .8em;
+          font-size: calc(15px * var(--scale)); }
+  .card .vlabel { font-size: .68em; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-dim);
+                  align-self: flex-start; }
+
+  /* ---- the backlit LCD (positive: dark graphics on a lit glass) ---- */
+  .lcd { position: relative; width: 15em; height: 11em; border-radius: .5em; overflow: hidden;
+         background:
+           radial-gradient(130% 90% at 50% 22%, var(--lit-hi), transparent 62%),
+           linear-gradient(180deg, var(--lit-hi), var(--lit) 55%, hsl(var(--ah), var(--sat), calc(var(--lit-l) - 8%)));
+         border: 1px solid hsl(var(--ah), 25%, 22%);
+         box-shadow: 0 0 calc(var(--glow) * 1.4em) hsla(var(--ah), 80%, 55%, calc(var(--glow) * .6)),
+                     inset 0 1px 0 hsla(0,0%,100%,.28),
+                     inset 0 -1px 3px hsla(var(--ah), 40%, 20%, .5),
+                     0 3px 12px rgba(0,0,0,.5); }
+  .lcd svg { position: absolute; top: 1.5em; left: .3em; right: .3em; bottom: 2.1em; display: block; color: var(--dark); }
+  /* SVG fills via CSS (presentation attributes don't resolve var()): dark ink by
+     default; an inverted number sits on a filled (dark) box in the glass colour. */
+  .lcd svg text { fill: currentColor; }
+  .lcd svg text.inv { fill: var(--lit); }
+  .lcd .hdr { position: absolute; top: .55em; left: .75em; font-size: .56em; letter-spacing: .24em;
+              color: hsl(var(--ah), 22%, 26%); }
+  .lcd .cap { position: absolute; bottom: .5em; left: .75em; right: .75em; display: flex; align-items: baseline; gap: .5em;
+              color: var(--dark); }
+  .lcd .cap .num { font-size: 1.5em; font-variant-numeric: tabular-nums; line-height: 1; }
+  .lcd .cap .nm { font-size: .78em; letter-spacing: .2em; text-transform: uppercase; }
+  .lcd .cap .of { margin-left: auto; font-size: .62em; letter-spacing: .14em; color: hsl(var(--ah), 20%, 28%); }
+  /* CRT scanlines (variation C) */
+  .lcd.scan::after { content: ''; position: absolute; inset: 0; pointer-events: none; mix-blend-mode: multiply;
+                     background: repeating-linear-gradient(0deg, transparent 0 2px, hsla(var(--ah),30%,20%,.22) 2px 3px); }
+
+  /* ---- the rotary selector knob (spaced off the display) ---- */
+  .knobwrap { display: flex; flex-direction: column; align-items: center; gap: .5em; margin-top: 1.1em; }
+  .fmknob { --kd: 3.2em; width: var(--kd); height: var(--kd); border-radius: 50%; position: relative;
+            cursor: pointer; touch-action: none;
+            background: radial-gradient(circle at 32% 28%, hsl(220,6%,36%), hsl(220,8%,13%) 72%);
+            border: 1px solid hsl(220,8%,9%);
+            box-shadow: 0 3px 8px rgba(0,0,0,.55), inset 0 1px 1px hsla(0,0%,100%,.14); }
+  .fmknob .face { position: absolute; inset: 0; border-radius: 50%; transform: rotate(var(--rot, 0deg)); }
+  .fmknob .face::after { content: ''; position: absolute; left: 50%; top: 8%; width: 2.5px; height: 34%;
+                         transform: translateX(-50%); border-radius: 2px; background: hsl(var(--ah), 70%, 60%);
+                         box-shadow: 0 0 5px hsla(var(--ah),80%,55%,.8); }
+  .fmknob .pt { position: absolute; inset: -0.55em; transform: rotate(var(--a)); pointer-events: none; }
+  .fmknob .pt::before { content: ''; position: absolute; left: calc(50% - 1px); top: 0; width: 2px; height: .3em;
+                        background: var(--tick-maj); }
+  .fmknob .pt.on::before { background: hsl(var(--ah), 70%, 60%); box-shadow: 0 0 4px hsla(var(--ah),80%,55%,.8); }
+  .fmknob .pl { position: absolute; font-size: .58em; color: var(--ink-dim); transform: translate(-50%,-50%);
+                font-variant-numeric: tabular-nums; pointer-events: none; }
+  .fmknob .pl.on { color: hsl(var(--ah), 55%, 64%); }
+  .knobcap { font-size: .64em; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-dim); min-height: 1.2em; }
+  .knobwin { font-size: .7em; color: hsl(var(--ah), 55%, 64%); font-variant-numeric: tabular-nums; min-width: 8.5ch; text-align: center;
+             background: hsl(220,10%,9%); border: 1px solid hsl(220,8%,16%); border-radius: 3px; padding: .12em .3em; }
+
+  footer { margin-top: 1.2rem; font-size: .72rem; color: var(--ink-dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Exhibit — FM Algorithm Selector <span style="color:var(--ink-dim);font-size:.7em;">v1.1</span></h1>
+  <p class="blurb">A <b>backlit-LCD algorithm display + rotary selector</b> for Tervik's <b>Algorithm</b> — a
+    <b>lit amber/green glass with dark graphics</b> (positive LCD, FS1R-style) showing the FM <b>operator graph</b>
+    (numbered boxes + connection lines + carrier output bus, TX81Z/DX-style), and a machined <b>selector knob</b> below.
+    Turn a knob (drag / wheel / click-to-cycle) through the four real 3-op routings — <b>1 Stack · 2 Y · 3 Pair · 4
+    Parallel</b>. v1.1: uniform leg length, graph clear of the caption, knob spaced off the glass. Meta tunes the shared look.</p>
+  <div class="meta">
+    <label>Tint <input type="range" id="mHue" min="42" max="98" value="68"><span class="mv" id="mHueV"></span></label>
+    <label>Brightness <input type="range" id="mLit" min="44" max="68" value="56"><span class="mv" id="mLitV"></span></label>
+    <label>Saturation <input type="range" id="mSat" min="20" max="70" value="46"><span class="mv" id="mSatV"></span></label>
+    <label>Glow <input type="range" id="mGlow" min="0" max="100" value="45"><span class="mv" id="mGlowV"></span></label>
+    <label>Size <input type="range" id="mSize" min="85" max="140" value="110"><span class="mv" id="mSizeV"></span></label>
+    <a href="index.html">← gallery</a>
+  </div>
+</header>
+
+<main>
+  <section class="card" data-fill="none" data-knob="radial" data-scan="0" data-idx="2">
+    <span class="vlabel">A · outline · numbered knob</span>
+  </section>
+  <section class="card" data-fill="carr" data-knob="window" data-scan="0" data-idx="0">
+    <span class="vlabel">B · carriers filled · windowed knob</span>
+  </section>
+  <section class="card" data-fill="none" data-knob="plain" data-scan="1" data-idx="3">
+    <span class="vlabel">C · CRT scanlines · plain knob</span>
+  </section>
+</main>
+
+<footer>future/ui_skin mockup — a candidate Tervik Algorithm control (op-diagram labels, the deferred idea). Turn a knob: drag / wheel / click. The LCD graph + number/name follow the selection.</footer>
+
+<script>
+(function () {
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const el = (tag, attrs) => { const e = document.createElementNS(SVGNS, tag); for (const k in attrs) if (attrs[k] !== '') e.setAttribute(k, attrs[k]); return e; };
+
+  // Strict grid: boxes are BW×BH; every vertical LEG (box→box and carrier→bus) is
+  // exactly LEG long — so ROW (centre-to-centre) = BH + LEG, and the bus sits LEG
+  // below a carrier's bottom edge. Columns L/C/R. Coordinates are relative; the
+  // whole graph is auto-centred in the viewBox afterwards, so algorithms of
+  // different heights all sit centred in the glass.
+  const BW = 22, BH = 15, LEG = 11, ROW = BH + LEG;
+  const COL = { L: 34, C: 60, R: 86 };
+
+  // Each algorithm builds its boxes + connection segments on the grid. `mods`
+  // draws vertical legs (same column) or a merge bar (two modulators → one
+  // carrier). Carriers drop LEG to a shared output bus; a triangle marks OUT.
+  const ALGOS = [
+    { n: 1, id: 'stack', name: 'Stack',
+      build: () => ({ box: { 3: [COL.C, 0], 2: [COL.C, ROW], 1: [COL.C, 2 * ROW] }, mods: [[3, 2], [2, 1]], carr: [1] }) },
+    { n: 2, id: 'y', name: 'Y',
+      build: () => ({ box: { 2: [COL.L, 0], 3: [COL.R, 0], 1: [COL.C, ROW] }, merge: { to: 1, from: [2, 3] }, carr: [1] }) },
+    { n: 3, id: 'pair', name: 'Pair',
+      build: () => ({ box: { 3: [COL.L, 0], 2: [COL.L, ROW], 1: [COL.R, ROW] }, mods: [[3, 2]], carr: [2, 1] }) },
+    { n: 4, id: 'parallel', name: 'Parallel',
+      build: () => ({ box: { 1: [COL.L, 0], 2: [COL.C, 0], 3: [COL.R, 0] }, mods: [], carr: [1, 2, 3] }) },
+  ];
+
+  function geometry(algo) {
+    const g = algo.build();
+    const boxes = [], segs = [];
+    const top = (p) => p[1] - BH / 2, bot = (p) => p[1] + BH / 2;
+    // vertical modulator legs
+    for (const [f, t] of (g.mods || [])) { const a = g.box[f], b = g.box[t]; segs.push([a[0], bot(a), b[0], top(b)]); }
+    // merge bar (two modulators feeding one carrier, e.g. Y)
+    if (g.merge) {
+      const t = g.box[g.merge.to], barY = top(t);
+      const xs = g.merge.from.map((id) => g.box[id][0]);
+      for (const id of g.merge.from) { const m = g.box[id]; segs.push([m[0], bot(m), m[0], barY]); }
+      segs.push([Math.min(...xs), barY, Math.max(...xs), barY]);           // the bar
+    }
+    // carrier drops to the output bus + the bus + the OUT triangle
+    const cxs = g.carr.map((id) => g.box[id][0]);
+    const carrRowBot = Math.max(...g.carr.map((id) => bot(g.box[id])));
+    const busY = carrRowBot + LEG;
+    for (const id of g.carr) { const c = g.box[id]; segs.push([c[0], bot(c), c[0], busY]); }
+    if (g.carr.length > 1) segs.push([Math.min(...cxs), busY, Math.max(...cxs), busY]);
+    const midX = (Math.min(...cxs) + Math.max(...cxs)) / 2;
+    const out = [midX, busY];
+    for (const id of Object.keys(g.box)) boxes.push({ id: +id, x: g.box[id][0], y: g.box[id][1], carrier: g.carr.includes(+id) });
+    return { boxes, segs, out };
+  }
+
+  function renderGraph(svg, algo, fillMode) {
+    const VW = 120, VH = 92;
+    svg.setAttribute('viewBox', `0 0 ${VW} ${VH}`);
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    const { boxes, segs, out } = geometry(algo);
+
+    // bounds → centre the whole graph in the viewBox
+    let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+    const grow = (x, y) => { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); };
+    for (const b of boxes) { grow(b.x - BW / 2, b.y - BH / 2); grow(b.x + BW / 2, b.y + BH / 2); }
+    for (const s of segs) { grow(s[0], s[1]); grow(s[2], s[3]); }
+    grow(out[0] - 5, out[1]); grow(out[0] + 5, out[1] + 7);
+    const dx = VW / 2 - (minX + maxX) / 2, dy = VH / 2 - (minY + maxY) / 2;
+    const g = el('g', { transform: `translate(${dx.toFixed(2)} ${dy.toFixed(2)})` });
+    svg.append(g);
+
+    for (const s of segs) g.append(el('line', { x1: s[0], y1: s[1], x2: s[2], y2: s[3], stroke: 'currentColor', 'stroke-width': 1.6, 'stroke-linecap': 'round' }));
+    g.append(el('path', { d: `M${out[0] - 4.5},${out[1]} L${out[0] + 4.5},${out[1]} L${out[0]},${out[1] + 7} Z`, fill: 'currentColor' }));
+    for (const b of boxes) {
+      const filled = fillMode === 'all' || (fillMode === 'carr' && b.carrier);
+      g.append(el('rect', { x: b.x - BW / 2, y: b.y - BH / 2, width: BW, height: BH, rx: 2.5,
+        fill: filled ? 'currentColor' : 'none', stroke: 'currentColor', 'stroke-width': 1.6 }));
+      const tx = el('text', { x: b.x, y: b.y + 0.5, 'text-anchor': 'middle', 'dominant-baseline': 'central',
+        'font-family': 'Tahoma, sans-serif', 'font-size': 9.5, class: filled ? 'inv' : '' });
+      tx.textContent = b.id; g.append(tx);
+    }
+  }
+
+  // A rotary selector: N positions across a 270° sweep. style: radial (numbered
+  // ticks), window (a readout below), plain (pointer only). Drag = step, wheel =
+  // step, plain click = cycle. onChange(idx) fires on every change.
+  function makeKnob(wrap, { count, style, idx0, onChange }) {
+    const knob = document.createElement('div'); knob.className = 'fmknob';
+    const face = document.createElement('div'); face.className = 'face'; knob.append(face);
+    const ticks = [], labs = [];
+    for (let i = 0; i < count; i++) {
+      const a = -135 + (i * 270) / (count - 1);
+      const p = document.createElement('i'); p.className = 'pt'; p.style.setProperty('--a', a + 'deg'); knob.append(p); ticks.push(p);
+      if (style === 'radial') {
+        const l = document.createElement('span'); l.className = 'pl'; l.textContent = i + 1;
+        const rad = ((a - 180) * Math.PI) / 180;
+        l.style.left = (50 - Math.sin(rad) * 96) + '%';
+        l.style.top = (50 + Math.cos(rad) * 96) + '%';
+        knob.append(l); labs.push(l);
+      }
+    }
+    wrap.append(knob);
+    const cap = document.createElement('span');
+    cap.className = style === 'window' ? 'knobwin' : 'knobcap';
+    wrap.append(cap);
+
+    let idx = idx0;
+    const render = () => {
+      knob.style.setProperty('--rot', (-135 + (idx * 270) / (count - 1)) + 'deg');
+      ticks.forEach((p, i) => p.classList.toggle('on', i === idx));
+      labs.forEach((l, i) => l.classList.toggle('on', i === idx));
+      cap.textContent = style === 'window' ? `${ALGOS[idx].n} · ${ALGOS[idx].name}` : 'select';
+      onChange(idx);
+    };
+    const set = (i) => { idx = Math.min(count - 1, Math.max(0, i)); render(); };
+    knob.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); knob.setPointerCapture(e.pointerId);
+      const y0 = e.clientY, i0 = idx; let moved = false;
+      const move = (ev) => { const d = Math.round((y0 - ev.clientY) / 26); if (d !== 0) moved = true; set(i0 + d); };
+      const up = () => { knob.removeEventListener('pointermove', move); knob.removeEventListener('pointerup', up); if (!moved) set((idx + 1) % count); };
+      knob.addEventListener('pointermove', move); knob.addEventListener('pointerup', up);
+    });
+    knob.addEventListener('dragstart', (e) => e.preventDefault());
+    knob.addEventListener('wheel', (e) => { e.preventDefault(); set(idx + (e.deltaY < 0 || e.deltaX > 0 ? 1 : -1)); }, { passive: false });
+    render();
+  }
+
+  // Build each variation card: an LCD (graph + header + number/name caption) and
+  // the selector knob wired to re-render it.
+  document.querySelectorAll('.card').forEach((card) => {
+    const fill = card.dataset.fill, knobStyle = card.dataset.knob, scan = card.dataset.scan === '1';
+
+    const lcd = document.createElement('div'); lcd.className = 'lcd' + (scan ? ' scan' : '');
+    const svg = el('svg', {}); lcd.append(svg);
+    const hdr = document.createElement('div'); hdr.className = 'hdr'; hdr.textContent = 'ALGORITHM'; lcd.append(hdr);
+    const cap = document.createElement('div'); cap.className = 'cap';
+    const num = document.createElement('span'); num.className = 'num';
+    const nm = document.createElement('span'); nm.className = 'nm';
+    const of = document.createElement('span'); of.className = 'of';
+    cap.append(num, nm, of); lcd.append(cap);
+    card.append(lcd);
+
+    const kwrap = document.createElement('div'); kwrap.className = 'knobwrap'; card.append(kwrap);
+
+    const show = (i) => { const a = ALGOS[i]; renderGraph(svg, a, fill); num.textContent = a.n; nm.textContent = a.name; of.textContent = `${a.n}/${ALGOS.length}`; };
+    makeKnob(kwrap, { count: ALGOS.length, style: knobStyle, idx0: +card.dataset.idx || 0, onChange: show });
+  });
+
+  // Meta strip.
+  const root = document.documentElement;
+  const wire = (id, fn) => {
+    const e = document.getElementById(id), mv = document.getElementById(id + 'V');
+    const go = () => { if (mv) mv.textContent = e.value; fn(e.value); };
+    e.addEventListener('input', go); go();
+  };
+  wire('mHue', (v) => root.style.setProperty('--ah', v));
+  wire('mLit', (v) => root.style.setProperty('--lit-l', v + '%'));
+  wire('mSat', (v) => root.style.setProperty('--sat', v + '%'));
+  wire('mGlow', (v) => root.style.setProperty('--glow', (v / 100).toFixed(2)));
+  wire('mSize', (v) => root.style.setProperty('--scale', (v / 100).toFixed(2)));
+})();
+</script>
+</body>
+</html>

@@ -128,9 +128,6 @@ const N = 1 << 12; // small table for fast tests (the bake takes tableSize)
   ok(spec('vowel').inert({ source: 'saw' }) && !spec('vowel').inert({ source: 'choir' }), 'Vowel inert outside Choir');
   ok(spec('size').inert({ source: 'tilt' }) && !spec('size').inert({ source: 'choir' }), 'Size inert outside Choir');
   ok(spec('tilt').inert({ source: 'choir' }) && !spec('tilt').inert({ source: 'tilt' }), 'Tilt inert outside Tilt');
-  // ...and the same mechanism covers Tervik's Follow-gated op ADSRs.
-  const a2 = paramsFor('tervik').find((s) => s.key === 'a2');
-  ok(a2.inert({ follow2: true }) && !a2.inert({ follow2: false }), "Tervik op 2 ADSR inert under Follow Op 1");
 }
 
 // --- fake Web Audio: record nodes, connections, buffers -----------------------

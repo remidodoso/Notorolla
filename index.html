@@ -180,35 +180,9 @@
     .instr-patchbar button { font-size: 0.82rem; padding: 0.28rem 0.6rem; }
     .instr-load-sel { background: #11141c; color: #cbd2e0; border: 1px solid #2a3040; border-radius: 4px;
       padding: 0.22rem 0.4rem; font-size: 0.8rem; }
-    .instr-grid { display: flex; flex-wrap: wrap; gap: 1.4rem 2.2rem; }
-    .instr-group { display: flex; flex-direction: column; gap: 0.35rem; min-width: 220px; }
-    .instr-group-title {
-      color: #6b7280; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;
-      border-bottom: 1px solid #262a35; padding-bottom: 0.25rem; margin-bottom: 0.15rem;
-    }
-    .instr-row { display: grid; grid-template-columns: 4.5rem 1fr 3.6rem; align-items: center; gap: 0.5rem; cursor: pointer; }
-    /* a control with no effect at the current settings (spec.inert — e.g. Padlington's
-       Vowel outside the Choir source, Tervik's op ADSR under Follow Op 1): dimmed and
-       non-interactive, but still in the layout so nothing reflows when it wakes */
-    .instr-row.inert, .instr-bar.inert { opacity: 0.38; pointer-events: none; }
-    .instr-label { color: #aeb9d0; font-size: 0.82rem; }
-    .instr-row input[type="range"] { width: 100%; }
-    .instr-row input[type="checkbox"].instr-check { justify-self: start; width: 16px; height: 16px; }
-    /* enum param dropdown (e.g. Tervik Algorithm): spans the control + value columns */
-    .instr-sel { grid-column: 2 / 4; width: 100%; background: #181c24; color: #cbd2e0;
-      border: 1px solid #313747; border-radius: 4px; padding: 0.18rem 0.3rem; font-size: 0.8rem; }
-    /* knob param (e.g. Tervik Fine): the rotary sits left in the control column */
-    .instr-knob-holder { display: flex; align-items: center; }
-    .instr-val { color: #8a93a3; font-size: 0.78rem; text-align: right; font-variant-numeric: tabular-nums; }
     /* instrument selector */
     .instr-kind-sel { background: #11141c; color: #cbd2e0; border: 1px solid #2a3040; border-radius: 4px;
       font-size: 0.85rem; font-weight: 700; padding: 0.2rem 0.4rem; }
-    /* Zindel drawbars: a row of parallel vertical faders */
-    .instr-drawbars { display: flex; gap: 0.55rem; align-items: flex-end; padding-top: 0.2rem; }
-    .instr-bar { display: flex; flex-direction: column; align-items: center; gap: 0.25rem; cursor: pointer; }
-    .instr-bar-input { writing-mode: vertical-rl; direction: rtl; width: 1.1rem; height: 96px; }
-    .instr-bar-val { color: #8a93a3; font-size: 0.68rem; font-variant-numeric: tabular-nums; min-height: 0.9rem; }
-    .instr-bar-label { color: #aeb9d0; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
 
     /* ===== Control skin — the instrument-pane control body when a kind opts in
        (role/sub params). Ported verbatim from future/ui_skin/exhibit-vesperia.html
@@ -249,9 +223,18 @@
 
     /* SUBGROUPS: label-only chrome; EVERY subgroup labelled. */
     .instr-skin .subs { display: flex; gap: 1.1em; align-items: flex-start; }
-    .instr-skin .sub { display: flex; flex-direction: column; align-items: center; gap: 0.3em; }
+    .instr-skin .sub { display: flex; flex-direction: column; align-items: center; gap: 0.3em;
+      border-radius: 0.4em; transition: box-shadow 0.55s; }
+    .instr-skin .sub.flash { box-shadow: 0 0 0 2px var(--ro), 0 0 14px 2px hsla(41, 100%, 62%, .35); transition: none; }
     .instr-skin .slrow { display: flex; gap: 0.6em; align-items: center; height: 1.1em; }
     .instr-skin .sl { font-size: 0.62em; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-dim); }
+    /* the envelope COPY button (replaces the old Follow toggles) */
+    .instr-skin .cpy { font: inherit; font-size: 0.6em; line-height: 1.1; color: var(--ink);
+      letter-spacing: 0.06em; cursor: pointer; padding: 0.1em 0.5em;
+      background: linear-gradient(180deg, var(--panel-hi), var(--panel-lo));
+      border: 1px solid hsl(220, 8%, 12%); border-radius: 0.3em;
+      box-shadow: 0 1px 2px rgba(0,0,0,.4), inset 0 1px 0 hsla(0,0%,100%,.12); }
+    .instr-skin .cpy:active { transform: translateY(1px); box-shadow: 0 0 1px rgba(0,0,0,.4); }
 
     /* vertical slider (locked spec) */
     .instr-skin .bank { display: flex; gap: var(--tgap); align-items: flex-start; }
@@ -280,7 +263,84 @@
       width: 5.5ch; text-align: center; min-height: 1.2em; cursor: text; }
     .instr-skin .ro input.edit { width: 100%; font: inherit; color: var(--ro); background: hsl(220, 10%, 10%);
       border: 1px solid var(--ro); border-radius: 2px; text-align: center; padding: 0; outline: none; }
-    .instr-skin .group.inert, .instr-skin .sub.inert, .instr-skin .vsl.inert { opacity: 0.38; pointer-events: none; }
+
+    /* drawbar: a white/black numbered pull-tab on a chrome stem (no tick ladders;
+       a separate widget species). 9-position (0–8) registration; up = louder. */
+    .instr-skin .vslider.drawbar { width: 2.05em; height: 7.9em; }
+    .instr-skin .vslider.drawbar .slot { width: 0.5em; box-shadow: inset 0 1px 3px rgba(0,0,0,.75); }
+    .instr-skin .vslider.drawbar .dstem { position: absolute; left: 50%; transform: translateX(-50%); bottom: 0;
+      width: 0.42em; border-radius: 0.21em 0.21em 0 0; height: calc(var(--val, .5) * (100% - 1.35em) + 0.68em);
+      background: linear-gradient(90deg, hsl(220,6%,30%), hsl(220,8%,66%) 45%, hsl(220,6%,34%));
+      box-shadow: inset 0 0 0 1px hsl(220,10%,16%); }
+    .instr-skin .vslider.drawbar .cap { width: 1.85em; height: 1.35em; border-radius: 0.14em;
+      bottom: calc(var(--val, .5) * (100% - 1.35em));
+      background: var(--tabcol); border: 1px solid hsl(220,10%,12%);
+      box-shadow: 0 2px 5px rgba(0,0,0,.6), inset 0 1px 0 hsla(0,0%,100%,.28), inset 0 -0.32em 0 -0.16em rgba(0,0,0,.28);
+      display: flex; align-items: flex-start; justify-content: center; }
+    .instr-skin .vslider.drawbar .cap::after { content: none; }
+    .instr-skin .vslider.drawbar .cap .num { font-size: 0.74em; line-height: 1.5; color: var(--tabink);
+      font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+    .instr-skin .vslider.drawbar.wtab { --tabcol: hsl(42, 16%, 87%); --tabink: hsl(220, 22%, 16%); }
+    .instr-skin .vslider.drawbar.btab { --tabcol: hsl(220, 10%, 15%); --tabink: hsl(42, 18%, 85%); }
+
+    /* FM algorithm picker (Tervik Algorithm): a backlit-LCD operator graph + a
+       rotary ENCODER. Positive LCD — dark graphics on a lit amber/green glass
+       (FS1R-style). The knob is unmarked (an encoder; the LCD is the display). */
+    .instr-skin .fmpick { display: flex; flex-direction: column; align-items: center; gap: 0.95em; padding: 0 0.3em; }
+    .instr-skin .lcd { position: relative; width: 9.2em; height: 6em; border-radius: 0.4em; overflow: hidden;
+      --ah: 68; --sat: 46%; --lit-l: 56%;
+      --lit: hsl(var(--ah), var(--sat), var(--lit-l));
+      --lit-hi: hsl(var(--ah), var(--sat), calc(var(--lit-l) + 8%));
+      --dark: hsl(var(--ah), 22%, 15%);
+      background: radial-gradient(130% 90% at 50% 22%, var(--lit-hi), transparent 62%),
+                  linear-gradient(180deg, var(--lit-hi), var(--lit) 55%, hsl(var(--ah), var(--sat), calc(var(--lit-l) - 8%)));
+      border: 1px solid hsl(var(--ah), 25%, 22%);
+      box-shadow: 0 0 0.5em hsla(var(--ah), 80%, 55%, .35), inset 0 1px 0 hsla(0,0%,100%,.28),
+                  inset 0 -1px 3px hsla(var(--ah), 40%, 20%, .5), 0 2px 8px rgba(0,0,0,.5); }
+    .instr-skin .lcd svg { position: absolute; top: 1.05em; left: 0.2em; right: 0.2em; bottom: 1.5em; display: block; color: var(--dark); }
+    .instr-skin .lcd svg text { fill: currentColor; }
+    .instr-skin .lcd .hdr { position: absolute; top: 0.38em; left: 0.55em; font-size: 0.5em; letter-spacing: 0.22em; color: hsl(var(--ah), 22%, 26%); }
+    .instr-skin .lcd .cap { position: absolute; bottom: 0.32em; left: 0.55em; right: 0.55em; display: flex; align-items: baseline; gap: 0.4em; color: var(--dark); }
+    .instr-skin .lcd .cap .num { font-size: 1.15em; font-variant-numeric: tabular-nums; line-height: 1; }
+    .instr-skin .lcd .cap .nm { font-size: 0.62em; letter-spacing: 0.16em; text-transform: uppercase; }
+    .instr-skin .fmknob { --kd: 2.5em; width: var(--kd); height: var(--kd); border-radius: 50%; position: relative;
+      cursor: ns-resize; touch-action: none;
+      background: radial-gradient(circle at 32% 28%, hsl(220,6%,36%), hsl(220,8%,13%) 72%);
+      border: 1px solid hsl(220,8%,9%);
+      box-shadow: 0 3px 8px rgba(0,0,0,.55), inset 0 1px 1px hsla(0,0%,100%,.14); }
+    .instr-skin .fmknob .face { position: absolute; inset: 0; border-radius: 50%; }
+    .instr-skin .fmpick .bl { font-size: 0.7em; color: var(--ink); letter-spacing: 0.03em; }
+    /* inert = a control with no effect at the current settings: dim + desaturate,
+       but STILL DRAGGABLE (roster-pass law) — the value is kept for when it
+       re-activates. (Boshwick Type / Padlington Source drive this live.) */
+    .instr-skin .group.inert, .instr-skin .sub.inert, .instr-skin .vsl.inert, .instr-skin .rsww.inert {
+      opacity: 0.3; filter: grayscale(0.6); transition: opacity 0.15s, filter 0.15s; }
+
+    /* rotary switch (3–5-way enums): a knob with radial position ticks + labels,
+       the active one lit amber. Rotary switches stack vertically in a cluster. */
+    .instr-skin .rstack { display: flex; flex-direction: column; gap: 0.35em; align-items: center; }
+    .instr-skin .rsww { display: flex; flex-direction: column; align-items: center; gap: 0.2em;
+      --kd: 2.3em; padding: 0.8em 1.7em 0.1em 1.2em; }
+    .instr-skin .rsww .bl { margin-top: 1.15em; font-size: 0.7em; color: var(--ink); letter-spacing: 0.03em; }
+    .instr-skin .rswitch { width: var(--kd); height: var(--kd); border-radius: 50%; cursor: pointer;
+      touch-action: none; position: relative;
+      background: radial-gradient(circle at 32% 28%, hsl(220,6%,34%), hsl(220,8%,15%) 72%);
+      border: 1px solid hsl(220,8%,10%);
+      box-shadow: 0 3px 7px rgba(0,0,0,.55), inset 0 1px 1px hsla(0,0%,100%,.14); }
+    .instr-skin .rswitch .face { position: absolute; inset: 0; border-radius: 50%; }
+    .instr-skin .rswitch .face::after { content: ''; position: absolute; left: 50%; top: 6%; width: 2.5px; height: 38%;
+      transform: translateX(-50%); border-radius: 2px; background: hsl(220, 15%, 92%); }
+    .instr-skin .rswitch .ptick { position: absolute; inset: 0; transform: rotate(var(--a)); pointer-events: none; }
+    .instr-skin .rswitch .ptick::before { content: ''; position: absolute; left: calc(50% - 1px); top: -0.3em;
+      width: 2px; height: 0.22em; background: var(--tick-maj); }
+    .instr-skin .rswitch .ptick.on::before { background: var(--ro); }
+    .instr-skin .rswitch .plab { position: absolute; font-size: 0.66em; color: var(--ink-dim);
+      transform: translate(-50%, -50%); white-space: nowrap; pointer-events: none; letter-spacing: 0.02em; }
+    .instr-skin .rswitch .plab.on { color: var(--ro); }
+    /* windowed rotary (>5-way, e.g. Boshwick Type): value in a readout window, no radial labels */
+    .instr-skin .rsww.win { padding: 0.8em 1.2em 0.1em; }
+    .instr-skin .rsww .ro { font-size: 0.7em; color: var(--ro); width: 7.5ch; text-align: center;
+      font-variant-numeric: tabular-nums; min-height: 1.2em; }
 
     /* tile player */
     .tile-controls { display: flex; gap: 0.4rem; align-items: center; padding-bottom: 0.6rem; }

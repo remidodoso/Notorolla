@@ -28,27 +28,60 @@ const clamp01 = (p) => (p < 0 ? 0 : p > 1 ? 1 : p);
 // Returns { el, setValue(v) } — setValue is exact (no detent snap), for re-sync.
 export function makeVSlider(container, { spec, value, cb = {} }) {
   const bipolar = spec.widget === 'bipolar';
-  const detPos = spec.detent != null ? clamp01(toPos(spec, spec.detent)) : null;
+  const drawbar = spec.widget === 'drawbar';
+  // A stepped param snaps to `steps` evenly-spaced positions. Two flavours:
+  //  • `spec.steps` is a VALUE LIST (Tervik Coarse ratios) — each stop holds an
+  //    exact value; the position↔value map is an array lookup (not toPos/fromPos).
+  //  • drawbar `positions` is a COUNT (9 → the 0–8 clicks) on the param's own
+  //    linear scale.
+  const stepsArr = Array.isArray(spec.steps) ? spec.steps : null;
+  const steps = drawbar ? (spec.positions || 9) : (stepsArr ? stepsArr.length : 0);
+  const detPos = !drawbar && !stepsArr && spec.detent != null ? clamp01(toPos(spec, spec.detent)) : null;
   const window = spec.fmtc || spec.fmt;
+
+  // Value ↔ position. A value-list stepper indexes the array; everything else
+  // rides the param's own scale (log/linear via toPos/fromPos).
+  const valToPos = (v) => stepsArr ? nearestIndex(stepsArr, v) / (steps - 1) : clamp01(toPos(spec, v));
+  const posToVal = (p) => stepsArr ? stepsArr[Math.min(steps - 1, Math.max(0, Math.round(p * (steps - 1))))] : fromPos(spec, p);
 
   const vsl = document.createElement('div');
   vsl.className = 'vsl';
   const sl = document.createElement('div');
-  sl.className = 'vslider' + (bipolar ? ' bip' : '');
-  sl.append(mkTicks('l', detPos), mkEl('slot'), mkTicks('r', detPos), mkEl('cap'));
-  const bl = document.createElement('span');
-  bl.className = 'bl';
-  bl.textContent = spec.label;
+  if (drawbar) {
+    // A pull-tab on a chrome stem; powers-of-two harmonics get the white tab.
+    const n = parseInt(spec.label, 10);
+    const white = !isFinite(n) || (n >= 1 && (n & (n - 1)) === 0);
+    sl.className = `vslider drawbar ${white ? 'wtab' : 'btab'}`;
+    const cap = mkEl('cap');
+    const num = document.createElement('span');
+    num.className = 'num';
+    num.textContent = spec.label;
+    cap.append(num);
+    sl.append(mkEl('slot'), mkEl('dstem'), cap);
+  } else {
+    sl.className = 'vslider' + (bipolar ? ' bip' : '');
+    sl.append(mkTicks('l', detPos), mkEl('slot'), mkTicks('r', detPos), mkEl('cap'));
+  }
   const ro = document.createElement('span');
   ro.className = 'ro';
-  vsl.append(sl, bl, ro);
+  // A drawbar carries its number on the tab (no separate under-label); the rest
+  // get the short label under the slider.
+  if (!drawbar) {
+    const bl = document.createElement('span');
+    bl.className = 'bl';
+    bl.textContent = spec.label;
+    vsl.append(sl, bl, ro);
+  } else {
+    vsl.append(sl, ro);
+  }
   container.append(vsl);
 
-  let pos = clamp01(toPos(spec, value));
+  let pos = valToPos(value);
+  if (steps) pos = quantize(pos, steps);
 
   function sync(emit) {
     sl.style.setProperty('--val', pos);
-    const val = fromPos(spec, pos);
+    const val = posToVal(pos);
     if (!ro.querySelector('input')) ro.textContent = window(val);
     const tip = `${spec.title || spec.label} — ${spec.fmt(val)}`;
     sl.title = tip;
@@ -56,9 +89,10 @@ export function makeVSlider(container, { spec, value, cb = {} }) {
     if (emit && cb.onInput) cb.onInput(val);
   }
 
-  // Drag/wheel land on the detent within a band; typed entry (setValue) bypasses.
+  // Drag/wheel snap: to a step (stepped), else to the detent within a band.
   const snap = (x, band) => {
     x = clamp01(x);
+    if (steps) return quantize(x, steps);
     if (detPos != null && Math.abs(x - detPos) < band) return detPos;
     return x;
   };
@@ -73,7 +107,7 @@ export function makeVSlider(container, { spec, value, cb = {} }) {
     const up = () => {
       sl.removeEventListener('pointermove', move);
       sl.removeEventListener('pointerup', up);
-      cb.onCommit && cb.onCommit(fromPos(spec, pos));
+      cb.onCommit && cb.onCommit(posToVal(pos));
     };
     sl.addEventListener('pointermove', move);
     sl.addEventListener('pointerup', up);
@@ -86,17 +120,20 @@ export function makeVSlider(container, { spec, value, cb = {} }) {
     if (detPos == null) return;
     cb.onStart && cb.onStart();
     pos = detPos; sync(true);
-    cb.onCommit && cb.onCommit(fromPos(spec, pos));
+    cb.onCommit && cb.onCommit(posToVal(pos));
   });
 
-  // Wheel: vertical = coarse, tilt (deltaX) = fine. Snaps to the detent.
+  // Wheel: vertical = coarse, tilt (deltaX) = fine. A stepped slider moves one
+  // step per notch; a continuous one snaps to the detent.
+  const coarse = steps ? 1 / (steps - 1) : 0.04;
+  const fine = steps ? 1 / (steps - 1) : 0.005;
   sl.addEventListener('wheel', (e) => {
     e.preventDefault();
     cb.onStart && cb.onStart();
-    if (e.deltaY) pos = snap(pos + (e.deltaY < 0 ? 1 : -1) * 0.04, 0.015);
-    if (e.deltaX) pos = snap(pos + (e.deltaX > 0 ? 1 : -1) * 0.005, 0.015);
+    if (e.deltaY) pos = snap(pos + (e.deltaY < 0 ? 1 : -1) * coarse, 0.015);
+    if (e.deltaX) pos = snap(pos + (e.deltaX > 0 ? 1 : -1) * fine, 0.015);
     sync(true);
-    cb.onCommit && cb.onCommit(fromPos(spec, pos));
+    cb.onCommit && cb.onCommit(posToVal(pos));
   }, { passive: false });
 
   // Double-click the readout to type an exact value (bypasses the detent). The
@@ -118,7 +155,7 @@ export function makeVSlider(container, { spec, value, cb = {} }) {
         done = true;
         const v = commit ? spec.parse(inp.value) : null;
         inp.remove();
-        if (v != null) { cb.onStart && cb.onStart(); pos = clamp01(toPos(spec, v)); sync(true); cb.onCommit && cb.onCommit(fromPos(spec, pos)); }
+        if (v != null) { cb.onStart && cb.onStart(); pos = valToPos(v); if (steps) pos = quantize(pos, steps); sync(true); cb.onCommit && cb.onCommit(posToVal(pos)); }
         else ro.textContent = old;
       };
       inp.addEventListener('keydown', (ev) => {
@@ -131,7 +168,17 @@ export function makeVSlider(container, { spec, value, cb = {} }) {
   }
 
   sync(false);
-  return { el: vsl, setValue: (v) => { pos = clamp01(toPos(spec, v)); sync(false); } };
+  return { el: vsl, setValue: (v) => { pos = valToPos(v); if (steps) pos = quantize(pos, steps); sync(false); } };
+}
+
+// Snap a 0..1 position to one of `steps` evenly-spaced positions (0..steps-1).
+function quantize(x, steps) { return Math.round(clamp01(x) * (steps - 1)) / (steps - 1); }
+
+// Index of the array entry nearest `v` (for a value-list stepper).
+function nearestIndex(arr, v) {
+  let bi = 0, bd = Infinity;
+  for (let i = 0; i < arr.length; i++) { const d = Math.abs(arr[i] - v); if (d < bd) { bd = d; bi = i; } }
+  return bi;
 }
 
 // An 11-tick ladder (majors at 0/5/10 by thickness). On a bipolar slider the

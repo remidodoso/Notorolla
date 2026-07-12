@@ -13,18 +13,17 @@
 // host to switch instruments (onKindChange). Params flagged `bar` (Zindel's
 // drawbars) render as a row of parallel vertical faders; the rest as sliders.
 
-import { paramsFor, toPos, fromPos, instrumentKinds, instrument, nearestStep } from '../audio/instrument.js';
-import { makeKnob } from './knob.js';
+import { paramsFor, instrumentKinds, instrument } from '../audio/instrument.js';
 import { makeVSlider } from './vslider.js';
+import { makeRotarySwitch } from './rotaryswitch.js';
+import { makeFmAlgo } from './fmalgo.js';
 
-// The control skin (future/ui_skin). A kind opts in by tagging its params with a
-// `role` (a hued top group) + `sub` (subgroup label); such a kind renders through
-// buildSkinnedBody with the real widgets. Untagged kinds keep the legacy body.
-// Canonical group order + role→hue-class (a role's colour is fixed across every
-// instrument; an absent role leaves a spectrum gap).
+// The control skin (future/ui_skin). Every kind tags its params with a `role` (a
+// hued top group) + `sub` (subgroup label), and renders through buildSkinnedBody
+// with the real widgets. Canonical group order + role→hue-class (a role's colour
+// is fixed across every instrument; an absent role leaves a spectrum gap).
 const ROLE_ORDER = ['lfo', 'osc', 'filter', 'env', 'fx'];
 const ROLE_LABEL = { lfo: 'LFO', osc: 'Oscillator', filter: 'Filter', env: 'Envelope', fx: 'Effects' };
-const isSkinned = (kind) => paramsFor(kind).some((s) => s.role);
 
 // cb: onChange() after any edit, onKindChange(kind) to switch instrument,
 // onTest() to audition, onReset() to restore, onCopy()/onPaste() to ferry.
@@ -103,7 +102,7 @@ export function buildInstrumentPane(containerEl, cb) {
   containerEl.append(patchbar);
 
   const body = document.createElement('div');
-  body.className = 'instr-grid';
+  body.className = 'instr-skin';
   containerEl.append(body);
 
   // Repaint the patch-name (Name / Name* / Name [I]) and refill the Load menu for
@@ -153,14 +152,12 @@ export function buildInstrumentPane(containerEl, cb) {
     input.addEventListener('blur', commit);
   }
 
-  // Build the control body for `kind`. A skin-tagged kind (role/sub params) gets
-  // the control-skin layout; the rest keep the legacy body.
+  // Build the control body for `kind` — every kind uses the control-skin layout.
   function buildBody(kind) {
     body.innerHTML = '';
     rows = [];
-    body.className = isSkinned(kind) ? 'instr-skin' : 'instr-grid';
-    if (isSkinned(kind)) { buildSkinnedBody(kind); builtKind = kind; return; }
-    buildLegacyBody(kind);
+    body.className = 'instr-skin';
+    buildSkinnedBody(kind);
     builtKind = kind;
   }
 
@@ -183,7 +180,10 @@ export function buildInstrumentPane(containerEl, cb) {
       const sec = document.createElement('section');
       sec.className = `group b-${role}`;
       const h = document.createElement('h2');
-      h.textContent = ROLE_LABEL[role] || role;
+      // The band keeps the role's HUE but its text may be overridden per kind (a
+      // filter-substitute takes the green slot relabelled — Zindel "Motion").
+      const band = specs.find((s) => s.role === role && s.band);
+      h.textContent = (band && band.band) || ROLE_LABEL[role] || role;
       sec.append(h);
       const subsEl = document.createElement('div');
       subsEl.className = 'subs';
@@ -196,9 +196,25 @@ export function buildInstrumentPane(containerEl, cb) {
         sl.className = 'sl';
         sl.textContent = sub;
         slrow.append(sl);
+        // A subgroup may carry a one-shot COPY button (Tervik Env 2/3 ← Env 1).
+        const btnSpec = specList.find((s) => s.subButton);
+        if (btnSpec) slrow.append(makeSubButton(btnSpec.subButton, subEl));
         const bank = document.createElement('div');
         bank.className = 'bank';
-        for (const spec of specList) bank.append(skinControl(spec, subEl));
+        // Rotary switches (enums) stack vertically in one .rstack at the position
+        // of the first rotary; sliders sit in the bank in order.
+        let rstack = null;
+        for (const spec of specList) {
+          const el = skinControl(spec);
+          // Small enum rotaries stack in one .rstack; the wide algo picker (and
+          // sliders) sit directly in the bank.
+          if (spec.sel && spec.widget !== 'algo') {
+            if (!rstack) { rstack = document.createElement('div'); rstack.className = 'rstack'; bank.append(rstack); }
+            rstack.append(el);
+          } else {
+            bank.append(el);
+          }
+        }
         subEl.append(slrow, bank);
         subsEl.append(subEl);
       }
@@ -207,225 +223,55 @@ export function buildInstrumentPane(containerEl, cb) {
     }
   }
 
-  // One skinned control. Today every skin param is a vertical slider (uni- or
-  // bipolar); future widget kinds (rotary switch, drawbar) branch here on
-  // spec.widget. Returns the widget's holder element; registers it in `rows`
-  // (with the .sub as the inert target — a spec.inert dims its subgroup).
-  function skinControl(spec, subEl) {
+  // One skinned control, chosen by spec kind: an enum (`sel`) → rotary switch, a
+  // continuous param → vertical slider (uni- or bipolar). (Future: >5-way enums
+  // → readout-window rotary; drawbars.) Returns the widget's element and
+  // registers it in `rows` with itself as the inert target — a spec.inert dims
+  // that individual control (Padlington's Vowel/Size/Tilt follow the Source).
+  function skinControl(spec) {
     const holder = document.createElement('div');
+    const onInput = (v) => { if (!patch) return; patch[spec.key] = v; cb.onChange(); updateInert(); };
+    if (spec.widget === 'algo') {
+      const initial = patch ? patch[spec.key] : (spec.options[0] && spec.options[0].id);
+      const w = makeFmAlgo(holder, { spec, value: initial, cb: { onInput } });
+      rows.push({ spec, fmalgo: w, rowEl: w.el });
+      return w.el;
+    }
+    if (spec.sel) {
+      const initial = patch ? patch[spec.key] : (spec.options[0] && spec.options[0].id);
+      const w = makeRotarySwitch(holder, { spec, value: initial, cb: { onInput } });
+      rows.push({ spec, rotary: w, rowEl: w.el });
+      return w.el;
+    }
     const initial = patch ? patch[spec.key] : (spec.reset != null ? spec.reset : spec.min);
-    const w = makeVSlider(holder, {
-      spec, value: initial,
-      cb: { onInput: (v) => { if (!patch) return; patch[spec.key] = v; cb.onChange(); updateInert(); } },
-    });
-    rows.push({ spec, vslider: w, rowEl: subEl });
+    const w = makeVSlider(holder, { spec, value: initial, cb: { onInput } });
+    rows.push({ spec, vslider: w, rowEl: w.el });
     return w.el;
   }
 
-  // The legacy body: one column per param group (first-seen order). A group whose
-  // params are flagged `bar` gets a row of vertical faders under its title; every
-  // other group gets stacked slider rows.
-  function buildLegacyBody(kind) {
-    const cols = new Map();   // group -> column element
-    const barRows = new Map(); // group -> the .instr-drawbars row (bar groups only)
-    for (const spec of paramsFor(kind)) {
-      if (!cols.has(spec.group)) {
-        const col = document.createElement('div');
-        col.className = 'instr-group';
-        const h = document.createElement('div');
-        h.className = 'instr-group-title';
-        h.textContent = spec.group;
-        col.append(h);
-        if (spec.bar) {
-          const br = document.createElement('div');
-          br.className = 'instr-drawbars';
-          col.append(br);
-          barRows.set(spec.group, br);
-        }
-        body.append(col);
-        cols.set(spec.group, col);
-      }
-      if (spec.bar) barRows.get(spec.group).append(barCell(spec));
-      else cols.get(spec.group).append(
-        spec.knob ? knobRow(spec) : spec.steps ? stepRow(spec) : spec.bool ? boolRow(spec) : spec.sel ? selRow(spec) : sliderRow(spec));
-    }
-    builtKind = kind;
-  }
-
-  // A horizontal slider row: label · slider · value.
-  function sliderRow(spec) {
-    const row = document.createElement('label');
-    row.className = 'instr-row';
-    row.title = spec.title || '';
-    const name = document.createElement('span');
-    name.className = 'instr-label';
-    name.textContent = spec.label;
-    const input = mkRange();
-    const valEl = document.createElement('span');
-    valEl.className = 'instr-val';
-    bind(spec, input, valEl, row);
-    row.append(name, input, valEl);
-    return row;
-  }
-
-  // A stepped-list slider (a quantized param, e.g. Tervik's Coarse ratio): the
-  // slider indexes spec.steps and snaps stop-to-stop. label · slider · value.
-  function stepRow(spec) {
-    const row = document.createElement('label');
-    row.className = 'instr-row';
-    row.title = spec.title || '';
-    const name = document.createElement('span');
-    name.className = 'instr-label';
-    name.textContent = spec.label;
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = 0; input.max = spec.steps.length - 1; input.step = 1;
-    const valEl = document.createElement('span');
-    valEl.className = 'instr-val';
-    bind(spec, input, valEl, row);
-    row.append(name, input, valEl);
-    return row;
-  }
-
-  // A knob row (a param turned with a rotary, e.g. Tervik's Fine ratio): reuses the
-  // mixer knob (detent + double-click reset). label · knob · value.
-  function knobRow(spec) {
-    const row = document.createElement('label');
-    row.className = 'instr-row';
-    row.title = spec.title || '';
-    const name = document.createElement('span');
-    name.className = 'instr-label';
-    name.textContent = spec.label;
-    const holder = document.createElement('span');
-    holder.className = 'instr-knob-holder';
-    const valEl = document.createElement('span');
-    valEl.className = 'instr-val';
-    const map = {
-      toPos: (v) => (v - spec.min) / (spec.max - spec.min),
-      fromPos: (p) => spec.min + p * (spec.max - spec.min),
-      format: spec.fmt,
-    };
-    const initial = patch ? patch[spec.key] : (spec.reset != null ? spec.reset : spec.min);
-    const knob = makeKnob(holder, {
-      label: spec.label, value: initial, map, detents: spec.detents || [], reset: spec.reset,
-      cb: { onInput: (v) => { if (!patch) return; patch[spec.key] = v; valEl.textContent = spec.fmt(v); cb.onChange(); updateInert(); } },
+  // A one-shot COPY button in a subgroup's label row: snapshots one set of patch
+  // keys into another (Tervik "1 → 2" copies Env 1's ADSR into Env 2), then
+  // flashes the target subgroup. Not a mode — a single edit (see §13 Tervik).
+  function makeSubButton(cfg, subEl) {
+    const b = document.createElement('button');
+    b.className = 'cpy';
+    b.textContent = cfg.label;
+    b.title = cfg.title || '';
+    b.addEventListener('click', () => {
+      if (!patch) return;
+      for (let i = 0; i < cfg.to.length; i++) patch[cfg.to[i]] = patch[cfg.from[i]];
+      cb.onChange();
+      refresh();
+      subEl.classList.add('flash');
+      setTimeout(() => subEl.classList.remove('flash'), 220);
     });
-    valEl.textContent = spec.fmt(initial);
-    rows.push({ spec, knob, valEl, rowEl: row });
-    row.append(name, holder, valEl);
-    return row;
-  }
-
-  // A single vertical drawbar fader: value readout · vertical slider · number.
-  function barCell(spec) {
-    const cell = document.createElement('label');
-    cell.className = 'instr-bar';
-    cell.title = spec.title || '';
-    const valEl = document.createElement('span');
-    valEl.className = 'instr-bar-val';
-    const input = mkRange();
-    input.classList.add('instr-bar-input');
-    const name = document.createElement('span');
-    name.className = 'instr-bar-label';
-    name.textContent = spec.label;
-    bind(spec, input, valEl, cell);
-    cell.append(valEl, input, name);
-    return cell;
-  }
-
-  // A dropdown row (an enum param, e.g. Tervik's Algorithm): label · select. The
-  // select itself shows the chosen option, so there's no separate value readout.
-  function selRow(spec) {
-    const row = document.createElement('label');
-    row.className = 'instr-row';
-    row.title = spec.title || '';
-    const name = document.createElement('span');
-    name.className = 'instr-label';
-    name.textContent = spec.label;
-    const input = document.createElement('select');
-    input.className = 'instr-sel';
-    for (const o of spec.options) {
-      const opt = document.createElement('option');
-      opt.value = o.id; opt.textContent = o.label;
-      input.append(opt);
-    }
-    bind(spec, input, null, row);
-    row.append(name, input);
-    return row;
-  }
-
-  // A checkbox row (a boolean param): label · checkbox · state text.
-  function boolRow(spec) {
-    const row = document.createElement('label');
-    row.className = 'instr-row';
-    row.title = spec.title || '';
-    const name = document.createElement('span');
-    name.className = 'instr-label';
-    name.textContent = spec.label;
-    const input = document.createElement('input');
-    input.type = 'checkbox';
-    input.className = 'instr-check';
-    const valEl = document.createElement('span');
-    valEl.className = 'instr-val';
-    bind(spec, input, valEl, row);
-    row.append(name, input, valEl);
-    return row;
-  }
-
-  function mkRange() {
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = 0; input.max = 1000; input.step = 1;
-    return input;
-  }
-
-  // Wire a control to a param: edit -> mutate patch, update readout, onChange.
-  // Boolean params use a checkbox (the `change` event + `.checked`); the rest a
-  // range slider (the `input` event + the param's value mapping). Every edit
-  // also re-evaluates the inert flags — a select/toggle (e.g. Padlington's
-  // Source, Tervik's Follow) can change which OTHER controls are functional.
-  function bind(spec, input, valEl, rowEl) {
-    if (spec.bool) {
-      input.addEventListener('change', () => {
-        if (!patch) return;
-        patch[spec.key] = input.checked;
-        valEl.textContent = spec.fmt(input.checked);
-        cb.onChange();
-        updateInert();
-      });
-    } else if (spec.sel) {
-      input.addEventListener('change', () => {
-        if (!patch) return;
-        patch[spec.key] = input.value;
-        cb.onChange();
-        updateInert();
-      });
-    } else if (spec.steps) {
-      input.addEventListener('input', () => {
-        if (!patch) return;
-        const v = spec.steps[+input.value];
-        patch[spec.key] = v;
-        valEl.textContent = spec.fmt(v);
-        cb.onChange();
-        updateInert();
-      });
-    } else {
-      input.addEventListener('input', () => {
-        if (!patch) return;
-        const v = fromPos(spec, input.value / 1000);
-        patch[spec.key] = v;
-        valEl.textContent = spec.fmt(v);
-        cb.onChange();
-        updateInert();
-      });
-    }
-    rows.push({ spec, input, valEl, rowEl });
+    return b;
   }
 
   // Dim the controls that have no effect at the current settings: a spec's
   // optional `inert(patch)` predicate (instrument.js) marks e.g. Padlington's
-  // Vowel/Size when the Source isn't Choir, or Tervik's op ADSR under Follow.
-  // The row stays visible (the layout never reflows) but reads as parked.
+  // Vowel/Size when the Source isn't Choir, or Boshwick's Snap on a non-snare.
+  // The control stays visible (the layout never reflows) but reads as parked.
   function updateInert() {
     if (!patch) return;
     for (const r of rows) {
@@ -439,26 +285,11 @@ export function buildInstrumentPane(containerEl, cb) {
   function refresh() {
     if (!patch) return;
     for (const row of rows) {
-      const { spec, input, valEl, knob, vslider } = row;
+      const { spec, vslider, rotary, fmalgo } = row;
       const v = patch[spec.key];
-      if (vslider) {
-        vslider.setValue(v);
-      } else if (spec.knob) {
-        knob.setValue(v);
-        valEl.textContent = spec.fmt(v);
-      } else if (spec.bool) {
-        input.checked = !!v;
-        valEl.textContent = spec.fmt(!!v);
-      } else if (spec.sel) {
-        input.value = v;
-      } else if (spec.steps) {
-        const i = spec.steps.indexOf(nearestStep(spec.steps, v));
-        input.value = i;
-        valEl.textContent = spec.fmt(spec.steps[i]);
-      } else {
-        input.value = Math.round(toPos(spec, v) * 1000);
-        valEl.textContent = spec.fmt(v);
-      }
+      if (vslider) vslider.setValue(v);
+      else if (rotary) rotary.setValue(v);
+      else if (fmalgo) fmalgo.setValue(v);
     }
     updateInert();
   }

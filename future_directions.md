@@ -788,6 +788,42 @@ stays on the tile, which is harmless since it commutes with everything.
   musically different from the lane's existing **audio** delay insert (that copies the sound already
   produced). It pairs with the pre-beat scheduling trick already banked for grace notes/flams in 7.
 
+**Reverse reverb (per-tile) — a baked wet "intro" layer (yours, 2026-07-12).** A tile attribute that
+lays a swelling reverse-reverb tail *in front of* the tile, ending seamlessly at its downbeat (the
+classic "swell into the hit"). Applied like a transform, with settings in the inspector / a non-modal
+popup (reuse the reverb editor — `buildReverbEditor`, [src/js/audio/reverb.js](src/js/audio/reverb.js)).
+The design that fell out of discussion:
+
+- **It's exact via a reversed IR — not the tape dance.** Our reverb is pure convolution (a
+  `ConvolverNode` fed a synthesized IR, `buildReverbInsert` in [src/js/audio/audio.js](src/js/audio/audio.js)).
+  The four-step method (reverse the audio → reverb → capture 100% wet → reverse) collapses, by the
+  convolution identity `reverse(a⊛b) = reverse(a)⊛reverse(b)`, to **`dry ⊛ reverse(IR)`** — one
+  convolution against the *time-flipped* IR, bit-identical for a linear ConvolverNode. Reverse a short
+  IR once instead of a long buffer twice. (The literal four-step pipeline stays documented as the
+  fallback for any future *non-convolution* reverb — modulated/nonlinear tails, where the identity
+  breaks.) Bonus: the "gated" mode's gate lives in the IR shape, so reversing it yields the correct
+  reverse-*gated* sound for free; **Damp** reverses into a tone sweep *across* the swell.
+- **It must be baked offline (non-causal).** The swell has to know a hit that hasn't played yet, so it
+  can't be a live insert. Reuse the faster-than-realtime `bounce()` ([src/js/audio/audio.js](src/js/audio/audio.js#L491))
+  to render the tile, run it through the reversed-IR convolver, keep 100% wet → a cached per-tile
+  `AudioBuffer`.
+- **Positioning is one constant advance.** A reversed IR peaks at lag `Lir` (`reverbSeconds(cfg)`), so
+  the raw wet lands late by `Lir`; advancing the buffer by exactly `Lir` makes each swell *end* on its
+  event. The first event's swell then occupies `[−Lir, 0]` before the tile — the **"negative time"
+  intro**. Schedule the layer's BufferSource at `max(0, tileStart − Lir)` with a read-offset that
+  **clips the negative-time head**: reverse-verb that runs off the front of the sequence isn't played,
+  and the user leaves empty leading time to hear the full intro (their rule).
+- **Wet-only, additive.** The dry tile still plays normally at its own position; this is a sibling
+  layer, not an insert — no dry path to mix.
+- **Cache invalidation is the real cost.** The baked buffer depends on tile content *and* the
+  reverse-verb settings, so it re-bakes on any edit to either — debounce / bake lazily on playback,
+  like a per-tile freeze. Everything else is placement.
+- **Open calls (before any code):** (1) **render scope** — bake the tile's own voice + note-level
+  transforms, *pre* lane-FX (lean toward this: reverse-verb of the voice, not of the room); (2) whether
+  the popup carries **its own IR/preset** (independent mode/size/damp/level) or **inherits the lane
+  reverb**. Stereo is free (reverse each IR channel). Export must include the baked layer and its
+  pre-roll in the tail accounting, same as delay/reverb already do.
+
 **How it composes.**
 
 - With **subsequences (1)**: the same modifiers apply to a whole nested block (a brighter, echoed,
@@ -849,6 +885,22 @@ lands).
   (its Bandwidth smear already nails the multi-string "searing not quite detuned" register sound).
   A general multi-stage envelope (delay/hold, curves) can ride the same rework; shared envelope
   metadata pairs naturally with the common-cluster panels below.
+- **One-shot / "trigger" envelope mode (user, 2026-07-11).** Envelope generators need a mode where
+  the **attack phase completes regardless of note duration** — a short note doesn't cut the attack
+  short; the envelope runs its onset to completion (analog "trigger" vs. "gate" behaviour; classic on
+  one-shot/AR percussion and pluck envelopes). This is the **opposite** of Padlington's current
+  duration-aware attack (which deliberately ramps *only* to the level reached by note-off — see the
+  Padlington notes / the "conflicting-automation = silence + click" gotcha), so the two are selectable
+  behaviours of one generator, not a bug to fix: **gate** = current (release from wherever the attack
+  got to), **trigger/one-shot** = let A (and optionally D) finish, then release. Cheap here for the
+  usual reason — fire-and-forget scheduling knows the duration up front, so "one-shot" just schedules
+  the release at `time + max(duration, attack[+decay])` instead of `time + duration`. Natural home is
+  a **shared DSP envelope helper** — the amp ADSR is still hand-rolled inline per voice in
+  `audio/audio.js` (Vesperia/Zindel/… each re-emit the same
+  setValueAtTime→exponentialRamp→setTargetAtTime→release pattern; only Tervik factored its own
+  `tervikEnvelope()`); a one-shot flag added once in a shared `applyADSR()` would cover every kind,
+  and it pairs with the key-up-pluck multi-stage rework above. This DSP factor is **separate** from
+  the registry/UI common-cluster refactor below (which is zero-DSP). Metadata-wise it's one enum/toggle on the Amplitude cluster.
 - **Rework the instrument panels into COMMON CLUSTERS.** Every kind hand-lists its own Amp
   Envelope / Filter / Pitch groups today (Padlington copied Vesperia's filter block verbatim;
   Pitch Atk is duplicated between Wendelhorn and Padlington). Extract shared param-group builders

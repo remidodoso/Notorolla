@@ -273,6 +273,12 @@ archive or the linked section. (Bigger features are in [future_directions.md](fu
 - **Docs:** split per-voice implementation detail into a separate `instrument_design_details.md`
   (currently parked in [archived_status_07_26.md](archived_status_07_26.md) → Undated / background).
 - **Wendelhorn:** a Cubase-style combined Width+Pan panner.
+- **Stereo key naming:** the shared Stereo cluster's control is labelled "Width", but "Width" should be
+  reserved for **pulse-width** (a pulse-wave param) later. Rename the stereo control/key to **"Stereo" /
+  `stereoWidth`** across kinds (Padlington's key is `stereo`… actually `width`; Wendelhorn's is `stereo`)
+  and unify — resolves the key mismatch the reskin worked around via a per-kind key override in
+  `stereoParams()`. (Also the natural point to enable cross-kind Copy/Paste of the gesture — a §13
+  shared-labels tie-in.)
 - **Boshwick:** the variability/snap pass for the non-kick drum types; optional per-type factory presets.
 - **Bug:** `loadContent` doesn't restore `playStart`/`playEnd` (opening a project keeps the previous
   session's region markers) — one-line fix when next touched.

@@ -812,11 +812,10 @@ function buildTervikVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
 
   const ratioOf = (c, f) => Math.max(TERVIK_RATIO_MIN, Math.min(TERVIK_RATIO_MAX, c + f)); // coarse + fine
   const ops = [
-    { ratio: ratioOf(p.coarse1, p.fine1), level: p.level1, env: { a: p.a1, d: p.d1, s: p.s1, r: p.r1 }, follow: false },
-    { ratio: ratioOf(p.coarse2, p.fine2), level: p.level2, env: { a: p.a2, d: p.d2, s: p.s2, r: p.r2 }, follow: !!p.follow2 },
-    { ratio: ratioOf(p.coarse3, p.fine3), level: p.level3, env: { a: p.a3, d: p.d3, s: p.s3, r: p.r3 }, follow: !!p.follow3 },
+    { ratio: ratioOf(p.coarse1, p.fine1), level: p.level1, env: { a: p.a1, d: p.d1, s: p.s1, r: p.r1 } },
+    { ratio: ratioOf(p.coarse2, p.fine2), level: p.level2, env: { a: p.a2, d: p.d2, s: p.s2, r: p.r2 } },
+    { ratio: ratioOf(p.coarse3, p.fine3), level: p.level3, env: { a: p.a3, d: p.d3, s: p.s3, r: p.r3 } },
   ];
-  const refEnv = ops[0].env; // Op 1's ADSR — the reference Ops 2 & 3 can follow
 
   // Op 1 is a pure sine; Ops 2 & 3 carry the Feedback waveshape (sine → saw).
   const oscs = ops.map((o, i) => {
@@ -829,7 +828,7 @@ function buildTervikVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
 
   const gains = [];
   ops.forEach((o, i) => {
-    const env = o.follow ? refEnv : o.env;
+    const env = o.env; // each op uses its own ADSR (Env 1/2/3; the Copy button snapshots Env 1)
     const g = ctx.createGain();
     if (routes[i] < 0) {
       // Carrier: amplitude-enveloped to the output (carriers sum at dest).
