@@ -90,7 +90,7 @@ export function initScore(ctx) {
     let maxLen = 0;
     const audible = arrangement.audibleLaneIds(); // mute/solo: which lanes sound
     arrangement.lanes.forEach((lane, li) => {
-      const color = laneColor(li);
+      const color = lane.color || laneColor(li);
       const alpha = lane.id === arrangement.activeLaneId ? 1 : 0.3; // focus dim
       const muted = !audible.has(lane.id);                          // silent → hatched, not sounded
       for (const tile of lane.tiles) {

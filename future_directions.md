@@ -824,6 +824,55 @@ The design that fell out of discussion:
   reverb**. Stereo is free (reverse each IR channel). Export must include the baked layer and its
   pre-roll in the tail accounting, same as delay/reverb already do.
 
+**Control-rate tile attributes — tile volume as lightweight automation (yours, 2026-07-12).** A tile
+carries an optional relative **level** (a trim, in dB; default 0) so you dial parts of a track up/down
+by setting `level` on one or more tiles — and by default it **doesn't jump, it glides**. The framing
+that makes this cheap: *tile-volume-with-glide is an automation lane whose breakpoints are constrained
+to tile edges.* We don't add an automation surface; we **derive an automation curve from a tile
+attribute**. This is a lightweight alternative to the heavyweight mixer + automation-lanes path (still coming as a
+separate feature — the user-ordered **insert stack / mixer pane** flagged in the fixed-order note above,
+and the visualizer's optional mixer in §22): it delivers section-level dynamics — the 80% musical case —
+at a fraction of the cost, and stays inside the tile-editing model that already works.
+
+- **Two families of continuous tile attribute — and *glide* is the tell.** A **trigger-time** attribute
+  (vowel, brightness, detune — the instrument-override delta above) is *baked when each voice is built*,
+  so a note already ringing across a tile boundary keeps its value. A **control-rate** attribute
+  (volume, later pan / cutoff / send) is *scheduled on a shared gain node* and glides continuously,
+  affecting sustains and tails. The instant you want a smooth transition you've chosen the second
+  mechanism — so **tile volume is NOT the baked-per-note override**; it's a scheduled `AudioParam`
+  envelope. Baking can't glide a held pad (it'd only step at the next attack).
+- **The mechanism.** At score build ([src/js/main.js](src/js/main.js) `arrangementScore`), collect **per
+  lane a timeline of `(tileStart, level)` breakpoints** and drive a dedicated **automation-gain node**
+  with ramps between them. Ramp in **dB** (perceptually even → `setValueCurveAtTime` or a dB→gain
+  conversion, since `linearRampToValueAtTime` is amplitude-linear). Chained short glides anchor each
+  segment with a `setValueAtTime`/`cancelAndHoldAtTime` at the breakpoint so it ramps from the actual
+  current value; schedule in breakpoint order. In a lane gap, hold the last value (only tails are
+  affected).
+- **Decided leanings (2026-07-12).**
+  - **Pre-insert.** The automation-gain sits **before** the lane's reverb/delay inserts — a quieter
+    section drives a quieter tail (the musical default), not a post-fader trim that leaves tails alone.
+  - **Reactive glide.** The ramp **starts at the tile's downbeat** and reaches the target over `glide`
+    ("the tile fades to its level"), rather than reaching the target *by* the boundary.
+  - **Musical (duration-relative) default glide.** Default `glide` is a **fraction of the tile's own
+    duration**, not a fixed millisecond value — a long section swells over a proportionally long time, a
+    short tile snaps quicker — with a per-tile override for exact control. (Contrast the de-zipper view
+    of a fixed ~30–60 ms; we're choosing the musical view as the default.)
+  - **Relative only, always.** `level` is a trim over the lane's mixer volume, never an absolute fader.
+    The absolute lane fader stays the future mixer's job; tile automation rides underneath it as a
+    **separate gain stage** so the two never fight when the mixer lands.
+- **Bounce parity is free.** It's nothing but scheduled `AudioParam` ramps — fully deterministic, so the
+  OfflineAudioContext reproduces it exactly (as it already does for lane volume/pan,
+  [src/js/audio/audio.js](src/js/audio/audio.js#L517)). That determinism is itself the argument for the
+  scheduled-node approach over anything stateful.
+- **It generalizes.** The same "continuous tile attribute → per-lane automation curve, parameterized by
+  which `AudioParam` it targets" later handles **pan, cutoff, send level** with no new architecture —
+  volume is just the first target. Slots between per-note velocity (7, attack dynamics *within* a tile)
+  and this (a *section* move): they compose as `note velocity × tile trim × lane fader`. Volume is the
+  natural attribute that wants to live at both the note and tile scope (cf. §19).
+- **UI.** A **Level** (dB, ±, default 0) + **Glide** pair in the tile inspector, set across a
+  multi-selection ("one or more tiles"). Payoff: the tile-player lane can **draw the derived volume
+  contour across itself** — you see the automation shape without ever opening an automation lane.
+
 **How it composes.**
 
 - With **subsequences (1)**: the same modifiers apply to a whole nested block (a brighter, echoed,

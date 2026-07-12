@@ -362,6 +362,7 @@ const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, 
   onSolo: (laneId) => ctx.toggleLaneFlag('solo', laneId),
   onAddLane: () => ctx.addLane(),
   onResetLane: (laneId) => ctx.resetLane(laneId),
+  onMoveLane: (laneId, toIndex) => ctx.moveLane(laneId, toIndex),
   onEdit: (laneId) => ctx.editLane(laneId, true), // double-click the lane head → scroll the pane into view
   // The lane's patch display { name, dirty, imported } for the lane head.
   patchDisplay: (lane) => ctx.patchInfo(lane),

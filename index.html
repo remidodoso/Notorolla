@@ -389,7 +389,22 @@
       background: #0c0e14; border: 1px solid #1c2029; border-right: none; border-radius: 6px 0 0 6px;
     }
     .lane.active-lane .lane-head { border-color: #3d5a80; background: #0e1422; }
-    .lane-stripe { flex: 0 0 6px; width: 6px; border-radius: 3px; }
+    /* The colour stripe is also the reorder DRAG HANDLE, so it's wide enough to
+       grab (~1.5× the "R" reset button). touch-action:none so a touch-drag reorders
+       instead of scrolling. */
+    .lane-stripe { flex: 0 0 24px; width: 24px; border-radius: 3px; cursor: grab; touch-action: none; }
+    .lane-stripe:hover { filter: brightness(1.18); }
+    .lane-stripe:active { cursor: grabbing; }
+    /* The gap a lifted lane leaves while dragging: a viewport-wide, track-coloured
+       "drop band" (its `color` is set to the track colour, so currentColor tints the
+       edge/glow). The bright TOP edge is the insertion divider; sticky-left keeps it
+       on screen at the frozen horizontal scroll. */
+    .lane-placeholder { position: sticky; left: 0; flex: 0 0 auto; box-sizing: border-box;
+      border: 1px solid currentColor; border-top-width: 3px; border-radius: 4px;
+      background: rgba(120,150,200,0.10); box-shadow: 0 0 16px -4px currentColor; }
+    /* The floating "picked up" lane (a faded, right-fading photocopy of its strip). */
+    .lane-ghost { box-shadow: 0 8px 24px rgba(0,0,0,0.55); border-radius: 6px; }
+    .lane-ghost .lane-head { cursor: grabbing; }
     /* Lane head instrument block: Instrument (kind) over Patch (name / star / bracket-I).
        Double-click to edit; highlighted while it's the editor's target. */
     .lane-info { display: flex; flex-direction: column; justify-content: center; gap: 3px; flex: 1 1 auto;

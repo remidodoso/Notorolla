@@ -421,7 +421,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 | **ui/** | *DOM / canvas views + reusable widgets* |
 | [ui/gridview.js](src/js/ui/gridview.js) | `GridView` — grid editor (render + gestures + viewport + resize); reference-backdrop overlay via the merged-time layout |
 | [ui/pianoroll.js](src/js/ui/pianoroll.js) | `PianoRoll` canvas render + playhead; per-note color/alpha; `ROLL_V_SCALES`/`ROLL_H_SCALES` zoom ladders |
-| [ui/tileplayer.js](src/js/ui/tileplayer.js) | `TilePlayer` — multi-lane tile rendering + interaction; lane heads (instrument/Edit, Pan/Gain knobs, M/S); beat **ruler + play-region markers**; per-tile transform swath; drag/marquee/repeat/range gestures; `TILE_SCALES` |
+| [ui/tileplayer.js](src/js/ui/tileplayer.js) | `TilePlayer` — multi-lane tile rendering + interaction; lane heads (instrument/Edit, Pan/Gain knobs, M/S, **colour stripe = reorder handle**); beat **ruler + play-region markers**; per-tile transform swath; drag/marquee/repeat/range + **lane-reorder** gestures; `TILE_SCALES` |
 | [ui/toolbar.js](src/js/ui/toolbar.js) | `buildToolbar` — grid toolbar (brush, pattern lifecycle, view toggles, transpose/permute, triadulate) |
 | [ui/instrumentpane.js](src/js/ui/instrumentpane.js) | `buildInstrumentPane` — the retargetable, **kind-aware** "Edit instrument" pane (instrument selector; slider/fader/checkbox/dropdown/stepped-list/knob widgets; **inert dimming** via `spec.inert(patch)`; target chip, Test, Copy/Paste, Save/Load identity) |
 | [ui/knob.js](src/js/ui/knob.js) | `makeKnob` — click-vertical-drag rotary widget + `PAN_MAP`/`GAIN_MAP` mixer mappings |
@@ -818,9 +818,22 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 ### Tile player (the arrangement)
 - **Parallel lanes** — **2 by default**, add more via a **"+ Lane"** button (a pinned, lane-head-width
   enclosure below the stack, `position:sticky; left:0` so it doesn't scroll away): `addLane` makes an
-  empty active lane (undoable, persisted; New Project resets to 2). No hard cap. Lane colors auto-assign
-  (`laneColor`: blue/orange first, then golden-angle HSL hues). Each lane is an ordered set of positioned
-  tile references. *Removing* lanes is deferred.
+  empty active lane (undoable, persisted; New Project resets to 2). No hard cap. Each lane is an ordered
+  set of positioned tile references. *Removing* lanes is deferred.
+- **Track vs lane, and reordering (drag the colour stripe).** The lane *object* is the **track** — its
+  colour, patch, tiles, inserts, mute/solo are all intrinsic; the **lane** is just the row it currently
+  sits in (only the positional "Lane N" number is positional). **Colour is intrinsic** (`lane.color`,
+  seeded from `laneColor` by lane id at birth — blue/orange first, golden-angle HSL after — and
+  serialized), so it **travels with the track** on reorder instead of repainting by slot; old colourless
+  saves fall back to the by-position colour, reproducing the prior look. Grab the widened colour stripe at
+  a lane head's left and drag up/down to reorder: a **pick-up ghost** (a faded, right-fading photocopy of
+  the lane's on-screen strip) + an **insert bump** — the neighbours and a viewport-wide, track-coloured
+  **drop-band** (its bright top edge is the insertion divider) FLIP-slide to open the target gap (an
+  insert, never a pairwise swap). The timeline (horizontal) scroll is frozen for the gesture so the
+  bumping layer can't drift; vertical auto-scroll near the screen edge still works; **Esc cancels**.
+  `Arrangement.moveLane(id, toIndex)` is a pure array splice — one undoable arrangement edit with **no
+  audio replumbing** (buses and selection are keyed by lane id, and lane summation order is inaudible). A
+  click on the stripe (below the drag threshold) is reserved for a future colour picker.
 - Drag the grid's **grab handle** into a lane to drop a tile (a width-proportional
   thumbnail; note bars colored by duration; bordered in lane color; name centered).
 - **Fresh-lane instrument seeding**: dropping into a **fresh** lane (`lane.fresh` — brand-new or
@@ -1388,9 +1401,10 @@ gibberish (degree ≠ MIDI note off 12).
 _(Actionable parked items are in the **Deferred work / TODO** section near the top; this is the
 standing list of broader gaps. Already-fixed bugs live in the archive.)_
 
-- **Partial lane controls**: Mute/Solo, adding lanes, per-lane **gain + pan** (lane-head knobs →
-  mixer strips), and **per-lane instrument** (with patch identity) are in. Still deferred:
-  **removing** lanes (likely a right-click menu), lane **naming**.
+- **Partial lane controls**: Mute/Solo, adding lanes, **reordering lanes** (drag the colour stripe),
+  per-lane **gain + pan** (lane-head knobs → mixer strips), and **per-lane instrument** (with patch
+  identity) are in. Still deferred: **removing** lanes (likely a right-click menu), lane **naming**, and
+  a **colour picker** (the stripe carries an intrinsic per-track colour now, but it can't yet be changed).
 - **No phasing**: lanes share one combined loop; independent per-lane loop lengths
   (Reich-style phasing) is a future option.
 - **Interactive lane editing — partial**: drag-reorder/position within a lane, move/copy between

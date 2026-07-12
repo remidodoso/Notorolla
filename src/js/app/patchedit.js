@@ -112,7 +112,7 @@ export function initPatchedit(ctx) {
       const idx = arrangement.lanes.indexOf(lane);
       ctx.editTarget = { patch: lane.patch, laneId: lane.id };
       tilePlayer.editLaneId = lane.id;
-      instrPane.setTarget(lane.patch, `Lane ${idx + 1}`, laneColor(idx));
+      instrPane.setTarget(lane.patch, `Lane ${idx + 1}`, lane.color || laneColor(idx));
       tilePlayer.render();
       return;
     }
@@ -132,7 +132,7 @@ export function initPatchedit(ctx) {
     const idx = arrangement.lanes.indexOf(lane);
     ctx.editTarget = { patch: lane.patch, laneId };
     tilePlayer.editLaneId = laneId;
-    instrPane.setTarget(lane.patch, `Lane ${idx + 1}`, laneColor(idx));
+    instrPane.setTarget(lane.patch, `Lane ${idx + 1}`, lane.color || laneColor(idx));
     tilePlayer.render();
     if (catalog && catalog.isOpen()) catalog.refresh(); // follow the target's highlight
     // Reveal the pane only when its TOP isn't already on-screen. The pane is often

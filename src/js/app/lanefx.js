@@ -166,6 +166,18 @@ export function initLanefx(ctx) {
     ctx.refresh();
   }
 
+  // Reorder lanes (drag the colour stripe): move the track with `laneId` to the
+  // insertion index `toIndex` (among the OTHER lanes). Pure model reorder — no
+  // audio replumbing (buses are keyed by lane id), just an undoable arrangement
+  // edit + a re-render. `toIndex` already excludes the moved lane, so a net change
+  // is guaranteed by the caller; arrCommit still no-ops if nothing changed.
+  function moveLane(laneId, toIndex) {
+    const before = ctx.arrSnap();
+    arrangement.moveLane(laneId, toIndex);
+    ctx.arrCommit(before);
+    ctx.refresh();
+  }
+
   // Mute / Solo: an undoable arrangement edit (so it rides tile Undo/Redo and the
   // dirty bit). The audio change is the lane gain bus (real-time, ramped); refresh
   // re-renders the lane buttons + roll hatching.
@@ -222,7 +234,7 @@ export function initLanefx(ctx) {
 
   Object.assign(ctx, {
     applyLaneMix, applyLaneDelayAll, applyLaneChorusAll, applyLaneReverbAll, applyLaneGains,
-    onMixStart, onMixChange, onMixEnd, addLane, toggleLaneFlag, resetLane, resetPlayer,
+    onMixStart, onMixChange, onMixEnd, addLane, moveLane, toggleLaneFlag, resetLane, resetPlayer,
     openDelayModal, openChorusModal, openReverbModal, openModModal,
   });
 }

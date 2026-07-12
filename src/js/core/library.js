@@ -270,6 +270,20 @@ export class Arrangement {
     return lane;
   }
 
+  // Move the lane with `id` to `toIndex` (an insertion index in the array WITHOUT
+  // the moved lane — i.e. the count of other lanes that should sit above it). Pure
+  // array reorder: identity (id, color, patch, tiles, inserts) travels with the
+  // lane, so nothing in the audio graph (buses keyed by id) or selection (by id)
+  // needs rebuilding — only the visual order and the positional "Lane N" number
+  // change. The lane the object represents is the TRACK; its row is the LANE.
+  moveLane(id, toIndex) {
+    const from = this.lanes.findIndex((l) => l.id === id);
+    if (from < 0) return;
+    const [lane] = this.lanes.splice(from, 1);
+    const to = Math.max(0, Math.min(toIndex, this.lanes.length));
+    this.lanes.splice(to, 0, lane);
+  }
+
   // Reset one lane to a blank slate, KEEPING it in the stack (removing lanes is a
   // separate concern): empty its tiles and restore default instrument / mixer /
   // delay / mute-solo, and mark it fresh so the next dropped tile re-seeds it.
@@ -560,6 +574,7 @@ export class Arrangement {
     return {
       lanes: this.lanes.map((l) => ({
         id: l.id,
+        color: l.color, // the track's identity colour — defaulted at birth, travels on reorder
         tiles: l.tiles.map((t) => ({ id: t.id, name: t.name, start: t.start, transforms: t.transforms })),
         mute: !!l.mute, solo: !!l.solo,
         gain: l.gain, pan: l.pan, // mixer: linear volume (1 = 0 dB), pan −1..+1
@@ -587,14 +602,15 @@ export class Arrangement {
     // (the loader derives gapless starts via ensureTileStarts) / the factory
     // patch (the caller may re-seed patch-less lanes from the old global patch).
     const tile = (t) => ({ id: t.id, name: t.name, start: t.start, transforms: normalizeTransforms(t.transforms) });
-    const lane = (l) => {
+    const lane = (l, i) => {
       const patch = normalizePatch(l.patch);
       // Patch identity: new saves carry it; a LEGACY lane (no origin) migrates to
       // its kind's factory Init but marked DIRTY → shows "Init*" (its custom sound
       // is a modified Init awaiting a name), per the agreed migration rule.
       const hasIdentity = l.patchOriginId != null;
       return {
-        id: l.id, tiles: l.tiles.map(tile), mute: !!l.mute, solo: !!l.solo,
+        id: l.id, color: l.color || laneColor(i), // older saves lack colour → the by-position default (reproduces today)
+        tiles: l.tiles.map(tile), mute: !!l.mute, solo: !!l.solo,
         gain: l.gain == null ? 1 : l.gain, pan: l.pan == null ? 0 : l.pan,
         delay: normalizeDelay(l.delay), chorus: normalizeChorus(l.chorus), reverb: normalizeReverb(l.reverb), patch,
         patchOriginId: hasIdentity ? l.patchOriginId : factoryInitId(patch.kind),
@@ -607,7 +623,7 @@ export class Arrangement {
     };
     const lanes = o.lanes
       ? o.lanes.map(lane)
-      : [{ id: 0, tiles: (o.tiles || []).map(tile), mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), chorus: defaultChorus(), reverb: defaultReverb(), patch: defaultPatch(), patchOriginId: factoryInitId(defaultPatch().kind), patchName: 'Init', patchDirty: false, patchImported: false, modsByKind: {}, fresh: false }, newLane(1)];
+      : [{ id: 0, color: laneColor(0), tiles: (o.tiles || []).map(tile), mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), chorus: defaultChorus(), reverb: defaultReverb(), patch: defaultPatch(), patchOriginId: factoryInitId(defaultPatch().kind), patchName: 'Init', patchDirty: false, patchImported: false, modsByKind: {}, fresh: false }, newLane(1)];
     const a = new Arrangement(lanes);
     a.seq = o.seq || 0;
     a.activeLaneId = o.activeLaneId ?? lanes[0].id;
@@ -630,7 +646,10 @@ export function deletePoint(p, s, e) { return p >= e ? p - (e - s) : Math.min(p,
 function newLane(id) {
   const patch = defaultPatch();
   return {
-    id, tiles: [], mute: false, solo: false, gain: 1, pan: 0,
+    // Colour is the TRACK's identity, seeded from the palette by id (ids are dense
+    // and monotonic, so this both keeps the first two lanes blue/orange and stays
+    // well-spread) and frozen onto the lane so it travels when the lane is reordered.
+    id, color: laneColor(id), tiles: [], mute: false, solo: false, gain: 1, pan: 0,
     delay: defaultDelay(), chorus: defaultChorus(), reverb: defaultReverb(),
     patch, modsByKind: {}, fresh: true,
     // Patch identity (future_directions §14): a fresh lane sits on its kind's

@@ -164,7 +164,7 @@ export class TilePlayer {
     c.append(this._buildRuler(ppb, trackWidth, maxBeats));
 
     this.arrangement.lanes.forEach((lane, li) => {
-      const color = laneColor(li);
+      const color = lane.color || laneColor(li);
 
       const laneEl = document.createElement('div');
       laneEl.className = 'lane' + (this.arrangement.activeLaneId === lane.id ? ' active-lane' : '');
@@ -180,6 +180,12 @@ export class TilePlayer {
       const stripe = document.createElement('span');
       stripe.className = 'lane-stripe';
       stripe.style.background = color;
+      // The colour bar doubles as the drag handle: grab it to reorder the lane
+      // (a track carries its colour, so you grab the colour to move it). A future
+      // click (below the drag threshold) opens a colour picker.
+      stripe.title = 'Drag to reorder this lane';
+      stripe.addEventListener('pointerdown', (e) => { if (e.button === 0) this._laneReorderDown(e, lane.id); });
+      stripe.addEventListener('dragstart', (e) => e.preventDefault());
 
       // Red "R": reset/clear this lane (tiles + instrument), far left of the head.
       const resetBtn = document.createElement('button');
@@ -989,6 +995,176 @@ export class TilePlayer {
     else return false;
     this._edgeScrollAt = now;
     return true;
+  }
+
+  // ===== Lane (track) reordering — grab the colour stripe to move a lane up/down.
+  // "Pick up ghost" (a faded, right-fading photocopy of the lane's on-screen strip)
+  // + interactive INSERT bump (neighbours slide to open a gap, not a pairwise swap).
+  // Horizontal (timeline) scroll is frozen for the gesture so the bumping layer
+  // can't drift sideways; vertical auto-scroll near the screen edge still works.
+  // Esc cancels. On commit cb.onMoveLane rebuilds; on cancel/no-op we re-render
+  // from the (unchanged) model — either way the DOM ends clean, so the live drag
+  // can mutate it freely.
+  _laneReorderDown(e, laneId) {
+    e.preventDefault(); // don't start a text selection while dragging
+    const startX = e.clientX, startY = e.clientY;
+    const THRESH = 4; // px before a press becomes a drag (a click is left for a future colour picker)
+    let drag = null;
+    // Listen on WINDOW, not the stripe: `begin()` hides the source lane (the
+    // stripe's own ancestor), which would drop pointer capture and kill the
+    // gesture. Window listeners fire wherever the cursor goes, hidden or not.
+    const move = (ev) => {
+      if (!drag) {
+        if (Math.abs(ev.clientY - startY) < THRESH && Math.abs(ev.clientX - startX) < THRESH) return;
+        drag = this._beginLaneReorder(laneId, ev.clientY);
+        if (!drag) { finish(false); return; }
+      }
+      this._laneReorderMove(drag, ev.clientX, ev.clientY);
+    };
+    const finish = (commit) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('keydown', onKey, true);
+      if (drag) this._endLaneReorder(drag, commit);
+    };
+    const up = () => finish(true);
+    const onKey = (ev) => {
+      if (ev.key !== 'Escape' || !drag) return;
+      ev.preventDefault(); ev.stopPropagation();
+      finish(false);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('keydown', onKey, true); // capture: beat the global Esc
+  }
+
+  _beginLaneReorder(laneId, clientY) {
+    const laneEls = [...this.container.querySelectorAll('.lane')];
+    const srcEl = laneEls.find((el) => Number(el.dataset.lane) === laneId);
+    if (!srcEl || laneEls.length < 2) return null;
+    const fromIndex = laneEls.indexOf(srcEl);
+    const others = laneEls.filter((el) => el !== srcEl);
+    // Fixed, scroll-independent centres of the OTHER lanes (document space). The
+    // drop index = how many of these sit above the cursor — read off these FIXED
+    // positions, NOT the live (shifting, FLIP-animating) rows, so it never jitters,
+    // has one clean dead-zone at the lane's home, and survives vertical auto-scroll.
+    const otherCenters = others.map((el) => { const r = el.getBoundingClientRect(); return r.top + window.scrollY + r.height / 2; });
+    const srcRect = srcEl.getBoundingClientRect();
+    const ghost = this._laneGhost(srcEl);
+    const grabDY = clientY - srcRect.top;
+
+    // The gap the lifted lane leaves is a lit DROP-BAND: a viewport-wide, track-
+    // coloured slot (colour drives the tinted fill + the bright top-edge "divider"
+    // + glow via `currentColor`), sticky-left so it stays visible at the frozen
+    // scroll. Its full row height is what pushes the neighbours apart.
+    const col = ((this.arrangement.lane(laneId) || {}).color) || laneColor(fromIndex);
+    const placeholder = document.createElement('div');
+    placeholder.className = 'lane-placeholder';
+    placeholder.style.height = `${srcRect.height}px`;
+    placeholder.style.width = `${this.container.clientWidth}px`;
+    placeholder.style.color = col;
+    srcEl.parentNode.insertBefore(placeholder, srcEl);
+    srcEl.style.display = 'none';
+
+    // Freeze the timeline: block wheel scroll for the gesture (nothing else moves
+    // scrollLeft while dragging), so the bumping layer can't drift sideways. We
+    // drive vertical auto-scroll ourselves near the screen edges.
+    this._wheelLock = (ev) => ev.preventDefault();
+    this.container.addEventListener('wheel', this._wheelLock, { passive: false });
+
+    const addRow = this.container.querySelector('.lane-add');
+    return { srcEl, laneId, fromIndex, others, otherCenters, ghost, grabDY, addRow, placeholder, curIndex: fromIndex };
+  }
+
+  _laneReorderMove(drag, clientX, clientY) {
+    // Ghost follows the cursor vertically; X pinned to the lanes' left origin.
+    const cont = this.container.getBoundingClientRect();
+    drag.ghost.style.left = `${cont.left}px`;
+    drag.ghost.style.top = `${clientY - drag.grabDY}px`;
+    this._laneEdgeScrollV(clientY);
+
+    // Insertion index among the OTHER lanes = how many of their centres are above
+    // the cursor (document space → scroll-proof). The lane's home index is
+    // `fromIndex`, and the gap between its neighbours maps straight back to it, so
+    // hovering its own row is the natural no-op.
+    const docY = clientY + window.scrollY;
+    let insertIdx = 0;
+    while (insertIdx < drag.otherCenters.length && docY > drag.otherCenters[insertIdx]) insertIdx++;
+    if (insertIdx === drag.curIndex) return;
+    const ref = drag.others[insertIdx] || drag.addRow || null;
+    // Slide the neighbours AND the band itself to their new slots.
+    this._laneFlipMove([...drag.others, drag.placeholder], () => this.container.insertBefore(drag.placeholder, ref));
+    drag.curIndex = insertIdx;
+  }
+
+  _endLaneReorder(drag, commit) {
+    if (drag.ghost) drag.ghost.remove();
+    if (this._wheelLock) { this.container.removeEventListener('wheel', this._wheelLock); this._wheelLock = null; }
+    for (const el of drag.others) { el.style.transition = ''; el.style.transform = ''; }
+    const moved = commit && drag.curIndex !== drag.fromIndex;
+    if (moved) {
+      this.cb.onMoveLane(drag.laneId, drag.curIndex); // → model reorder + refresh (full re-render)
+    } else {
+      drag.srcEl.style.display = '';       // no-op / cancelled → rebuild the clean stack from the (unchanged) model
+      this.render();
+    }
+  }
+
+  // A faded, right-fading photocopy of the lane's strip: the head (identity) stays
+  // opaque, the tiles dissolve to transparent — a glimpse of what's on the track,
+  // not the whole (possibly enormous) row. Fixed-position; the caller moves it.
+  _laneGhost(srcEl) {
+    const rect = srcEl.getBoundingClientRect();
+    const clone = srcEl.cloneNode(true);
+    clone.classList.remove('active-lane');
+    clone.style.margin = '0';
+    const head = clone.querySelector('.lane-head');
+    if (head) head.style.position = 'static'; // un-stick so it sits at the ghost's left
+    const headW = (srcEl.querySelector('.lane-head') || {}).offsetWidth || 202;
+    const w = headW + 320; // head + a glimpse of the first tiles
+    const fade = `linear-gradient(to right, #000 0, #000 ${headW}px, transparent ${w}px)`;
+    const wrap = document.createElement('div');
+    wrap.className = 'lane-ghost';
+    Object.assign(wrap.style, {
+      position: 'fixed', left: `${rect.left}px`, top: `${rect.top}px`,
+      width: `${w}px`, height: `${rect.height}px`, overflow: 'hidden',
+      pointerEvents: 'none', zIndex: '1000', opacity: '0.9',
+      maskImage: fade, WebkitMaskImage: fade,
+    });
+    wrap.append(clone);
+    document.body.append(wrap);
+    return wrap;
+  }
+
+  // FLIP a set of rows across a DOM mutation: read visual tops (so an in-flight
+  // slide continues smoothly), apply the mutation, then animate each from its old
+  // to its new position. Honours prefers-reduced-motion (snaps instead).
+  _laneFlipMove(els, mutate) {
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduce) { mutate(); return; }
+    const before = els.map((el) => el.getBoundingClientRect().top);
+    for (const el of els) { el.style.transition = 'none'; el.style.transform = 'none'; }
+    mutate();
+    els.forEach((el, i) => {
+      const dy = before[i] - el.getBoundingClientRect().top;
+      if (!dy) { el.style.transition = ''; return; }
+      el.style.transform = `translateY(${dy}px)`;
+      void el.offsetHeight; // force the start frame
+      el.style.transition = 'transform 130ms ease';
+      el.style.transform = '';
+    });
+  }
+
+  // Vertical auto-scroll (the window) when the cursor nears the top/bottom of the
+  // viewport during a lane drag — throttled so it creeps rather than leaps.
+  _laneEdgeScrollV(clientY) {
+    const zone = 56, step = 26;
+    const now = performance.now();
+    if (this._laneScrollAt && now - this._laneScrollAt < 60) return;
+    if (clientY < zone) window.scrollBy(0, -step);
+    else if (clientY > window.innerHeight - zone) window.scrollBy(0, step);
+    else return;
+    this._laneScrollAt = now;
   }
 
   // Arm/disarm the ruler's range mode (called by main): flag + live affordance
