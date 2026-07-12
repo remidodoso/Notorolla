@@ -18,9 +18,72 @@ const C4 = 261.6255653;
 const secs = (v) => (v < 1 ? `${Math.round(v * 1000)} ms` : `${v.toFixed(2)} s`);
 const pct = (v) => `${Math.round(v * 100)}%`;
 const hz = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)} kHz` : `${Math.round(v)} Hz`);
+const q = (v) => `Q ${v.toFixed(1)}`;
+const oct = (v) => `${v.toFixed(2)} oct`;
 const cents = (v) => `${Math.round(v)} ¢`;
 // Signed cents (the ± pitch-attack sliders): 0 reads as "off".
 const scents = (v) => (Math.abs(v) < 0.5 ? 'off' : `${v > 0 ? '+' : '−'}${Math.round(Math.abs(v))} ¢`);
+
+// Compact, unit-less formatters for the skin's readout WINDOW (§13 law: readouts
+// are fixed-width windows; the units + full name live in the rollover title). A
+// param's `fmtc` feeds the window; its `fmt` feeds the tooltip. `fmtc` is
+// optional — the pane falls back to `fmt` where a kind hasn't supplied one.
+const pctC = (v) => String(Math.round(v * 100));
+const secsC = (v) => (v < 1 ? String(Math.round(v * 1000)) : `${v.toFixed(2)}s`);
+const hzC = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(Math.round(v)));
+const qC = (v) => v.toFixed(1);
+const octC = (v) => v.toFixed(2);
+
+// Typed-entry parsers for the skin's dblclick-to-type readouts (§13 locked law).
+// Each returns the param's native VALUE clamped to [lo,hi], or null on garbage
+// (the readout then reverts). A spec's optional `parse` closes over its bounds;
+// where a kind supplies none, the readout is simply not editable.
+const numOf = (s) => { const v = parseFloat(String(s).replace(/[−–]/g, '-').replace(/[^\d.eE+-]/g, ' ')); return isFinite(v) ? v : null; };
+const clampv = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const pctParse = (lo, hi) => (s) => { const v = numOf(s); return v == null ? null : clampv(v / 100, lo, hi); };
+// Seconds field reads a bare number as milliseconds; a trailing "s" (not "ms") as seconds.
+const secsParse = (lo, hi) => (s) => { let v = numOf(s); if (v == null) return null; if (/\d\s*s\s*$/i.test(s) && !/ms\s*$/i.test(s)) v *= 1000; return clampv(v / 1000, lo, hi); };
+const hzParse = (lo, hi) => (s) => { let v = numOf(s); if (v == null) return null; if (/k/i.test(s)) v *= 1000; return clampv(v, lo, hi); };
+const plainParse = (lo, hi) => (s) => { const v = numOf(s); return v == null ? null : clampv(v, lo, hi); };
+
+// --- shared param-cluster builders (§13 "common clusters") --------------------
+// A kind composes its editable params from these so a cluster present in many
+// instruments (an amplitude ADSR, a resonant lowpass, …) is DEFINED ONCE and
+// renders identically everywhere. Each returns fresh spec objects tagged with a
+// `role` (the hued top group — see the pane's ROLE order) + a `sub` (subgroup
+// label). Ranges/curves are the historical Vesperia values these were factored
+// out of, so a kind that adopts a cluster keeps the exact prior feel. Widget
+// policy: continuous params default to the vertical `slider`; a `bipolar` flag +
+// a `detent` value mark a centred (or off-centre) neutral. Short `label` = the
+// glyph under the slider; the full name lives in `title` (the rollover).
+
+// Amplitude ADSR (role: Envelope · sub: Amplitude).
+function ampEnvelopeParams() {
+  return [
+    { key: 'attack', role: 'env', sub: 'Amplitude', label: 'A', min: 0.001, max: 1.5, log: true, fmt: secs, fmtc: secsC, parse: secsParse(0.001, 1.5),
+      title: 'Attack — time from note-on to full level.' },
+    { key: 'decay', role: 'env', sub: 'Amplitude', label: 'D', min: 0.02, max: 5, log: true, fmt: secs, fmtc: secsC, parse: secsParse(0.02, 5),
+      title: 'Decay — how quickly the level falls toward the sustain after the attack. (At Sustain 0 this is the ring-down time.)' },
+    { key: 'sustain', role: 'env', sub: 'Amplitude', label: 'S', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1),
+      title: 'Sustain — level the note holds at while sounding. 0 = decay to silence (the struck-string behaviour).' },
+    { key: 'release', role: 'env', sub: 'Amplitude', label: 'R', min: 0.01, max: 3, log: true, fmt: secs, fmtc: secsC, parse: secsParse(0.01, 3),
+      title: 'Release — fade time once the note ends.' },
+  ];
+}
+
+// Resonant lowpass with its own envelope + key tracking (role: Filter · sub: Lowpass).
+function lowpassParams() {
+  return [
+    { key: 'cutoff', role: 'filter', sub: 'Lowpass', label: 'Cutoff', min: 120, max: 14000, log: true, fmt: hz, fmtc: hzC, parse: hzParse(120, 14000),
+      title: 'Cutoff — lowpass cutoff (base, before key tracking).' },
+    { key: 'reso', role: 'filter', sub: 'Lowpass', label: 'Reso', min: 0.5, max: 18, fmt: q, fmtc: qC, parse: plainParse(0.5, 18),
+      title: 'Resonance — a peak at the cutoff. High values whistle/ring.' },
+    { key: 'filterEnv', role: 'filter', sub: 'Lowpass', label: 'Env', min: 0, max: 4, fmt: oct, fmtc: octC, parse: plainParse(0, 4),
+      title: 'Env Amount — how far the filter envelope opens the cutoff above its base at the attack, then settles.' },
+    { key: 'keyTrack', role: 'filter', sub: 'Lowpass', label: 'KeyTrk', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1),
+      title: 'Key Track — how much the cutoff follows pitch: 0 = fixed Hz, 1 = fully relative to each note.' },
+  ];
+}
 
 // --- Vesperia: additive partials through a shared amplitude envelope and a
 // resonant lowpass with its own envelope + key tracking. -----------------------
@@ -45,27 +108,19 @@ const VESPERIA_DEFAULTS = {
   keyTrack: 1,     // 0..1 — how much cutoff follows pitch (1 = fully f0-relative)
 };
 
+// Timbre = a bipolar spectral tilt (0.5 = neutral). d = (v−0.5)·2 in −1…+1.
+const timbreFmt = (v) => { const d = (v - 0.5) * 2; return Math.abs(d) < 0.01 ? 'neutral (default mix)' : `${d < 0 ? 'darker' : 'brighter'} ${Math.round(Math.abs(d) * 100)}%`; };
+const timbreFmtC = (v) => { const d = (v - 0.5) * 2; return Math.abs(d) < 0.01 ? '0' : `${d > 0 ? '+' : '−'}${Math.round(Math.abs(d) * 100)}`; };
+const timbreParse = (s) => { if (/neut/i.test(s)) return 0.5; const v = numOf(s); if (v == null) return null; let d = v / 100; if (/dark/i.test(s)) d = -Math.abs(d); if (/bright/i.test(s)) d = Math.abs(d); return clampv(0.5 + d / 2, 0, 1); };
+
+// Vesperia is the reference voice — the plain three-cluster baseline: an
+// Oscillator timbre (bipolar), a shared Lowpass, and a shared Amplitude ADSR,
+// listed in the canonical role order (Osc → Filter → Env).
 const VESPERIA_PARAMS = [
-  { key: 'attack', group: 'Amp Envelope', label: 'Attack', min: 0.001, max: 1.5, log: true, fmt: secs,
-    title: 'Time from note-on to full level.' },
-  { key: 'decay', group: 'Amp Envelope', label: 'Decay', min: 0.02, max: 5, log: true, fmt: secs,
-    title: 'How quickly the level falls toward the sustain after the attack. (At Sustain 0 this is the ring-down time.)' },
-  { key: 'sustain', group: 'Amp Envelope', label: 'Sustain', min: 0, max: 1, fmt: pct,
-    title: 'Level the note holds at while sounding. 0 = decay to silence (the old struck-string behavior).' },
-  { key: 'release', group: 'Amp Envelope', label: 'Release', min: 0.01, max: 3, log: true, fmt: secs,
-    title: 'Fade time once the note ends.' },
-
-  { key: 'timbre', group: 'Timbre', label: 'Timbre', min: 0, max: 1, fmt: (v) => (v < 0.5 ? 'darker' : v > 0.5 ? 'brighter' : 'neutral'),
-    title: 'Spectral tilt over the harmonics: left darkens (fewer upper partials), right brightens. Centre is the default mix.' },
-
-  { key: 'cutoff', group: 'Filter', label: 'Cutoff', min: 120, max: 14000, log: true, fmt: hz,
-    title: 'Lowpass cutoff (base, before key tracking).' },
-  { key: 'reso', group: 'Filter', label: 'Resonance', min: 0.5, max: 18, fmt: (v) => `Q ${v.toFixed(1)}`,
-    title: 'Filter resonance — a peak at the cutoff. High values whistle/ring.' },
-  { key: 'filterEnv', group: 'Filter', label: 'Env Amount', min: 0, max: 4, fmt: (v) => `${v.toFixed(2)} oct`,
-    title: 'How far the filter envelope opens the cutoff above its base at the attack, then settles.' },
-  { key: 'keyTrack', group: 'Filter', label: 'Key Track', min: 0, max: 1, fmt: pct,
-    title: 'How much the cutoff follows pitch: 0 = fixed Hz, 1 = fully relative to each note.' },
+  { key: 'timbre', role: 'osc', sub: 'Timbre', label: 'Tilt', widget: 'bipolar', detent: 0.5, min: 0, max: 1, fmt: timbreFmt, fmtc: timbreFmtC, parse: timbreParse,
+    title: 'Timbre — spectral tilt over the harmonics: left darkens (fewer upper partials), right brightens. Centre is the default mix.' },
+  ...lowpassParams(),
+  ...ampEnvelopeParams(),
 ];
 
 // --- Zindel: a drawbar additive organ. Eight harmonic partials (drawbars 1–8),

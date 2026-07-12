@@ -166,6 +166,15 @@ export function pitchClassName(pc, tuningId = '12-et') {
   return i < 16 ? HEX[i] : String(i);
 }
 
+// A pitch-class LABEL for display, or '' when the tuning has no pitch classes to
+// label — i.e. no equave (the cross), where "class" is meaningless and
+// pitchClassName would fall through to the per-degree near-12 path and mislabel. The
+// gate the near-12 comment above refers to: callers that tile BY pitch class (the hex
+// board's cell labels) go through here rather than pitchClassName directly.
+export function pitchClassLabel(pc, tuningId = '12-et') {
+  return hasEquave(tuningId) ? pitchClassName(pc, tuningId) : '';
+}
+
 // A degree's full name (class + octave) in a tuning. 12-ET = the MIDI note name
 // (unchanged); non-12 = hex class + octave (class = degree mod edo, octave =
 // floor(degree / edo)). Used for the grid's row labels.

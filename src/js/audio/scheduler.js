@@ -133,6 +133,18 @@ export class Scheduler {
         const gate = (note.artDur != null ? note.artDur : note.duration * this.articulation) * this.spb;
         this.engine.playNote(note.pitch, noteTime, gate, note.velocity, note.freq, note.laneId,
           (note.rulerBeat != null ? note.rulerBeat : note.start) * this.spb, note.patch, note.detune);
+        // Score-reactive tap for the visualizer (future_directions §22): the same
+        // scheduled note, stamped with its audio-clock time, so a scene lights in
+        // lockstep with the sound. Live-only (offline export uses its own path). The
+        // instrument kind (+ Boshwick drum type) drives the per-kind scene modifier —
+        // resolve the note's patch the same way playNote does (override, else per-lane).
+        if (this.onNoteVisual) {
+          const p = note.patch || (this.engine.patchFor ? this.engine.patchFor(note.laneId) : null);
+          this.onNoteVisual({
+            degree: note.pitch, color: note.color, velocity: note.velocity, time: noteTime, gate,
+            kind: p ? p.kind : null, type: p ? p.type : null, pitchTrack: p ? p.pitchTrack : null,
+          });
+        }
         this.nextIndex++;
       }
 

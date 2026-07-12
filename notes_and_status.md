@@ -391,7 +391,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 | [index.html](index.html) | Layout (transport bar + reorderable panes), all CSS |
 | **core/** | *pure model + music logic (no DOM/audio; headless-tested)* |
 | [core/model.js](src/js/core/model.js) | `Note`, `Score` (beats, tempo, articulation, explicit length), MIDI↔freq, note names, black-key test |
-| [core/tuning.js](src/js/core/tuning.js) | row/degree → pitch/frequency seam; per-pattern `tuningFreq` + **`edoOf(tuningId)`**; 12-ET / Just / **16-ET**; per-tuning `degreeToName`/`pitchClassName` (12-ET letters, non-12 hex), `equaveOf`, `degreeBounds`, `nearestDegreeToFreq` |
+| [core/tuning.js](src/js/core/tuning.js) | row/degree → pitch/frequency seam; per-pattern `tuningFreq` + **`edoOf(tuningId)`**; 12-ET / Just / **16-ET**; per-tuning `degreeToName`/`pitchClassName` (12-ET letters, non-12 hex), **`pitchClassLabel`** (pitchClassName, or `''` for no-equave tunings — the safe gate for pitch-class-tiled displays), `equaveOf`, `degreeBounds`, `nearestDegreeToFreq` |
 | [core/scales.js](src/js/core/scales.js) | per-EDO scale masks: `scalesFor(edo)`, `scaleById`, `scaleValidForEdo` (the scale library the grid + transpose menus draw from) |
 | [core/grid.js](src/js/core/grid.js) | `Pattern` (named; **per-pattern column count**, `Pattern.initial(name, cols)`), `DURATIONS`, `PALETTE`, `BASE_PITCH`, `DEFAULT_ARTIC` |
 | [core/library.js](src/js/core/library.js) | `PatternLibrary` (registry, naming, parking), `Arrangement` (lanes/tiles + per-lane mute/solo + `lane.gain`/`lane.pan`/`lane.patch`, play-region `playStart`/`playEnd`, `audibleLaneIds`), `laneColor`, `insertPoint`/`deletePoint` |
@@ -399,6 +399,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 | [core/triads.js](src/js/core/triads.js) | Triadulator engine (pure): partition a pitch-class set into chords — families `trad`/`sus` (12-ET), `septimal` (16-ET); `enumerateTriadulations(pcs, {families, edo})`, `classifyTriad`, `familiesFor(edo)`/`familyLabel`, `chordsFor` |
 | [core/random.js](src/js/core/random.js) | New Random generator (pure): a contiguous in-scale degree window around the viewport centroid → random degrees, bent by Unique / Run / Triad; plus **Duration/Accent Bias** each with a **Steer** or **Sort** mechanism; `scaleWindow`, injectable rng |
 | [core/reference.js](src/js/core/reference.js) | grid **reference backdrop** (future_directions §16): `bakeReference`, `referenceScore`/`referenceDisplay`, `mergeAudition`, `referenceToJSON`/`FromJSON` |
+| [core/hexlayout.js](src/js/core/hexlayout.js) | pure **isomorphic hex-keyboard geometry** (future_directions §22 visualizer): `degree = base + q·x + r·y` in EDO steps; `HEX_LAYOUTS`/`layoutById` (data presets; Harmonic Table axes derived from JI so they generalise to any EDO), `buildLayout` → cells (with `ring` = hex distance from centre) + **`edges`** (the deduped lattice between keys: endpoints, midpoint, `orient`, `ring`, `interior`) + `byDegree`/`byPc` indices + `maxRing` + `cellAt` (pixel→cell, the future input seam) |
 | [core/project.js](src/js/core/project.js) | versioned file envelope (`VERSION`/`buildEnvelope`), `migrate`/`validate`, `defaultName`, save (`downloadJSON`/`downloadBytes`) / load (`readFile`) helpers |
 | [core/tunes.js](src/js/core/tunes.js) | *(unreferenced demo fixture — "Mary Had a Little Lamb"; slated for deletion, see Deferred work)* |
 | **audio/** | *Web Audio engine, per-lane effects, patches, scheduler* |
@@ -410,7 +411,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 | [audio/chorus.js](src/js/audio/chorus.js) | per-lane Juno-60 chorus config (`normalizeChorus`, `CHORUS_MODES`) + `buildChorusEditor` |
 | [audio/reverb.js](src/js/audio/reverb.js) | per-lane reverb config (`normalizeReverb`) + `buildReverbEditor` |
 | [audio/mods.js](src/js/audio/mods.js) | per-lane playback modulators: config model (`modsByKind`), waveform eval (`modWave`), `applyMods`, `modsActive`/`modTargetsFor`, and the modal editor (`buildModEditor`, `MOD_SLOTS`, `defaultMod`) |
-| [audio/scheduler.js](src/js/audio/scheduler.js) | lookahead `Scheduler`, finite looping, per-cycle re-read (`onCycle`), mid-cycle tile reconciliation (`resync`) |
+| [audio/scheduler.js](src/js/audio/scheduler.js) | lookahead `Scheduler`, finite looping, per-cycle re-read (`onCycle`), mid-cycle tile reconciliation (`resync`); **score-reactive `onNoteVisual`** tap (each scheduled note, stamped with its audio-clock time + its instrument kind / Boshwick drum type → the visualizer) |
 | **ui/** | *DOM / canvas views + reusable widgets* |
 | [ui/gridview.js](src/js/ui/gridview.js) | `GridView` — grid editor (render + gestures + viewport + resize); reference-backdrop overlay via the merged-time layout |
 | [ui/pianoroll.js](src/js/ui/pianoroll.js) | `PianoRoll` canvas render + playhead; per-note color/alpha; `ROLL_V_SCALES`/`ROLL_H_SCALES` zoom ladders |
@@ -420,7 +421,8 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 | [ui/knob.js](src/js/ui/knob.js) | `makeKnob` — click-vertical-drag rotary widget + `PAN_MAP`/`GAIN_MAP` mixer mappings |
 | [ui/catalog.js](src/js/ui/catalog.js) | `createCatalog` — the **Patch Catalog** window (a panel.js tenant): kind→patch browse, search, apply, Rename/Delete; content-only |
 | [ui/inspector.js](src/js/ui/inspector.js) | `createInspector` — the **Tile inspector** content (a panel.js tenant): optional play/stop/loop transport + a `setFacts` data dump with inline-rename heading |
-| [ui/panel.js](src/js/ui/panel.js) | `createPanel` — the reusable **modeless floating-pane primitive** (fixed, draggable, resizable, geometry-remembered). Shared by the inspector + catalog |
+| [ui/panel.js](src/js/ui/panel.js) | `createPanel` — the reusable **modeless floating-pane primitive** (fixed, draggable, resizable, geometry-remembered, **click-to-front** z-ordering). Doc-agnostic (pop-out ready). Shared by the inspector + catalog + visualizer |
+| [ui/vizhex.js](src/js/ui/vizhex.js) | `createVizHex` — the **HEX keyboard visualizer** (future_directions §22), a panel.js tenant: pre-renders the empty board offscreen (rebuilt on resize/tuning change), then per frame blits it + fills the lit hexes; **scheduled** lighting (a note lights at its audio-clock time, held for its gate + a decay glow), exact pitch bright + octave-mates dimmer, lane colour × velocity; rAF runs only while open + animating. **Per-kind scene modifier** (`sceneForNote`, pure) over two non-competing layers: melodic voices light pitch **faces**, **Boshwick** lights a **sparse few of the lattice edges** (the gaps between keys, ≤3/hit) chosen by region (kick=centre, hat/cymbal=rim, snare=mid band, clap=scatter, cowbell/rim/clave=fixed edges) with **Tom** the pitched hybrid exception (a face) |
 | [ui/modal.js](src/js/ui/modal.js) | `openModal` — generic centered modal (Esc / backdrop / × to close, `onClose`) |
 | [ui/panes.js](src/js/ui/panes.js) | `setupPanes` — reorderable vertical panes, order persisted |
 | **export/** | *file encoders (pure)* |
@@ -437,6 +439,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 | [app/tileops.js](src/js/app/tileops.js) | tile-player ops: play-region markers, tile drag (move/copy/reorder w/ live ripple preview), click-select, single-tile audition, grid→lane drop, delete/deselect |
 | [app/transformbar.js](src/js/app/transformbar.js) | the tile transform bar: Ripple, the Transpose/Reverse/Clone selection actions, the Insert/Clear/Delete range tools, per-selection transform chips |
 | [app/tileinspector.js](src/js/app/tileinspector.js) | the **Tile Inspector** floating pane — transport + facts dump, following the selection |
+| [app/visualizer.js](src/js/app/visualizer.js) | wires the **HEX keyboard visualizer**: the transport-area ⬡ Keyboard summon button, the board's pitch context (current tuning + centre degree ≈ middle C), and the scheduler's `onNoteVisual` feed → `ui/vizhex.js` |
 | [app/patchedit.js](src/js/app/patchedit.js) | the instrument editor: grid/parked-instrument descriptors, the edit pane, per-target patch **identity** (dirty/Save/Save As/Load/Rename), the **Patch Catalog** ops |
 | [app/lanefx.js](src/js/app/lanefx.js) | per-lane mixer + FX: volume/pan/mute/solo bus pushers, the delay/chorus/reverb/modulator modal editors, add-lane, lane/player reset |
 | [app/triadulator.js](src/js/app/triadulator.js) | the **Triadulator** proposal system: enumerate placeable triads from unused pitch-classes, overlay/rotate them, Confirm to register |
@@ -1178,6 +1181,55 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   Default order Grid → Tile player → Roll → Edit instrument.
 - Several unwanted-scroll defects were fixed here (pane-drag stale reference, instrument-pane yank,
   end-of-play jump-to-top) — the standing rule is in the Gotchas section; the fixes are archived.
+- **Floating windows** (Tile Inspector, Patch Catalog, the Keyboard visualizer) are `panel.js`
+  tenants — draggable/resizable, geometry+open persisted as a **workspace pref**. They share a
+  **click-to-front** z-order (pressing one lifts it above the others). `panel.js` is doc-agnostic so
+  a window can later be adopted into a popped-out browser window without a second implementation.
+
+### Visualizer — the HEX keyboard (future_directions §22)  (2026-07-11)
+- **Phase 1 shipped.** A **⬡ Keyboard** button in the transport bar summons a floating window drawing
+  an **isomorphic hex keyboard** (Harmonic Table). As the sequence plays, cells **light up in lockstep
+  with the sound** — the tap is on the scheduler (`onNoteVisual`), stamped with each note's audio-clock
+  time, so lighting is **scheduled, not FFT-reactive**. A note holds for its gate + a short decay glow;
+  colour = lane colour, brightness = velocity. A played degree lights **every instance** on the board
+  (isomorphic redundancy) at full brightness and its **octave-mates dimmer** — chords read as the
+  Tonnetz's fixed triangles.
+- **Tuning-general by construction.** The layout is `degree = base + q·x + r·y` in EDO steps
+  ([core/hexlayout.js](src/js/core/hexlayout.js)); Harmonic Table's axes are the nearest EDO steps to
+  5/4 and 3/2, so the same engine works in any tuning (12-ET → 4,7; 16-ET → 5,9). Board rebuilds on
+  tuning change / resize; centres on the degree nearest middle C. Layouts are **data presets** —
+  "lots of modes" is designed-for (Wicki-Hayden/Bosanquet/etc. are future data rows, not new code).
+- **CPU-lite.** Empty board pre-rendered once to an offscreen canvas; per frame just blits it + fills
+  the lit hexes (Canvas 2D, no WebGL/WASM). The rAF loop runs **only while the window is open AND
+  something is animating** — closed or idle costs nothing. Respects the "decorative, never blocking"
+  and workspace-pref rules (§22). Verified headlessly (`notch/hexlayout.mjs` + a stubbed render smoke
+  test): geometry, triad-triangle adjacency, exact-vs-octave indexing, pixel→cell round-trip, and the
+  scheduled light/decay/prune lifecycle.
+- **Deferred (phases 2/3 + beyond):** pop-out into a separate browser window (`window.open`, portable —
+  **no** Chromium-only Document-PiP, a hard project rule) and Fullscreen (`requestFullscreen`), both
+  "re-parent the same canvas". A **mode picker** once more layouts land. The **same geometry** can later
+  become a click/tap **input** surface (`cellAt` already inverts pixel→degree) — tap-to-trigger works
+  with today's fire-and-forget voice; a *sustaining* hex keyboard waits on the deferred noteOn/noteOff
+  voice API (the same piece live MIDI needs). Mixed-tuning arrangements light by raw degree on the
+  current tuning's board (fine for the common single-tuning case; a known edge, like the roll's).
+- **No-equave tunings (the cross) handled.** The board is labelled by pitch class, but the cross has
+  none — so cell labels go through `pitchClassLabel` (returns `''`, no home tint), and octave-mate
+  lighting is skipped (there are no octaves). The board still lights the exact degrees, just
+  unlabelled. `notch/vizcross.mjs`. (Was mislabelling as "undefined-2 −13" before the gate.)
+- **Per-kind scene modifier (§22 "scenes mirror instrument kinds"), first tenant Boshwick.**  (2026-07-11)
+  Two visual **layers that never compete**: pitch owns the hex **faces** (the good part, untouched);
+  percussion owns the **edges between keys**. A drum hit lights a **sparse few** (≤3) of the lattice
+  edges — thin glowing filaments in the gaps — chosen by region on the **radius = frequency** axis:
+  **kick** near the centre, **hat/cymbal** at the rim (hat = 1 edge closed / 3 + longer when open;
+  cymbal = a longer rim wash), **snare** across the mid band, **clap** a scatter, **cowbell/rim/clave** a
+  fixed accent edge each. **Tom** is the pitched **hybrid** exception — it rides its real pitch face
+  like a melodic voice. Routing is a pure `sceneForNote` (`notch/vizscene.mjs`); edge zones derive from
+  the geometry's `edges`/`ring` (`notch/hexlayout.mjs`); the drum `type` rides the `onNoteVisual` tap.
+  All Canvas-2D, no new cost. Verified end-to-end with a stubbed-canvas smoke (kick → ≤3 centre edges,
+  no faces; hat → a rim edge; tom(67) / melodic(67) → the off-centre pitch face, no edges). *(Superseded
+  the first attempt's zone-FILLS, which flooded the board and drowned the pitch view.)* **Deferred
+  flourishes:** blend a pitched drum's anchor toward its pitch face by `pitchTrack` (the event already
+  carries it); edge **orientation** or edges-near-active-pitch as alternate selectors.
 
 ### Keyboard shortcuts
 - Act on the **active pane** (grid or tiles); ignored while a form field (input/textarea/select)

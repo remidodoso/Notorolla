@@ -18,6 +18,12 @@
 // INSIDE the pane (e.g. `overflow:auto; overscroll-behavior:contain`) so it never
 // chains out to the page — the panel keeps the page from scrolling by being fixed.
 
+// Shared click-to-front stacking. All panels share the CSS z-index (60); pressing
+// one lifts it above its siblings by stamping an ever-rising inline z-index — so
+// overlapping windows (inspector, catalog, visualizer) reorder like real windows.
+let topZ = 60;
+function bringToFront(el) { el.style.zIndex = String(++topZ); }
+
 function loadGeom(key) {
   try { return JSON.parse(localStorage.getItem(key)) || {}; }
   catch { return {}; }
@@ -52,6 +58,9 @@ export function createPanel({ title = 'Panel', storeKey = 'notorolla.panel', def
   head.append(titleEl, closeBtn);
   root.append(head);
   doc.body.append(root);
+
+  // Press anywhere on the pane to raise it above the other floating windows.
+  root.addEventListener('pointerdown', () => bringToFront(root));
 
   const geom = loadGeom(storeKey);
   const dw = defaultGeom.w || 300, dh = defaultGeom.h || 360;
@@ -122,7 +131,7 @@ export function createPanel({ title = 'Panel', storeKey = 'notorolla.panel', def
     root.style.display = open ? 'flex' : 'none';
     geom.open = open;
     saveGeom(storeKey, geom);
-    if (open) place();
+    if (open) { place(); bringToFront(root); }
     if (api.onToggle) api.onToggle(open);
   }
   closeBtn.onclick = () => setOpen(false);

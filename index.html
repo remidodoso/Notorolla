@@ -210,6 +210,78 @@
     .instr-bar-val { color: #8a93a3; font-size: 0.68rem; font-variant-numeric: tabular-nums; min-height: 0.9rem; }
     .instr-bar-label { color: #aeb9d0; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
 
+    /* ===== Control skin — the instrument-pane control body when a kind opts in
+       (role/sub params). Ported verbatim from future/ui_skin/exhibit-vesperia.html
+       (the LOCKED visual spec), scoped under .instr-skin so it can't touch the
+       rest of the app. Defaults: Panel 20 / Tick gap 10 / Size 125 (base 17.5px).
+       hue = ROLE (b-osc/b-filter/b-env/…); a role keeps its colour on every
+       instrument, an absent role leaves a spectrum gap. ===== */
+    .instr-skin {
+      --pl: 20%; --ro: hsl(41, 100%, 62%); --tgap: 0.10em;
+      --panel: hsl(220, 7%, var(--pl));
+      --panel-hi: hsl(220, 7%, calc(var(--pl) + 6%));
+      --panel-lo: hsl(220, 8%, calc(var(--pl) - 6%));
+      --ink: hsl(220, 12%, 88%); --ink-dim: hsl(220, 8%, 62%);
+      --slot: hsl(222, 10%, calc(var(--pl) - 10%));
+      --tick: hsl(220, 8%, calc(var(--pl) + 26%));
+      --tick-maj: hsl(220, 8%, calc(var(--pl) + 38%));
+      --cap-a: hsl(220, 6%, 42%); --cap-b: hsl(220, 7%, 20%); --cap-c: hsl(220, 8%, 30%);
+      --boxln: hsl(220, 8%, calc(var(--pl) + 16%));
+      font: 17.5px/1.4 Tahoma, "Segoe UI", system-ui, sans-serif; font-weight: 400;
+      color: var(--ink);
+      display: flex; flex-wrap: wrap; gap: 1.7em 1.3em; align-items: flex-start;
+      background: var(--panel); border: 1px solid var(--panel-hi); border-radius: 10px;
+      box-shadow: inset 0 1px 0 var(--panel-hi); padding: 1.1em 1em 1em; }
+    .instr-skin, .instr-skin * { box-sizing: border-box; margin: 0; user-select: none; font-weight: 400; }
+
+    /* BOXED groups: fieldset frame, band = legend tab centred on the top border. */
+    .instr-skin .group { display: flex; flex-direction: column; align-items: center;
+      border: 1px solid var(--boxln); border-radius: 0.5em; padding: 0 0.7em 0.6em; }
+    .instr-skin .group h2 { font-size: 0.72em; letter-spacing: 0.14em; text-transform: uppercase;
+      color: hsl(220, 30%, 10%); background: hsl(var(--bh, 28), var(--bs, 60%), 54%);
+      padding: 0.26em 0.6em; border-radius: 0.22em; align-self: center; margin: -0.95em 0 0.5em;
+      position: relative; box-shadow: -0.4em 0 0 var(--panel), 0.4em 0 0 var(--panel); }
+    .instr-skin .b-lfo    { --bh: 15;  --bs: 45%; }  /* muted rust   */
+    .instr-skin .b-osc    { --bh: 30;  --bs: 48%; }  /* muted orange */
+    .instr-skin .b-filter { --bh: 120; --bs: 30%; }  /* muted green  */
+    .instr-skin .b-env    { --bh: 190; --bs: 40%; }  /* muted cyan   */
+    .instr-skin .b-fx     { --bh: 215; --bs: 35%; }  /* muted blue   */
+
+    /* SUBGROUPS: label-only chrome; EVERY subgroup labelled. */
+    .instr-skin .subs { display: flex; gap: 1.1em; align-items: flex-start; }
+    .instr-skin .sub { display: flex; flex-direction: column; align-items: center; gap: 0.3em; }
+    .instr-skin .slrow { display: flex; gap: 0.6em; align-items: center; height: 1.1em; }
+    .instr-skin .sl { font-size: 0.62em; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-dim); }
+
+    /* vertical slider (locked spec) */
+    .instr-skin .bank { display: flex; gap: var(--tgap); align-items: flex-start; }
+    .instr-skin .vsl { display: flex; flex-direction: column; align-items: center; gap: 0.16em; }
+    .instr-skin .vslider { position: relative; width: var(--slw, 1.8em); height: 7.4em; cursor: pointer; touch-action: none; }
+    .instr-skin .vslider .slot { position: absolute; left: 50%; transform: translateX(-50%); top: 0; bottom: 0;
+      width: 0.3em; border-radius: 0.15em; background: var(--slot);
+      box-shadow: inset 0 1px 3px rgba(0,0,0,.7), inset 0 -1px 0 var(--panel-hi); }
+    .instr-skin .vslider .ticks { position: absolute; top: 0.42em; bottom: 0.42em; width: calc(50% - 0.15em);
+      display: flex; flex-direction: column-reverse; justify-content: space-between; }
+    .instr-skin .vslider .ticks.l { left: 0; }
+    .instr-skin .vslider .ticks.r { right: 0; }
+    .instr-skin .vslider .ticks i { display: block; width: 100%; height: 1px; background: var(--tick); }
+    .instr-skin .vslider .ticks i.maj { height: 2px; background: var(--tick-maj); }
+    .instr-skin .vslider .ticks i.det { background: var(--ro); }
+    .instr-skin .vslider .cap { position: absolute; left: 50%; transform: translateX(-50%);
+      width: var(--capw, 1.62em); height: 0.92em; border-radius: 0.13em;
+      bottom: calc(var(--val, .5) * (100% - 0.92em));
+      background: linear-gradient(180deg, var(--cap-a), var(--cap-b) 46%, var(--cap-c));
+      border: 1px solid hsl(220,8%,12%);
+      box-shadow: 0 2px 4px rgba(0,0,0,.55), inset 0 1px 0 hsla(0,0%,100%,.22); }
+    .instr-skin .vslider .cap::after { content: ''; position: absolute; left: 6%; right: 6%; top: 50%;
+      height: 1.5px; margin-top: -0.75px; background: hsl(220, 15%, 92%); }
+    .instr-skin .vsl .bl { font-size: 0.72em; color: var(--ink); letter-spacing: 0.03em; }
+    .instr-skin .vsl .ro { font-size: 0.7em; color: var(--ro); font-variant-numeric: tabular-nums;
+      width: 5.5ch; text-align: center; min-height: 1.2em; cursor: text; }
+    .instr-skin .ro input.edit { width: 100%; font: inherit; color: var(--ro); background: hsl(220, 10%, 10%);
+      border: 1px solid var(--ro); border-radius: 2px; text-align: center; padding: 0; outline: none; }
+    .instr-skin .group.inert, .instr-skin .sub.inert, .instr-skin .vsl.inert { opacity: 0.38; pointer-events: none; }
+
     /* tile player */
     .tile-controls { display: flex; gap: 0.4rem; align-items: center; padding-bottom: 0.6rem; }
     .tile-controls button { font-size: 0.82rem; padding: 0.28rem 0.6rem; }
@@ -334,6 +406,10 @@
     .panel-x { width: 22px; height: 22px; padding: 0; font-size: 1rem; line-height: 1; border-radius: 4px;
       background: #20242e; color: #9aa1ad; border: 1px solid #313747; cursor: pointer; }
     .panel-x:hover { background: #3a2326; color: #d6a3a8; border-color: #5a2f33; }
+    /* HEX keyboard visualizer (vizhex.js) — the canvas fills the panel body below
+       the header; the offscreen board caches everything but the lit hexes. */
+    .viz-body { flex: 1; min-height: 0; overflow: hidden; background: #0b0d13; border-radius: 0 0 8px 8px; }
+    .viz-canvas { display: block; width: 100%; height: 100%; }
     .inspector-transport {
       display: flex; align-items: center; gap: 0.35rem; padding: 0.4rem 0.7rem;
       border-bottom: 1px solid #1c2029; background: #12151d;
@@ -635,6 +711,7 @@
     <button id="loop" title="Finite loop — click to start, click again to re-arm">↻</button>
     <button id="play">▶ Play</button>
     <button id="stop" disabled>■ Stop</button>
+    <button id="vizToggle" title="Keyboard — a floating isomorphic hex keyboard that lights up as the sequence plays">⬡ Keyboard</button>
     <label class="tempo">
       Tempo
       <input id="tempo" type="range" min="40" max="200" value="120" />

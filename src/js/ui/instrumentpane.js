@@ -15,6 +15,16 @@
 
 import { paramsFor, toPos, fromPos, instrumentKinds, instrument, nearestStep } from '../audio/instrument.js';
 import { makeKnob } from './knob.js';
+import { makeVSlider } from './vslider.js';
+
+// The control skin (future/ui_skin). A kind opts in by tagging its params with a
+// `role` (a hued top group) + `sub` (subgroup label); such a kind renders through
+// buildSkinnedBody with the real widgets. Untagged kinds keep the legacy body.
+// Canonical group order + role→hue-class (a role's colour is fixed across every
+// instrument; an absent role leaves a spectrum gap).
+const ROLE_ORDER = ['lfo', 'osc', 'filter', 'env', 'fx'];
+const ROLE_LABEL = { lfo: 'LFO', osc: 'Oscillator', filter: 'Filter', env: 'Envelope', fx: 'Effects' };
+const isSkinned = (kind) => paramsFor(kind).some((s) => s.role);
 
 // cb: onChange() after any edit, onKindChange(kind) to switch instrument,
 // onTest() to audition, onReset() to restore, onCopy()/onPaste() to ferry.
@@ -143,12 +153,79 @@ export function buildInstrumentPane(containerEl, cb) {
     input.addEventListener('blur', commit);
   }
 
-  // Build the control body for `kind`: one column per param group (first-seen
-  // order). A group whose params are flagged `bar` gets a row of vertical faders
-  // under its title; every other group gets stacked slider rows.
+  // Build the control body for `kind`. A skin-tagged kind (role/sub params) gets
+  // the control-skin layout; the rest keep the legacy body.
   function buildBody(kind) {
     body.innerHTML = '';
     rows = [];
+    body.className = isSkinned(kind) ? 'instr-skin' : 'instr-grid';
+    if (isSkinned(kind)) { buildSkinnedBody(kind); builtKind = kind; return; }
+    buildLegacyBody(kind);
+    builtKind = kind;
+  }
+
+  // The control skin: boxed role groups in canonical order (LFO→Osc→Filter→Env→
+  // FX), each a fieldset with a hued legend-tab band; inside, labelled subgroups
+  // stack the real widgets (a vertical slider per continuous param, uni- or
+  // bipolar). Params are bucketed role→sub, both in first-seen order within the
+  // canonical role sequence.
+  function buildSkinnedBody(kind) {
+    const specs = paramsFor(kind);
+    const byRole = new Map();  // role -> Map(sub -> [spec])
+    for (const spec of specs) {
+      if (!byRole.has(spec.role)) byRole.set(spec.role, new Map());
+      const subs = byRole.get(spec.role);
+      if (!subs.has(spec.sub)) subs.set(spec.sub, []);
+      subs.get(spec.sub).push(spec);
+    }
+    const roles = [...byRole.keys()].sort((a, b) => ROLE_ORDER.indexOf(a) - ROLE_ORDER.indexOf(b));
+    for (const role of roles) {
+      const sec = document.createElement('section');
+      sec.className = `group b-${role}`;
+      const h = document.createElement('h2');
+      h.textContent = ROLE_LABEL[role] || role;
+      sec.append(h);
+      const subsEl = document.createElement('div');
+      subsEl.className = 'subs';
+      for (const [sub, specList] of byRole.get(role)) {
+        const subEl = document.createElement('div');
+        subEl.className = 'sub';
+        const slrow = document.createElement('div');
+        slrow.className = 'slrow';
+        const sl = document.createElement('span');
+        sl.className = 'sl';
+        sl.textContent = sub;
+        slrow.append(sl);
+        const bank = document.createElement('div');
+        bank.className = 'bank';
+        for (const spec of specList) bank.append(skinControl(spec, subEl));
+        subEl.append(slrow, bank);
+        subsEl.append(subEl);
+      }
+      sec.append(subsEl);
+      body.append(sec);
+    }
+  }
+
+  // One skinned control. Today every skin param is a vertical slider (uni- or
+  // bipolar); future widget kinds (rotary switch, drawbar) branch here on
+  // spec.widget. Returns the widget's holder element; registers it in `rows`
+  // (with the .sub as the inert target — a spec.inert dims its subgroup).
+  function skinControl(spec, subEl) {
+    const holder = document.createElement('div');
+    const initial = patch ? patch[spec.key] : (spec.reset != null ? spec.reset : spec.min);
+    const w = makeVSlider(holder, {
+      spec, value: initial,
+      cb: { onInput: (v) => { if (!patch) return; patch[spec.key] = v; cb.onChange(); updateInert(); } },
+    });
+    rows.push({ spec, vslider: w, rowEl: subEl });
+    return w.el;
+  }
+
+  // The legacy body: one column per param group (first-seen order). A group whose
+  // params are flagged `bar` gets a row of vertical faders under its title; every
+  // other group gets stacked slider rows.
+  function buildLegacyBody(kind) {
     const cols = new Map();   // group -> column element
     const barRows = new Map(); // group -> the .instr-drawbars row (bar groups only)
     for (const spec of paramsFor(kind)) {
@@ -362,9 +439,11 @@ export function buildInstrumentPane(containerEl, cb) {
   function refresh() {
     if (!patch) return;
     for (const row of rows) {
-      const { spec, input, valEl, knob } = row;
+      const { spec, input, valEl, knob, vslider } = row;
       const v = patch[spec.key];
-      if (spec.knob) {
+      if (vslider) {
+        vslider.setValue(v);
+      } else if (spec.knob) {
         knob.setValue(v);
         valEl.textContent = spec.fmt(v);
       } else if (spec.bool) {

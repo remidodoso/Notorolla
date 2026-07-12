@@ -31,6 +31,7 @@ import { initRandomui } from './app/randomui.js';
 import { initProjectio } from './app/projectio.js';
 import { initExportui } from './app/exportui.js';
 import { initKeyboard } from './app/keyboard.js';
+import { initVisualizer } from './app/visualizer.js';
 import { initTileops } from './app/tileops.js';
 import { initTileinspector } from './app/tileinspector.js';
 import { initTransformbar } from './app/transformbar.js';
@@ -398,6 +399,7 @@ initMeter(ctx);
 initHistory(ctx);
 initZoom(ctx);
 initTransport(ctx);
+initVisualizer(ctx); // §22 HEX keyboard visualizer — a summoned floating window, fed by the scheduler's onNoteVisual tap
 initLanefx(ctx); // lane mixer/FX pushers + modal editors + lane/player reset
 initTriadulator(ctx); // triad-proposal system (registers clearProposal)
 initRandomui(ctx); // New Random modal
