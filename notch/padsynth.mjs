@@ -2,7 +2,7 @@
 // normalization, cache keys) + the voice graph through the engine.
 import {
   fft, padProfile, padPartialFreq, padSpectrumMags, padTableKey, bakePadTable,
-  padBaseFreq, PAD_TABLE_RMS, PAD_TABLE_SIZE, PAD_VOWELS,
+  padBaseFreq, formantMask, PAD_TABLE_RMS, PAD_TABLE_SIZE, PAD_VOWELS,
 } from '../src/js/audio/padsynth.js';
 import { AudioEngine } from '../src/js/audio/audio.js';
 import { defaultPatch, normalizePatch, paramsFor } from '../src/js/audio/instrument.js';
@@ -27,11 +27,14 @@ const N = 1 << 12; // small table for fast tests (the bake takes tableSize)
   ok(maxErr < 1e-9, `FFT round-trip (max err ${maxErr})`);
 }
 
-// 2) Profiles: saw 1/k, square odd-only, tilt exponent, choir formant-shaped.
+// 2) Profiles: saw 1/k, pulse odd-only, tilt exponent; the universal formant mask
+//    (None = identity; a vowel shapes ANY source; Voice + vowel = the old Choir).
 {
+  // Default vowel is None → the raw sources are unshaped (mask = 1).
   const base = { ...defaultPatch('padlington'), harmonics: 16 };
+  ok(base.vowel === 'none', 'default vowel = None (raw sources unshaped)');
   const saw = padProfile({ ...base, source: 'saw' }, 261.6256);
-  ok(near(saw[0], 1) && near(saw[1], 0.5) && near(saw[3], 0.25), 'saw (Shape 0) profile is 1/k');
+  ok(near(saw[0], 1) && near(saw[1], 0.5) && near(saw[3], 0.25), 'saw (Shape 0, Vowel None) profile is 1/k');
   // Pulse at Shape 0 = duty 0.5 = the old odd-only square (evens ~0 in float).
   const pu = padProfile({ ...base, source: 'pulse', shape: 0 }, 261.6256);
   ok(near(pu[0], 1) && near(pu[1], 0) && near(pu[2], 1 / 3) && near(pu[3], 0), 'pulse (Shape 0) profile is odd-only 1/k (square)');
@@ -44,17 +47,23 @@ const N = 1 << 12; // small table for fast tests (the bake takes tableSize)
   const tl = padProfile({ ...base, source: 'tilt', tilt: 2 }, 261.6256);
   ok(near(tl[1], 0.25) && near(tl[3], 1 / 16), 'tilt profile is 1/k^e');
 
-  // Choir: with a 65.4 Hz base, "ah" (F1 = 800) peaks near harmonic 12 — the
-  // formant region must beat the same harmonic of a vowel whose formants sit
-  // elsewhere, and the vowels must differ.
+  // formantMask: None (or unknown) = flat 1; a vowel peaks at its formant centre.
+  ok(formantMask(500, 'none', 1, 9) === 1 && formantMask(500, 'zzz', 1, 9) === 1, 'formantMask None/unknown = flat 1.0 (bypass)');
+  ok(formantMask(PAD_VOWELS.ah[0], 'ah', 1, 9) > formantMask(PAD_VOWELS.ah[0] * 3, 'ah', 1, 9), 'formantMask peaks at the formant centre');
+
+  // The mask shapes ANY source: a vowel on Saw carves a peak near F1 and differs
+  // from the flat Saw; Voice + a vowel = the old Choir (peaks near F1, vowels differ).
   const b = 65.4;
-  const ah = padProfile({ ...base, source: 'choir', vowel: 'ah', harmonics: 40 }, b);
-  const ee = padProfile({ ...base, source: 'choir', vowel: 'ee', harmonics: 40 }, b);
-  const kF1 = Math.round(PAD_VOWELS.ah[0] / b); // harmonic nearest F1
-  ok(ah[kF1 - 1] > ah[3] && ah[kF1 - 1] > ah[30], 'choir(ah) profile peaks near F1');
-  ok(ah.some((v, i) => Math.abs(v - ee[i]) > 1e-3), 'choir profiles differ by vowel');
-  const big = padProfile({ ...base, source: 'choir', vowel: 'ah', size: 0.8, harmonics: 40 }, b);
-  ok(big.some((v, i) => Math.abs(v - ah[i]) > 1e-3), 'Size moves the choir profile');
+  const kF1 = Math.round(PAD_VOWELS.ah[0] / b); // harmonic nearest F1 (~12)
+  const sawFlat = padProfile({ ...base, source: 'saw', vowel: 'none', harmonics: 40 }, b);
+  const sawAh = padProfile({ ...base, source: 'saw', vowel: 'ah', harmonics: 40 }, b);
+  ok(sawAh.some((v, i) => Math.abs(v - sawFlat[i]) > 1e-3), 'a vowel shapes the Saw source (formants are universal)');
+  const ah = padProfile({ ...base, source: 'voice', vowel: 'ah', harmonics: 40 }, b);
+  const ee = padProfile({ ...base, source: 'voice', vowel: 'ee', harmonics: 40 }, b);
+  ok(ah[kF1 - 1] > ah[3] && ah[kF1 - 1] > ah[30], 'Voice+ah (the old Choir) peaks near F1');
+  ok(ah.some((v, i) => Math.abs(v - ee[i]) > 1e-3), 'Voice profiles differ by vowel');
+  const big = padProfile({ ...base, source: 'voice', vowel: 'ah', size: 0.8, harmonics: 40 }, b);
+  ok(big.some((v, i) => Math.abs(v - ah[i]) > 1e-3), 'Size moves the formant profile');
 }
 
 // 3) Stretch: partial k lands at f0·k^(1+s).
@@ -73,6 +82,27 @@ const N = 1 << 12; // small table for fast tests (the bake takes tableSize)
   ok(mags[bin1] > 0 && mags[bin1] > 1000 * (mags[offBin] || 1e-12), 'energy concentrated at partial centres');
   const wide = padSpectrumMags(padProfile(p, f0), { ...p, bandwidth: 120 }, f0, SR, N);
   ok(wide[offBin] > mags[offBin], 'wider Bandwidth spreads energy between partials');
+}
+
+// 4b) Air: a pink-noise floor fills between the partials; pink tilts down with
+//     frequency; Air Cut (a 1-pole HPF) removes the low end.
+{
+  const p = { ...defaultPatch('padlington'), harmonics: 8, bandwidth: 10, source: 'saw', vowel: 'none' };
+  const f0 = (SR / N) * 32; // partials land on bins 32, 64, …
+  const binHz = SR / N;
+  const dry = padSpectrumMags(padProfile(p, f0), { ...p, noise: 0 }, f0, SR, N);
+  const wet = padSpectrumMags(padProfile(p, f0), { ...p, noise: 0.5, airCut: 30 }, f0, SR, N);
+  const gap = 50; // a bin between partials 1 (32) and 2 (64)
+  ok(dry[gap] < 1e-9 && wet[gap] > dry[gap], 'Noise fills the gaps between partials');
+  const loF = Math.round(500 / binHz), hiF = Math.round(4000 / binHz);
+  ok(wet[loF] > wet[hiF], 'the noise floor tilts down with frequency (pink 1/√f)');
+  const lowBin = Math.round(60 / binHz);
+  const hp = padSpectrumMags(padProfile(p, f0), { ...p, noise: 0.5, airCut: 1500 }, f0, SR, N);
+  ok(hp[lowBin] < wet[lowBin], 'Air Cut (a higher HPF corner) attenuates the low end');
+  // Noise is a bake param → it re-bakes, and the table stays RMS-normalized (a balance).
+  const t = bakePadTable({ ...p, noise: 0.6 }, 261.6256, SR, N);
+  let s = 0; for (const v of t) s += v * v;
+  ok(near(Math.sqrt(s / N), PAD_TABLE_RMS, 1e-3), 'Noise changes colour, not level (RMS held)');
 }
 
 // 5) Bake: deterministic, RMS-normalized, finite; params change the table.
@@ -102,7 +132,12 @@ const N = 1 << 12; // small table for fast tests (the bake takes tableSize)
     'envelope/width/filter/pitch-attack edits do NOT change the table key');
   ok(padTableKey({ ...p, bandwidth: 50 }, 261.6256, SR) !== k, 'bandwidth changes the key');
   ok(padTableKey({ ...p, shape: 0.5 }, 261.6256, SR) !== k, 'Shape changes the key (Saw/Pulse bake param)');
-  ok(padTableKey({ ...p, source: 'choir' }, 261.6256, SR) !== k, 'source changes the key');
+  ok(padTableKey({ ...p, source: 'voice' }, 261.6256, SR) !== k, 'source changes the key');
+  // Formant + Air are bake params for every source now.
+  ok(padTableKey({ ...p, vowel: 'ah' }, 261.6256, SR) !== k, 'Vowel changes the key');
+  ok(padTableKey({ ...p, vowel: 'ah', formantQ: 12 }, 261.6256, SR) !== padTableKey({ ...p, vowel: 'ah' }, 261.6256, SR), 'Reso changes the key when a vowel is active');
+  ok(padTableKey({ ...p, noise: 0.4 }, 261.6256, SR) !== k, 'Noise changes the key');
+  ok(padTableKey({ ...p, noise: 0.4, airCut: 400 }, 261.6256, SR) !== padTableKey({ ...p, noise: 0.4 }, 261.6256, SR), 'Air Cut changes the key when Noise is up');
   ok(padTableKey(p, 523.2511, SR) !== k, 'the octave base is part of the key');
 }
 
@@ -119,27 +154,35 @@ const N = 1 << 12; // small table for fast tests (the bake takes tableSize)
 // 8) Registry plumbing: defaults, PARAMS, normalize.
 {
   const p = defaultPatch('padlington');
-  const keys = ['source', 'shape', 'vowel', 'size', 'tilt', 'harmonics', 'bandwidth', 'bwScale', 'stretch',
-    'pitchAtk', 'pitchAtkTime', 'width', 'cutoff', 'reso', 'filterEnv', 'keyTrack',
-    'attack', 'decay', 'sustain', 'release'];
+  const keys = ['source', 'shape', 'vowel', 'size', 'formantQ', 'noise', 'airCut', 'tilt', 'harmonics',
+    'bandwidth', 'bwScale', 'stretch', 'pitchAtk', 'pitchAtkTime', 'width', 'cutoff', 'reso', 'filterEnv',
+    'keyTrack', 'attack', 'decay', 'sustain', 'release'];
   ok(keys.every((k) => p[k] !== undefined), 'default padlington patch has every param');
-  ok(p.source === 'saw' && p.shape === 0, 'default source = saw, Shape = 0 (Lo)');
+  ok(p.source === 'saw' && p.shape === 0 && p.vowel === 'none' && p.noise === 0, 'defaults: saw / Shape 0 / Vowel None / Noise 0');
   const srcSpec = paramsFor('padlington').find((s) => s.key === 'source');
-  ok(srcSpec && srcSpec.sel && srcSpec.options.length === 4 && srcSpec.options.some((o) => o.id === 'pulse'),
-    'source is a 4-option select including Pulse');
-  ok(normalizePatch({ kind: 'padlington', source: 'choir' }).source === 'choir', 'valid source kept');
+  ok(srcSpec && srcSpec.sel && srcSpec.options.length === 4 && srcSpec.options.some((o) => o.id === 'voice') && !srcSpec.options.some((o) => o.id === 'choir'),
+    'source is a 4-option select: Choir replaced by Voice');
+  const vowSpec = paramsFor('padlington').find((s) => s.key === 'vowel');
+  ok(vowSpec && vowSpec.options.length === 6 && vowSpec.options[0].id === 'none', 'Vowel is a 6-way enum led by None');
+  ok(normalizePatch({ kind: 'padlington', source: 'voice' }).source === 'voice', 'valid source kept');
   ok(normalizePatch({ kind: 'padlington', source: 'zzz' }).source === 'saw', 'bad source → saw');
-  // COMPAT: a legacy 'square' patch migrates to 'pulse' (shape 0 = same spectrum).
+  // COMPAT: legacy 'square' → 'pulse'; legacy 'choir' → 'voice' keeping its vowel;
+  // a legacy non-choir patch's inert vowel is retired to None (else it would newly shape).
   ok(normalizePatch({ kind: 'padlington', source: 'square' }).source === 'pulse', 'legacy square source → pulse');
+  const mChoir = normalizePatch({ kind: 'padlington', source: 'choir', vowel: 'ah', size: 0.9 });
+  ok(mChoir.source === 'voice' && mChoir.vowel === 'ah' && near(mChoir.size, 0.9), 'legacy choir → voice, keeping vowel/size');
+  ok(normalizePatch({ kind: 'padlington', source: 'saw', vowel: 'ah' }).vowel === 'none', 'legacy non-choir inert vowel → None');
+  ok(normalizePatch({ kind: 'padlington', source: 'saw', vowel: 'ah', formantQ: 9 }).vowel === 'ah', 'a formant-era vowel is kept (not clobbered)');
   ok(normalizePatch({ kind: 'padlington', harmonics: 9999 }).harmonics === 128, 'harmonics clamps to max');
   ok(normalizePatch({ kind: 'padlington', stretch: 1 }).stretch === 0.05, 'stretch clamps to ±0.05');
 
-  // Inert predicates: source-dependent controls dim when their source isn't active.
+  // Inert predicates: Shape/Tilt stay source-gated; the Formant + Air controls are
+  // always active (Vowel None simply makes the mask flat).
   const spec = (k) => paramsFor('padlington').find((s) => s.key === k);
-  ok(spec('vowel').inert({ source: 'saw' }) && !spec('vowel').inert({ source: 'choir' }), 'Vowel inert outside Choir');
-  ok(spec('size').inert({ source: 'tilt' }) && !spec('size').inert({ source: 'choir' }), 'Size inert outside Choir');
-  ok(spec('tilt').inert({ source: 'choir' }) && !spec('tilt').inert({ source: 'tilt' }), 'Tilt inert outside Tilt');
-  ok(spec('shape').inert({ source: 'choir' }) && spec('shape').inert({ source: 'tilt' })
+  ok(!spec('vowel').inert && !spec('size').inert && !spec('formantQ').inert, 'Formant controls are always active');
+  ok(!spec('noise').inert && !spec('airCut').inert, 'Air controls are always active');
+  ok(spec('tilt').inert({ source: 'voice' }) && !spec('tilt').inert({ source: 'tilt' }), 'Tilt inert outside Tilt');
+  ok(spec('shape').inert({ source: 'voice' }) && spec('shape').inert({ source: 'tilt' })
     && !spec('shape').inert({ source: 'saw' }) && !spec('shape').inert({ source: 'pulse' }), 'Shape active only for Saw/Pulse');
 }
 

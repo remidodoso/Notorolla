@@ -24,8 +24,8 @@ export const PAD_TABLE_RMS = 0.25;
 
 // --- Profile generators -------------------------------------------------------
 // A profile is the harmonic amplitude list A1..An the pad is baked from — the
-// "source" the user picks. All pure functions of the patch (+ the bake's base
-// frequency, because the choir's formants live at fixed Hz).
+// "source" the user picks, times the universal formant mask. All pure functions of
+// the patch (+ the bake's base frequency, because the formants live at fixed Hz).
 
 // Vowel formant centres (F1/F2/F3, Hz) + relative band gains — duplicated from
 // audio.js's NAYUMI_VOWELS/NAYUMI_FORMANT_GAINS (this module can't import
@@ -38,8 +38,7 @@ export const PAD_VOWELS = {
   ee:  [300, 2300, 3010],
 };
 const PAD_FORMANT_GAINS = [1.0, 0.6, 0.4];
-const PAD_FORMANT_Q = 9;        // matches Nayumi's default vowel sharpness
-const PAD_GLOTTAL_TILT = 1.1;   // 1/k^tilt vocal-source rolloff (Nayumi's)
+const PAD_GLOTTAL_TILT = 1.1;   // 1/k^tilt vocal-source rolloff (the Voice source; Nayumi's)
 
 // The thinnest Pulse duty (Shape = Hi). Kept off 0 so the pulse never collapses
 // to silence — a super-skinny, bright, buzzy band-limited pulse.
@@ -53,22 +52,38 @@ function formantMag(f, fc, q) {
   return 1 / Math.sqrt(1 + q * q * x * x);
 }
 
-// The harmonic amplitude profile for a patch: A1..An by source kind.
+// The universal FORMANT mask: the 3-formant bank's magnitude at frequency f for a
+// vowel — Σ gainᵢ · resonator(f, Fᵢ·size, q). A pure spectral envelope that shapes
+// ANY source's harmonics (and the Air noise) at bake time. `vowel === 'none'` (or
+// unknown) returns a flat 1.0 = bypass, so Saw/Pulse/Tilt are unshaped by default.
+// The Voice source (1/k^1.1) times this bank IS the old Choir source, exactly.
+export function formantMask(f, vowel, size, q) {
+  const F = PAD_VOWELS[vowel];
+  if (!F) return 1;
+  let m = 0;
+  for (let i = 0; i < 3; i++) m += PAD_FORMANT_GAINS[i] * formantMag(f, F[i] * size, q);
+  return m;
+}
+
+// The harmonic amplitude profile for a patch: A1..An = sourceRaw(k) × formantMask(k·f0).
 //
-// Pulse and Saw are one-parameter Shape morphs of the SAME family, |sin(π·k·x)|/k^e
-// — because the bake randomizes phase, only magnitudes matter, so a waveshape here
-// IS its harmonic-magnitude profile:
+// The four SOURCES (raw carriers). Pulse and Saw are one-parameter Shape morphs of the
+// SAME family, |sin(π·k·x)|/k^e — because the bake randomizes phase, only magnitudes
+// matter, so a waveshape here IS its harmonic-magnitude profile:
 //   • Pulse (e=1): duty d = 0.5→PAD_PULSE_MIN_DUTY as Shape goes Lo→Hi. d=0.5 gives
 //     |sin(πk/2)|/k = the odd-only 1/k SQUARE exactly; thinner d flattens/brightens
 //     the spectrum toward a buzzy skinny pulse (first sinc null at k≈1/d).
 //   • Saw→triangle (e=2): symmetry s = 0→0.5. s→0 is 1/k (all harmonics = SAW);
 //     s=0.5 gives |sin(πk/2)|/k² = the odd-only 1/k² TRIANGLE. The 1/(s(1−s)) scale
 //     is k-independent, so it drops out under RMS normalization — omitted here.
-// Shape 0 reproduces today's Saw/Square bit-for-bit, so existing patches are unchanged.
+//   • Voice: a 1/k^1.1 glottal rolloff (the vocal carrier the old Choir baked in).
+//   • Tilt: a bare 1/k^e abstract rolloff.
+// Then the universal FORMANT mask multiplies every harmonic (identity at Vowel None), so
+// any source can be vowel-shaped. Shape 0 + Vowel None reproduces Saw/Pulse bit-for-bit,
+// and Voice + a vowel reproduces the old Choir exactly (formantQ default = the old Q 9).
 export function padProfile(p, baseFreq) {
   const n = Math.max(1, Math.round(p.harmonics));
   const a = new Float32Array(n);
-  const F = PAD_VOWELS[p.vowel] || PAD_VOWELS.ah;
   const sh = p.shape > 0 ? Math.min(1, p.shape) : 0;   // Shape (Saw/Pulse only)
   const duty = 0.5 - sh * (0.5 - PAD_PULSE_MIN_DUTY);  // Pulse duty cycle
   const sym = sh * 0.5;                                 // Saw→triangle symmetry
@@ -78,19 +93,16 @@ export function padProfile(p, baseFreq) {
       case 'pulse':   // rectangular pulse, duty `duty`: |sin(π·k·d)| / k
         v = Math.abs(Math.sin(Math.PI * k * duty)) / k;
         break;
+      case 'voice':   // glottal carrier: a 1/k^1.1 vocal-source rolloff
+        v = 1 / Math.pow(k, PAD_GLOTTAL_TILT);
+        break;
       case 'tilt':    // a bare 1/k^e rolloff — the "abstract" profile
         v = 1 / Math.pow(k, p.tilt);
         break;
-      case 'choir': { // glottal rolloff × the 3-formant bank at k·baseFreq
-        let fm = 0;
-        for (let i = 0; i < 3; i++) fm += PAD_FORMANT_GAINS[i] * formantMag(baseFreq * k, F[i] * p.size, PAD_FORMANT_Q);
-        v = fm / Math.pow(k, PAD_GLOTTAL_TILT);
-        break;
-      }
       default:        // saw → triangle: 1/k at Shape 0, else |sin(π·k·s)| / k²
         v = sh <= 0 ? 1 / k : Math.abs(Math.sin(Math.PI * k * sym)) / (k * k);
     }
-    a[k - 1] = v;
+    a[k - 1] = v * formantMask(baseFreq * k, p.vowel, p.size, p.formantQ);
   }
   return a;
 }
@@ -130,6 +142,28 @@ export function padSpectrumMags(profile, p, baseFreq, sampleRate, tableSize) {
       mags[i] += scale * Math.exp(-(d * d) / (2 * sigma * sigma));
     }
   }
+  // Air: a band-limited pink-noise floor across every bin — pink (1/√f) × a 1-pole
+  // high-pass (Juno-60 style, −6 dB/oct; the HPF also tames pink's DC blow-up since
+  // √f/fc → 0) × the same formant mask (so a vowel makes the air breathy). Blended
+  // with the tonal spectrum as an ENERGY-MATCHED crossfade: Noise 0 = pure pad, 1 =
+  // pure air, held at constant energy so it re-normalizes to the same level. The
+  // per-bin random phase comes from the bake's PRNG, so the noise loops seamlessly.
+  const noise = p.noise > 0 ? Math.min(1, p.noise) : 0;
+  if (noise > 0) {
+    const fc = Math.max(1, p.airCut);
+    const nf = new Float64Array(half);
+    let eh = 0, en = 0;
+    for (let i = 0; i < half; i++) eh += mags[i] * mags[i];
+    for (let i = 1; i < half; i++) {
+      const fi = i * binHz;
+      const r = fi / fc;
+      const v = (r / Math.sqrt(1 + r * r)) / Math.sqrt(fi) * formantMask(fi, p.vowel, p.size, p.formantQ);
+      nf[i] = v;
+      en += v * v;
+    }
+    const scale = en > 0 ? Math.sqrt((eh > 0 ? eh : en) / en) : 0; // match noise energy to the tone (or itself if silent)
+    for (let i = 0; i < half; i++) mags[i] = (1 - noise) * mags[i] + noise * scale * nf[i];
+  }
   return mags;
 }
 
@@ -138,11 +172,12 @@ export function padSpectrumMags(profile, p, baseFreq, sampleRate, tableSize) {
 export function padTableKey(p, baseFreq, sampleRate, tableSize = PAD_TABLE_SIZE) {
   const f = (x, d) => Number(x).toFixed(d);
   const src = p.source || 'saw';
-  const sub = src === 'choir' ? `${p.vowel}:${f(p.size, 3)}`
-    : src === 'tilt' ? f(p.tilt, 3)
+  const sub = src === 'tilt' ? f(p.tilt, 3)
     : (src === 'saw' || src === 'pulse') ? `sh${f(p.shape, 3)}`
-    : '';
-  return `${src}|${sub}|h${Math.round(p.harmonics)}|bw${f(p.bandwidth, 2)}|bs${f(p.bwScale, 3)}|st${f(p.stretch, 4)}|f${f(baseFreq, 3)}|r${sampleRate}|n${tableSize}`;
+    : ''; // voice has no source-specific sub
+  const fm = p.vowel && p.vowel !== 'none' ? `${p.vowel}:${f(p.size, 3)}:q${f(p.formantQ, 2)}` : 'nf';
+  const nz = p.noise > 0 ? `${f(p.noise, 3)}:hp${f(p.airCut, 1)}` : 'n0';
+  return `${src}|${sub}|${fm}|${nz}|h${Math.round(p.harmonics)}|bw${f(p.bandwidth, 2)}|bs${f(p.bwScale, 3)}|st${f(p.stretch, 4)}|f${f(baseFreq, 3)}|r${sampleRate}|n${tableSize}`;
 }
 
 // Bake one wavetable: profile → Gaussian magnitude spectrum → seeded random

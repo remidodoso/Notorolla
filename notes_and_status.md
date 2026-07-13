@@ -291,28 +291,20 @@ archive or the linked section. (Bigger features are in [future_directions.md](fu
 
 ---
 
-## The control-skin program (future/ui_skin/) — MOCKUPS COMPLETE; integration handoff (2026-07-10)
+## The control-skin program (future/ui_skin/) — integrated into the instrument panes
 
-**Status: the mockup phase is DONE.** Over 2026-07-09/10 the composer and an agent ran an iterative
-mockup program for a new control skin (the eventual replacement for the whole app's utilitarian look,
-starting with the instrument panes). **All seven instruments now have an exhibit** — the composer
-signed off each ("looks great" throughout; drawbar tabs "done"; Padlington 1.3 "TERRIFIC"). Everything
-lives in [future/ui_skin/](future/ui_skin/) as **self-contained, double-click-to-open throwaway
-fixtures** (no imports from `src/`, and nothing under `src/` may import from `future/` — see
-[future/README.md](future/README.md)): a gallery ([index.html](future/ui_skin/index.html)), the
-Round-1 style studies + Round-5 composite (the derivation), and the seven **instrument exhibits** —
-`exhibit-`**vesperia** / **zindel** / **wendelhorn** / **tervik** / **nayumi** / **boshwick** /
-**padlington**`.html`. **The exhibits ARE the visual spec** for the real UI; the round-by-round design
-record (every verdict, locked law, deferred idea) is [future_directions.md](future_directions.md) §13.
-Read both before implementing — the composer set these by hand over many rounds; they are not up for
-re-derivation.
+The instrument panes wear a **hand-designed control skin**, integrated from the mockup exhibits over
+2026-07-09→12 (the two-step "common-clusters refactor + real widgets" handoff, now DONE — its detail is
+in [archived_status_07_26.md](archived_status_07_26.md)). Every kind's pane assembles from **shared
+param-group builders** (`ampEnvelopeParams()` / `lowpassParams()` / `pitchAtkParams()` /
+`stereoParams()`, …) in the canonical role order, rendered by real widgets — [ui/vslider.js](src/js/ui/vslider.js)
+(uni/bipolar sliders), [ui/rotaryswitch.js](src/js/ui/rotaryswitch.js) (radial ≤6 / windowed >6),
+drawbar tabs, toggles — scoped under `.instr-skin` in [index.html](index.html).
 
-**These instrument exhibits are RETAINED permanently** (for now) — a **living design surface**, not a
-throwaway that gets deleted once the skin lands in the app. The section will keep receiving attention
-(further iteration on the skin, and likely new exhibits as instruments are added), so treat it as the
-standing reference/source-of-truth for the control skin **even past migration**. (The Round-1→5 style
-studies alongside them are the *historical* derivation.) Do **not** archive or remove the exhibits when
-the integration below is done.
+**The exhibits are the RETAINED living spec** — `future/ui_skin/exhibit-<instrument>.html`, self-contained
+double-click fixtures (nothing in `src/` imports `future/`; see [future/README.md](future/README.md)).
+They stay the standing source-of-truth and keep receiving attention as instruments evolve — **do not
+delete them.** The round-by-round design record + every locked law is [future_directions.md](future_directions.md) §13.
 
 **Locked design laws (headline).** Lights glow / **text never glows**; colored text only
 mono-amber/green/cyan (readouts = amber, **fixed-width, unit-less**); Tahoma at weight 400 only; the
@@ -326,8 +318,8 @@ entry bypasses detents; wheel = coarse, wheel-tilt = fine; pointerdown handlers 
 (+ a global `dragstart` block) or held drags hijack the canvas. **Laws locked during the roster pass
 (2026-07-10):** (a) **bipolar zero affordance = the amber detent tick** — the tick at the detent is
 tinted the accent (amber), no slot bar; the detent may be **off-centre** (Zindel Spread, Nayumi Size);
-(b) **many-way enums (>5) use a rotary with a readout WINDOW, no radial labels** (Boshwick's 9-way
-Type) — 3–5-way rotaries keep radial position labels; (c) a **tone-shaping "filter substitute" takes
+(b) **many-way enums (>6) use a rotary with a readout WINDOW, no radial labels** (Boshwick's 9-way
+Type) — 3–6-way rotaries keep radial position labels (6 splits 3-left/3-right); (c) a **tone-shaping "filter substitute" takes
 the green Filter slot even without a biquad** (Zindel Acceleration → band "Motion", Boshwick Tone →
 band "Tone", Nayumi's formant bank = the Filter); (d) **live inert dimming off any selector** (Boshwick
 Type, Padlington Source — dim + desaturate, still draggable); (e) the **drawbar tab** is a locked new
@@ -336,51 +328,10 @@ stepped, powers-of-two harmonics white, up = louder). **Shared clusters** (Pitch
 Amplitude, Stereo/Width) are reused verbatim across instruments — the concrete anchor for the §13
 shared-label roles.
 
----
-
-### INTEGRATION HANDOFF — the next job (for whoever implements the skin in the real app)
-
-The mockups are the destination; this is how to get the real app there. **Discuss before implementing —
-nothing is built without the composer's "make it so" — and the composer performs all commits** (see the
-DO-NOT-MODIFY header). It's a **two-step**, in order:
-
-**Step 1 — the common-clusters instrument-pane refactor** (future_directions §13 "rework panels into
-COMMON CLUSTERS"; pure registry/UI, **zero DSP change**). Restructure the kind-aware pane in
-[ui/instrumentpane.js](src/js/ui/instrumentpane.js) so every kind assembles from **shared param-group
-builders** (`ampEnvelopeParams()`, `filterParams()`, `pitchAtkParams()`, …) laid out in the canonical
-order with hue = role. **Each exhibit already fixes its instrument's exact group/subgroup mapping —
-port those**: Vesperia = Oscillator[Timbre] · Filter[Lowpass] · Envelope[Amplitude]; Zindel =
-Oscillator[Drawbars · Tone] · Motion(green filter-role)[Acceleration] · Envelope; Wendelhorn =
-LFO[Ensemble] · Oscillator[Saws · Pitch] · Filter[Lowpass] · Envelope · Effects[Stereo] (all five
-hues); Tervik = Oscillator[Routing · Op 1·2·3] · Envelope[Env 1·2·3] (envelopes extracted; Follow →
-"1 → 2" copy buttons); Nayumi = LFO[Vibrato] · Oscillator[Voice · Breath] · Filter[Formant] ·
-Envelope; Boshwick = Oscillator[Voice · Pitch] · Tone(green filter-role)[Colour] · Envelope; Padlington
-= Oscillator[Source · Pad · Pitch] · Filter · Envelope · Effects[Stereo]. This refactor is also the
-natural home for the **shared-label "roles"** (§13 — a timbre/brightness/filter-sweep tag per control).
-
-**Step 2 — the skin itself**, on the refactored pane + the widgets in [ui/knob.js](src/js/ui/knob.js).
-Implement the vocabulary as real widgets driven by the registry metadata: **vertical slider**
-(uni-polar + **bipolar with the amber detent tick**, off-centre allowed), **rotary switch** (≤5 →
-radial labels; >5 → readout window, e.g. Boshwick Type), **drawbar tabs** (Zindel), toggles; **round
-knobs only in mixer-strip contexts** (pan/send). Wire inert via the existing `spec.inert(patch)`
-mechanism (Boshwick/Padlington). Carry the interaction laws verbatim — wheel = coarse / tilt = fine,
-**dblclick-to-type readouts**, and the **pointerdown `preventDefault` + global `dragstart` block**
-(the canvas-drag-hijack fix; MUST carry over). Then the skin spreads **app-wide** (transport, toolbars,
-mixer, panes) — later.
-
-**Real-app editing upgrades already agreed** (needed by the skin, §13): dblclick-to-type readouts;
-**Tervik Fine** display precision 2 → 3–4 decimals; **typed values bypass `makeKnob` detents** (the
-detent radius makes |Tervik fine| < 0.06 unreachable by drag — the PWM-beating range lives inside the
-snap zone); a per-param detent radius.
-
-**Deferred / reserved design items** (still open, resolve with the composer during implementation):
-FM **operator-diagram labels** for Tervik's Algorithm rotary (replacing text position labels); a
-persistent **app-wide UI-scale** setting; per-instrument **identity** (logo / faceplate chrome); the
-**key-up-pluck** envelope generator (§13 — a scheduled release-transient voice). Plus minor mapping
-calls flagged this session but not blocking: Wendelhorn Detune-in-Oscillator vs. with the Ensemble;
-Stereo/Width as a lone Effects box; Nayumi Grit in Oscillator vs. an Effects box; Boshwick's per-type
-**inert map** (currently Pitch Env → {kick, tom}, Snap → {snare} — a proposal, since the registry
-carries no explicit Boshwick `inert` predicates yet) and whether Snap belongs in Oscillator vs. Tone.
+**Still ahead** (the integration itself is done; these remain — see future_directions §13): the skin
+**spreads app-wide** (transport, toolbars, mixer, panes); and the reserved design items — FM
+operator-diagram labels for Tervik's Algorithm rotary, a persistent **app-wide UI-scale** setting,
+per-instrument **identity** (logo / faceplate chrome), and the **key-up-pluck** release-transient voice.
 
 ---
 
@@ -410,7 +361,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 | [audio/audio.js](src/js/audio/audio.js) | `AudioEngine` — additive synth voice (`buildVoice`), per-lane patch resolution (`patchFor`), per-lane **stereo mixer strips** (volume→panner→[chorus]→[delay]→mute-gate; `setLaneVolume`/`setLaneGain`/`setLanePan`, `applyLaneChorus`/`applyLaneDelay`/`applyLaneReverb`, `modsFor`), master limiter + fader + **stereo meter tap** (`getPeak`); `renderToBuffer`/`renderStem` (offline bounce), `FREF` |
 | [audio/instrument.js](src/js/audio/instrument.js) | the **instrument registry** (Vesperia/Zindel/Wendelhorn/Tervik/Nayumi/Boshwick/Padlington): `defaultPatch(kind)`, `normalizePatch`, `clonePatch`, `instrument`/`instrumentKinds`, slider mapping |
 | [audio/patches.js](src/js/audio/patches.js) | `PatchStore` — the **user-global patch catalog** backing store: id-keyed named patches, factory `Init` per kind (`factoryInitId`) + user tier, `allForKind`/`add`/`update`/`remove`/`uniqueUserName`. Pure |
-| [audio/padsynth.js](src/js/audio/padsynth.js) | the **Padlington bake** (pure, seeded): PadSynth profile generators (saw/pulse/choir/tilt, with the Saw/Pulse **Shape** morph) → Gaussian-band spectrum → random-phase IFFT wavetable; `bakePadTable`/`padTableKey`/`padBaseFreq`, radix-2 `fft` |
+| [audio/padsynth.js](src/js/audio/padsynth.js) | the **Padlington bake** (pure, seeded): PadSynth profile generators (saw/pulse/voice/tilt sources × the Saw/Pulse **Shape** morph × the universal `formantMask`, + a band-limited pink **Air** noise floor) → Gaussian-band spectrum → random-phase IFFT wavetable; `bakePadTable`/`padTableKey`/`padBaseFreq`, radix-2 `fft` |
 | [audio/delay.js](src/js/audio/delay.js) | per-lane delay config (`normalizeDelay`, `DELAY_TIMES`/`DELAY_MODES`) + `buildDelayEditor` |
 | [audio/chorus.js](src/js/audio/chorus.js) | per-lane Juno-60 chorus config (`normalizeChorus`, `CHORUS_MODES`) + `buildChorusEditor` |
 | [audio/reverb.js](src/js/audio/reverb.js) | per-lane reverb config (`normalizeReverb`) + `buildReverbEditor` |
@@ -517,20 +468,34 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   sanctioned if needed.
 - **Padlington (2026-07-09; Shape added 2026-07-12)** — a **PadSynth pad** (Paul Nasca's ZynAddSubFX
   algorithm). A harmonic
-  **profile** — **Source**: Saw (1/k, the "infinite-unison supersaw" pad), Pulse (a rectangular pulse),
-  **Choir** (vowel formants ooh/oh/ah/eh/ee + a **Size** knob, reusing Nayumi's formant tables
-  analytically — no samples, the profiles are *generated*), or **Tilt** (a bare 1/k^e) — is smeared
+  **profile** = a raw **Source** × a universal **Formant** mask, smeared
   into **Gaussian bands** in the frequency domain (**Bandwidth** in cents = THE lushness knob;
   **BW Scale** = how the smear grows up the series), given seeded random phases, and IFFT'd into a
   **2^17-sample looping wavetable**. The bake is a pure module ([src/js/audio/padsynth.js](src/js/audio/padsynth.js)).
-  **Shape** (Saw/Pulse only, Lo↔Hi) morphs the waveshape spectrally — since the bake randomizes
-  phase, a waveshape *is* its magnitude profile, so both sources are the same |sin(π·k·x)|/k^e family:
-  Saw→triangle (e=2, symmetry 0→½) and Pulse duty 0.5→0.03 (e=1). Shape 0 = today's Saw/Square
-  bit-for-bit; inert for Choir/Tilt. (The old **Square** source is now **Pulse** at Shape 0; a marked
-  `migratePadPulse` compat shim in `normalizePatch` remaps legacy `source:'square'` on load.)
-  **Stretch** (partial k lands at f·k^(1+s)) is the inharmonicity knob — the first Sethares/§15 hook.
+  The osc-role layout is **Source · Pad · Air · Formant · Pitch** — *everything baked lives under the
+  Oscillator role* (Filter = the runtime lowpass only).
+  - **Source** (raw carrier): Saw (1/k supersaw pad), Pulse (rectangular pulse), **Voice** (a 1/k^1.1
+    glottal carrier), or Tilt (a bare 1/k^e). **Shape** (Saw/Pulse only, Lo↔Hi) morphs the waveshape
+    spectrally — since the bake randomizes phase, a waveshape *is* its magnitude profile, so both are the
+    same |sin(π·k·x)|/k^e family: Saw→triangle (e=2, symmetry 0→½) and Pulse duty 0.5→0.03 (e=1). Shape 0
+    = Saw/Square unchanged.
+  - **Formant (2026-07-13):** a universal vowel bank — `formantMask(f, vowel, size, Q)` — multiplies
+    **every** source's harmonics (and the Air noise). **Vowel** `None`(=flat bypass)/ooh/oh/ah/eh/ee,
+    **Size** (tract scale, bipolar detent 1.0), **Reso** (`formantQ`, bandpass Q — high = the "blown
+    bottle"). **Voice + a vowel = the old Choir source** (formantQ default 9 = the old fixed Q), now
+    decoupled so *any* source is vowel-shapeable. Mirrors Nayumi's Formant group.
+  - **Air (2026-07-13):** a band-limited **pink** (1/√f) noise layer baked in — **Noise** amount
+    (energy-matched tonal↔air crossfade: 0 = pad, 1 = pure air; RMS held so it's colour not level),
+    routed **through the formant mask** (a vowel → breathy/vocal air), and **Air Cut** = a 1-pole
+    (−6 dB/oct, Juno-60 style) high-pass taming the low end (also kills pink's DC blow-up).
+  - **Stretch** (partial k lands at f·k^(1+s)) is the inharmonicity knob — the first Sethares/§15 hook.
+
+  Migration (marked `normalizePatch` shims, deletable later): legacy `source:'square'` → `pulse`
+  (`migratePadPulse`); legacy `source:'choir'` → `voice` keeping its vowel/size, and a legacy non-choir
+  patch's now-universal `vowel` is retired to `None` (`migratePadFormant`, sentinelled on the new
+  `formantQ` field). Same spectrum/character on reload (phases reseed like any re-bake).
   Tables bake **lazily per (patch, octave base C1–C8)** and are cached per context (LRU 16;
-  `playbackRate = f0/base` stays within ~[0.71, 1.41], which also keeps the choir's formants
+  `playbackRate = f0/base` stays within ~[0.71, 1.41], which also keeps the formants
   anchored); the bake is **seeded from the param key**, so every `OfflineAudioContext` bakes
   bit-identical tables — **exports match live**. **Offline export is structurally glitch-immune:**
   every bake happens during graph assembly (before `startRendering()`), and an OfflineAudioContext

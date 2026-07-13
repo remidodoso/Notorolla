@@ -27,8 +27,12 @@ const variants = [
   ['saw→tri', { source: 'saw', shape: 1 }],
   ['pulse', { source: 'pulse' }],
   ['skinny pulse', { source: 'pulse', shape: 1 }],
-  ['choir ah', { source: 'choir', vowel: 'ah' }],
-  ['choir ooh', { source: 'choir', vowel: 'ooh' }],
+  ['voice ah', { source: 'voice', vowel: 'ah' }],
+  ['voice ooh', { source: 'voice', vowel: 'ooh' }],
+  ['saw+ah', { source: 'saw', vowel: 'ah' }],
+  ['air 50%', { source: 'saw', noise: 0.5 }],
+  ['breath ah', { source: 'saw', noise: 0.6, vowel: 'ah' }],
+  ['pure air', { source: 'saw', noise: 1.0 }],
   ['tilt', { source: 'tilt' }],
 ];
 for (const [name, over] of variants) {

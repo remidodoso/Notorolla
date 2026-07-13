@@ -5,8 +5,9 @@
 // to step, plain click cycles, wheel steps; pointerdown preventDefault (+ the
 // element dragstart block) carries the canvas-drag-hijack fix.
 //
-// Policy (§13): ≤5 options → radial labels (this widget); a >5-way enum uses a
-// readout-window variant instead (not built yet — Boshwick's 9-way Type).
+// Policy (§13): ≤6 options → radial labels (this widget; 6 splits 3-left/3-right
+// with a clean top gap); a >6-way enum uses a readout-window variant instead
+// (Boshwick's 9-way Type).
 //
 // Driven by a registry enum spec ({ options:[{id,label}], label, title }). The
 // value is an option id. cb.onInput(id) fires on every change.
@@ -17,12 +18,14 @@ const A0 = -ARC / 2; // position 0 = full counter-clockwise
 export function makeRotarySwitch(container, { spec, value, cb = {} }) {
   const opts = spec.options || [];
   const n = opts.length;
-  // >5 options is past the radial-label range (§13): drop the radial labels and
+  // >6 options is past the radial-label range (§13): drop the radial labels and
   // show the current option in a readout WINDOW instead (Boshwick's 9-way Type).
-  const windowed = n > 5;
+  // A 6-way (e.g. Padlington's Vowel + None) stays radial, tagged `.six` for a
+  // touch more side padding so the near-horizontal labels have room.
+  const windowed = n > 6;
 
   const rsww = document.createElement('div');
-  rsww.className = 'rsww' + (windowed ? ' win' : '');
+  rsww.className = 'rsww' + (windowed ? ' win' : n === 6 ? ' six' : '');
   const sw = document.createElement('div');
   sw.className = 'rswitch';
   const face = document.createElement('div');
@@ -37,7 +40,7 @@ export function makeRotarySwitch(container, { spec, value, cb = {} }) {
   if (ro) rsww.append(ro);
   container.append(rsww);
 
-  // Radial position ticks always; text labels only in radial (≤5) mode.
+  // Radial position ticks always; text labels only in radial (≤6) mode.
   const ticks = [], labs = [];
   for (let i = 0; i < n; i++) {
     const a = n > 1 ? A0 + (i * ARC) / (n - 1) : 0;

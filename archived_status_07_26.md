@@ -466,3 +466,35 @@ closed as features landed:
   Deferred work / TODO).
 - *"MIDI not wired"* — **Export to MIDI (SMF Format 1)** is built; the limitations entry now
   names the actual gap (live MIDI I/O, deferred by decision).
+
+**Control-skin integration handoff — the executed plan (written 2026-07-10, done 2026-07-11/12).**
+(Current state — the integrated skin + the retained exhibits — is in notes & status.) The mockup phase
+finished 2026-07-09/10: all seven instruments got a composer-signed exhibit in `future/ui_skin/`
+("looks great" throughout; drawbar tabs "done"; Padlington 1.3 "TERRIFIC"). Integration was a two-step,
+**zero-DSP** job:
+- *Step 1 — the common-clusters pane refactor* ([ui/instrumentpane.js](src/js/ui/instrumentpane.js);
+  future_directions §13): every kind assembles from shared param-group builders (`ampEnvelopeParams()`,
+  `lowpassParams()`, `pitchAtkParams()`, `stereoParams()`, …) in the canonical role order, hue = role.
+  Each exhibit's group/subgroup mapping ported verbatim: Vesperia = Oscillator[Timbre] · Filter[Lowpass]
+  · Envelope[Amplitude]; Zindel = Oscillator[Drawbars · Tone] · Motion(green filter-role)[Acceleration] ·
+  Envelope; Wendelhorn = LFO[Ensemble] · Oscillator[Saws · Pitch] · Filter[Lowpass] · Envelope ·
+  Effects[Stereo]; Tervik = Oscillator[Routing · Op 1·2·3] · Envelope[Env 1·2·3] (envelopes extracted;
+  Follow → "1 → 2" copy buttons); Nayumi = LFO[Vibrato] · Oscillator[Voice · Breath] · Filter[Formant] ·
+  Envelope; Boshwick = Oscillator[Voice · Pitch] · Tone(green filter-role)[Colour] · Envelope; Padlington
+  = Oscillator[Source · Pad · Pitch] · Filter · Envelope · Effects[Stereo] (later extended 2026-07-12/13
+  with Shape, and the Air + Formant subgroups → Source · Pad · Air · Formant · Pitch).
+- *Step 2 — the real widgets* ([ui/vslider.js](src/js/ui/vslider.js), [ui/rotaryswitch.js](src/js/ui/rotaryswitch.js),
+  drawbar tabs, toggles): vertical slider (uni + bipolar amber-detent tick, off-centre allowed); rotary
+  switch (≤6 radial / >6 readout window); round knobs only in mixer strips; inert via `spec.inert(patch)`;
+  wheel = coarse / tilt = fine; dblclick-to-type readouts; the pointerdown `preventDefault` + global
+  `dragstart` block carried over (the canvas-drag-hijack fix). Scoped under `.instr-skin` in index.html.
+Agreed editing upgrades folded in: dblclick-to-type readouts; **Tervik Fine** precision 2 → 3–4 decimals;
+**typed values bypass detents** (the detent radius made |Tervik fine| < 0.06 unreachable by drag — the
+PWM-beating range lived inside the snap zone); a per-param detent radius. Design laws locked during the
+roster pass (2026-07-10) — bipolar-zero = amber detent tick; enums >6 → readout-window rotary (≤6 radial,
+6 splits 3-left/3-right); a tone-shaper takes the green Filter slot without a biquad; live inert dimming
+off any selector; drawbar tabs a distinct widget species — now live in the skin and in future_directions
+§13 (the standing record). Still-open reserved items routed to future_directions §13: app-wide skin
+spread; FM operator-diagram labels for Tervik's Algorithm rotary; app-wide UI-scale; per-instrument
+identity; key-up-pluck envelope; plus minor mapping calls (Wendelhorn Detune placement, Stereo/Width box,
+Nayumi Grit placement, Boshwick inert map / Snap placement).

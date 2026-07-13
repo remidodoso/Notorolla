@@ -321,6 +321,9 @@
     .instr-skin .rstack { display: flex; flex-direction: column; gap: 0.35em; align-items: center; }
     .instr-skin .rsww { display: flex; flex-direction: column; align-items: center; gap: 0.2em;
       --kd: 2.3em; padding: 0.8em 1.7em 0.1em 1.2em; }
+    /* 6-way radial (e.g. Padlington Vowel + None): near-horizontal labels sit further
+       out than the 5-way, so give both sides a touch more breathing room. */
+    .instr-skin .rsww.six { padding-left: 1.55em; padding-right: 2.05em; }
     .instr-skin .rsww .bl { margin-top: 1.15em; font-size: 0.7em; color: var(--ink); letter-spacing: 0.03em; }
     .instr-skin .rswitch { width: var(--kd); height: var(--kd); border-radius: 50%; cursor: pointer;
       touch-action: none; position: relative;

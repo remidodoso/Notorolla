@@ -502,7 +502,8 @@ const BOSHWICK_PARAMS = [
 ];
 
 // --- Padlington: a PadSynth pad (Paul Nasca's algorithm). A harmonic PROFILE
-// (Source: saw / pulse / choir / tilt) is smeared into Gaussian bands in the
+// (Source: saw / pulse / voice / tilt, shaped by a universal Formant stage, plus a
+// band-limited pink-noise Air layer) is smeared into Gaussian bands in the
 // frequency domain and IFFT'd into a long looping wavetable — each harmonic
 // becomes a narrow noise band, which is the lush "infinite unison" pad sound.
 // The bake is pure + seeded (audio/padsynth.js); the voice is just two
@@ -510,16 +511,25 @@ const BOSHWICK_PARAMS = [
 // cheapest voice in the roster. --------------------------------------------
 
 const PADLINGTON_DEFAULTS = {
-  // Source profile. Saw = the supersaw pad; Pulse = a square/pulse; Choir uses
-  // vowel formants (Nayumi's tables); Tilt is a bare 1/k^e rolloff. Shape morphs
-  // Saw→triangle / Pulse duty (Lo→Hi); Vowel/Size act only for Choir, Tilt only
-  // for the Tilt source (inert otherwise, like Boshwick's per-type knobs).
+  // Source profile (the raw carrier). Saw = the supersaw pad; Pulse = a
+  // square/pulse; Voice = a 1/k^1.1 glottal carrier; Tilt = a bare 1/k^e rolloff.
+  // Shape morphs Saw→triangle / Pulse duty (Lo→Hi); Tilt exponent acts only for Tilt.
   source: 'saw',
   shape: 0,
-  vowel: 'ah',
-  size: 1.0,
   tilt: 1.5,
   harmonics: 64,
+
+  // Formant stage — a universal vowel bank that shapes ANY source's harmonics (and
+  // the Air noise) at bake time. Vowel 'none' = bypass; Size scales the tract, Reso
+  // is the bandpass Q. Voice + a vowel = the old Choir. (formantQ 9 = the old fixed Q.)
+  vowel: 'none',
+  size: 1.0,
+  formantQ: 9,
+
+  // Air — a band-limited pink-noise layer baked in (Noise = amount, 0 = none;
+  // Air Cut = a 1-pole high-pass corner, Juno-60 style, taming the low end).
+  noise: 0,
+  airCut: 30,
 
   // The pad bake. Bandwidth = each harmonic's Gaussian smear in cents (the
   // lushness); BW Scale = how the smear grows up the series (1 = constant
@@ -554,9 +564,17 @@ const PADLINGTON_DEFAULTS = {
 const PAD_SOURCE_OPTS = [
   { id: 'saw', label: 'Saw' },
   { id: 'pulse', label: 'Pulse' },
-  { id: 'choir', label: 'Choir' },
+  { id: 'voice', label: 'Voice' },
   { id: 'tilt', label: 'Tilt' },
 ];
+
+// Padlington's Vowel enum = Nayumi's five + a leading None (bypass = flat formant
+// mask). Six options → the rotary switch renders as a radial 6-way (3 left / 3 right).
+const PAD_VOWEL_OPTS = [{ id: 'none', label: 'None' }, ...NAYUMI_VOWEL_OPTS];
+
+// Air Cut — the noise high-pass corner (Hz, log). Compact readout in Hz/kHz.
+const airHzFmt = (v) => (v >= 1000 ? `${(v / 1000).toFixed(2)} kHz` : `${Math.round(v)} Hz`);
+const airHzFmtC = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(Math.round(v)));
 
 // Shape: the Saw/Pulse waveshape morph. Lo (0) = sawtooth / square; Hi (1) =
 // triangle / super-skinny pulse. Readout reads Lo…Hi with a percentage between.
@@ -568,18 +586,15 @@ const stretchFmt = (v) => (Math.abs(v) < 0.00005 ? 'harmonic' : `${v > 0 ? '+' :
 const stretchFmtC = (v) => (Math.abs(v) < 0.00005 ? '0' : `${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(3).replace(/^0/, '')}`);
 const stretchParse = (s) => { if (/harmonic/i.test(s)) return 0; const v = numOf(s); return v == null ? null : clampv(v, -0.05, 0.05); };
 
-// Padlington maps onto the canonical roles: Oscillator [Source | Pad | Pitch] ·
-// Filter (shared Lowpass) · Envelope (shared Amplitude, pad-length) · Effects
-// [Stereo]. Source/Vowel are rotary switches (enums); Stretch/Pitch Atk bipolar.
+// Padlington maps onto the canonical roles: Oscillator [Source | Pad | Air | Formant |
+// Pitch] · Filter (shared Lowpass) · Envelope (shared Amplitude, pad-length) ·
+// Effects [Stereo]. EVERYTHING baked lives under Oscillator; Filter is the runtime
+// lowpass only. Source/Vowel are rotary switches (enums); Stretch/Pitch Atk bipolar.
 const PADLINGTON_PARAMS = [
   { key: 'source', role: 'osc', sub: 'Source', label: 'Source', sel: true, options: PAD_SOURCE_OPTS,
-    title: 'Source — harmonic profile the pad is baked from: Saw (all harmonics, 1/k), Pulse (square → skinny pulse via Shape), Choir (vowel formants), Tilt (a bare 1/k^e rolloff).' },
-  { key: 'vowel', role: 'osc', sub: 'Source', label: 'Vowel', sel: true, options: NAYUMI_VOWEL_OPTS, inert: (p) => p.source !== 'choir',
-    title: 'Vowel — Choir source only: which vowel shapes the profile (ooh/oh/ah/eh/ee). Inert for other sources.' },
+    title: 'Source — raw carrier the pad is baked from: Saw (all harmonics, 1/k), Pulse (square → skinny pulse via Shape), Voice (a 1/k^1.1 glottal carrier), Tilt (a bare 1/k^e rolloff). The Formant stage then shapes any of them.' },
   { key: 'shape', role: 'osc', sub: 'Source', label: 'Shape', min: 0, max: 1, fmt: shapeFmt, fmtc: shapeFmt, parse: shapeParse, inert: (p) => p.source !== 'saw' && p.source !== 'pulse',
     title: 'Shape — Saw/Pulse only: morphs the waveshape from Lo to Hi. Saw: sawtooth → triangle. Pulse: square (50% duty) → super-skinny pulse. Inert for other sources.' },
-  { key: 'size', role: 'osc', sub: 'Source', label: 'Size', min: 0.8, max: 1.3, fmt: (v) => `×${v.toFixed(2)}`, fmtc: (v) => v.toFixed(2), parse: plainParse(0.8, 1.3), inert: (p) => p.source !== 'choir',
-    title: 'Size — Choir source only: vocal-tract size, scales every formant. Low = larger/darker, high = smaller/brighter.' },
   { key: 'tilt', role: 'osc', sub: 'Source', label: 'Tilt', min: 0.5, max: 3, fmt: (v) => `1/k^${v.toFixed(2)}`, fmtc: (v) => v.toFixed(2), parse: plainParse(0.5, 3), inert: (p) => p.source !== 'tilt',
     title: 'Tilt — Tilt source only: the spectral rolloff exponent. Low = bright (slow rolloff), high = dark, nearly a pure tone.' },
   { key: 'harmonics', role: 'osc', sub: 'Source', label: 'Harm', min: 8, max: 128, log: true, fmt: (v) => `${Math.round(v)} harmonics`, fmtc: (v) => String(Math.round(v)), parse: plainParse(8, 128),
@@ -591,6 +606,18 @@ const PADLINGTON_PARAMS = [
     title: 'BW Scale — how the smear grows up the series: 1 = constant cents (natural), toward 0 = upper harmonics stay clearer, toward 2 = they wash out.' },
   { key: 'stretch', role: 'osc', sub: 'Pad', label: 'Stretch', widget: 'bipolar', detent: 0, min: -0.05, max: 0.05, fmt: stretchFmt, fmtc: stretchFmtC, parse: stretchParse,
     title: 'Stretch — inharmonicity: partial k lands at f·k^(1+s). 0 = harmonic; positive stretches partials sharp (bell/gamelan), negative compresses them flat.' },
+
+  { key: 'noise', role: 'osc', sub: 'Air', label: 'Noise', min: 0, max: 1, fmt: pct, fmtc: pctC, parse: pctParse(0, 1),
+    title: 'Noise — amount of a band-limited pink-noise layer baked in (routed through the Formant vowel, so a vowel makes it breathy). An energy-matched tonal↔air balance: 0 = pure pad, full = pure air.' },
+  { key: 'airCut', role: 'osc', sub: 'Air', label: 'Cut', min: 30, max: 2000, log: true, fmt: airHzFmt, fmtc: airHzFmtC, parse: hzParse(30, 2000),
+    title: 'Air Cut — a 1-pole (−6 dB/oct, Juno-60 style) high-pass on the noise: raise it to thin the low end from rumble toward airy top. Only acts when Noise is up.' },
+
+  { key: 'vowel', role: 'osc', sub: 'Formant', label: 'Vowel', sel: true, options: PAD_VOWEL_OPTS,
+    title: 'Vowel — the formant bank shaping EVERY source (and the Air noise): None = flat/bypass, else ooh/oh/ah/eh/ee. Voice + a vowel = a choir.' },
+  { key: 'size', role: 'osc', sub: 'Formant', label: 'Size', widget: 'bipolar', detent: 1.0, min: 0.8, max: 1.3, fmt: nsizeFmt, fmtc: nsizeFmtC, parse: plainParse(0.8, 1.3),
+    title: 'Size — vocal-tract scale for the formants: low = larger/darker, high = smaller/brighter, centre = neutral. No effect at Vowel None.' },
+  { key: 'formantQ', role: 'osc', sub: 'Formant', label: 'Reso', min: 2, max: 24, fmt: q, fmtc: qC, parse: plainParse(2, 24),
+    title: 'Resonance — formant sharpness (bandpass Q). High = strongly vowel-like/hollow (the "blown bottle"); low = smeared toward a plain tone. No effect at Vowel None.' },
 
   ...pitchAtkParams(),
   ...lowpassParams(),
@@ -653,7 +680,7 @@ export function normalizePatch(obj) {
   const p = defaultPatch(kind);
   if (obj && typeof obj === 'object') {
     if (kind === 'tervik') obj = migrateTervikFollow(migrateTervikRatios(obj)); // legacy ratioN → coarse/fine; follow mode → copied env
-    if (kind === 'padlington') obj = migratePadPulse(obj); // legacy 'square' source → 'pulse' (shape 0 = 50% duty = the same spectrum)
+    if (kind === 'padlington') obj = migratePadFormant(migratePadPulse(obj)); // 'square'→'pulse'; then 'choir'→'voice' + retire the legacy inert vowel
     for (const spec of instrument(kind).params) {
       const v = obj[spec.key];
       if (spec.bool) {
@@ -715,6 +742,20 @@ function migrateTervikFollow(obj) {
 // on this. Returns a shallow copy so the caller's object isn't mutated.
 function migratePadPulse(obj) {
   return obj.source === 'square' ? { ...obj, source: 'pulse' } : obj;
+}
+
+// COMPAT (padlington): the formant bank is now a universal stage, so the old 'choir'
+// SOURCE is gone — it was a 1/k^1.1 glottal carrier + formants, i.e. exactly the new
+// 'voice' source + a vowel. A pre-formant patch (no `formantQ`) is translated: choir →
+// voice (keeping its vowel/size = bit-identical), and every OTHER source has its
+// legacy-inert `vowel` forced to 'none' (it must not now start shaping the spectrum).
+// Deletable once no pre-formant patches remain. Shallow-copies rather than mutating.
+function migratePadFormant(obj) {
+  if ('formantQ' in obj) return obj.source === 'choir' ? { ...obj, source: 'voice' } : obj;
+  const o = { ...obj };
+  if (o.source === 'choir') o.source = 'voice';
+  else o.vowel = 'none';
+  return o;
 }
 
 // Slider feel: time/frequency knobs move multiplicatively (log), the rest
