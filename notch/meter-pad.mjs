@@ -24,7 +24,9 @@ console.log(`vesperia   peak ${ref.peakDb} dB  rms ${ref.rmsDb} dB   <-- referen
 
 const variants = [
   ['saw', { source: 'saw' }],
-  ['square', { source: 'square' }],
+  ['saw→tri', { source: 'saw', shape: 1 }],
+  ['pulse', { source: 'pulse' }],
+  ['skinny pulse', { source: 'pulse', shape: 1 }],
   ['choir ah', { source: 'choir', vowel: 'ah' }],
   ['choir ooh', { source: 'choir', vowel: 'ooh' }],
   ['tilt', { source: 'tilt' }],

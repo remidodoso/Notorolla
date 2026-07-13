@@ -1685,6 +1685,12 @@ kept here so they aren't lost.
   stored pattern is fixed, the tuning seam is what breathes (labels/roll heights become
   time-varying, which is the point).
 
+- **Waveshape preview in the rollover** — the control's hover tooltip (or the patch pane) shows a
+  small rendered picture of the *actual* current waveform, so Shape/Source read visually — a morphing
+  Pulse narrowing its duty, a Saw leaning into a triangle. Pure display off the same profile the bake
+  uses (Padlington's `padProfile` → a one-cycle IFFT, or a direct time-domain draw); could generalize
+  to any oscillator-ish control. (Prompted by the 2026-07-12 Padlington **Shape** work.)
+
 - **Auto-hocket** — a generator/transform that fills the **rests/gaps of a reference pattern**
   with the pattern being built, so two mono voices interlock (hocket / call-and-response) rather
   than collide. The **Hocket species** of **New Counterpoint (§16)** — a reference pattern

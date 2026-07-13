@@ -502,7 +502,7 @@ const BOSHWICK_PARAMS = [
 ];
 
 // --- Padlington: a PadSynth pad (Paul Nasca's algorithm). A harmonic PROFILE
-// (Source: saw / square / choir / tilt) is smeared into Gaussian bands in the
+// (Source: saw / pulse / choir / tilt) is smeared into Gaussian bands in the
 // frequency domain and IFFT'd into a long looping wavetable — each harmonic
 // becomes a narrow noise band, which is the lush "infinite unison" pad sound.
 // The bake is pure + seeded (audio/padsynth.js); the voice is just two
@@ -510,10 +510,12 @@ const BOSHWICK_PARAMS = [
 // cheapest voice in the roster. --------------------------------------------
 
 const PADLINGTON_DEFAULTS = {
-  // Source profile. Saw = the supersaw pad; Choir uses vowel formants (Nayumi's
-  // tables); Tilt is a bare 1/k^e rolloff. Vowel/Size act only for Choir, Tilt
-  // only for the Tilt source (inert otherwise, like Boshwick's per-type knobs).
+  // Source profile. Saw = the supersaw pad; Pulse = a square/pulse; Choir uses
+  // vowel formants (Nayumi's tables); Tilt is a bare 1/k^e rolloff. Shape morphs
+  // Saw→triangle / Pulse duty (Lo→Hi); Vowel/Size act only for Choir, Tilt only
+  // for the Tilt source (inert otherwise, like Boshwick's per-type knobs).
   source: 'saw',
+  shape: 0,
   vowel: 'ah',
   size: 1.0,
   tilt: 1.5,
@@ -551,10 +553,15 @@ const PADLINGTON_DEFAULTS = {
 
 const PAD_SOURCE_OPTS = [
   { id: 'saw', label: 'Saw' },
-  { id: 'square', label: 'Square' },
+  { id: 'pulse', label: 'Pulse' },
   { id: 'choir', label: 'Choir' },
   { id: 'tilt', label: 'Tilt' },
 ];
+
+// Shape: the Saw/Pulse waveshape morph. Lo (0) = sawtooth / square; Hi (1) =
+// triangle / super-skinny pulse. Readout reads Lo…Hi with a percentage between.
+const shapeFmt = (v) => (v <= 0.0005 ? 'Lo' : v >= 0.9995 ? 'Hi' : `${Math.round(v * 100)}%`);
+const shapeParse = (s) => { if (/lo/i.test(s)) return 0; if (/hi/i.test(s)) return 1; const v = numOf(s); return v == null ? null : clampv(v / 100, 0, 1); };
 
 // Stretch = a bipolar inharmonicity (0 = harmonic). Compact drops the leading 0.
 const stretchFmt = (v) => (Math.abs(v) < 0.00005 ? 'harmonic' : `${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(3)}`);
@@ -566,9 +573,11 @@ const stretchParse = (s) => { if (/harmonic/i.test(s)) return 0; const v = numOf
 // [Stereo]. Source/Vowel are rotary switches (enums); Stretch/Pitch Atk bipolar.
 const PADLINGTON_PARAMS = [
   { key: 'source', role: 'osc', sub: 'Source', label: 'Source', sel: true, options: PAD_SOURCE_OPTS,
-    title: 'Source — harmonic profile the pad is baked from: Saw (all harmonics, 1/k), Square (odd harmonics), Choir (vowel formants), Tilt (a bare 1/k^e rolloff).' },
+    title: 'Source — harmonic profile the pad is baked from: Saw (all harmonics, 1/k), Pulse (square → skinny pulse via Shape), Choir (vowel formants), Tilt (a bare 1/k^e rolloff).' },
   { key: 'vowel', role: 'osc', sub: 'Source', label: 'Vowel', sel: true, options: NAYUMI_VOWEL_OPTS, inert: (p) => p.source !== 'choir',
     title: 'Vowel — Choir source only: which vowel shapes the profile (ooh/oh/ah/eh/ee). Inert for other sources.' },
+  { key: 'shape', role: 'osc', sub: 'Source', label: 'Shape', min: 0, max: 1, fmt: shapeFmt, fmtc: shapeFmt, parse: shapeParse, inert: (p) => p.source !== 'saw' && p.source !== 'pulse',
+    title: 'Shape — Saw/Pulse only: morphs the waveshape from Lo to Hi. Saw: sawtooth → triangle. Pulse: square (50% duty) → super-skinny pulse. Inert for other sources.' },
   { key: 'size', role: 'osc', sub: 'Source', label: 'Size', min: 0.8, max: 1.3, fmt: (v) => `×${v.toFixed(2)}`, fmtc: (v) => v.toFixed(2), parse: plainParse(0.8, 1.3), inert: (p) => p.source !== 'choir',
     title: 'Size — Choir source only: vocal-tract size, scales every formant. Low = larger/darker, high = smaller/brighter.' },
   { key: 'tilt', role: 'osc', sub: 'Source', label: 'Tilt', min: 0.5, max: 3, fmt: (v) => `1/k^${v.toFixed(2)}`, fmtc: (v) => v.toFixed(2), parse: plainParse(0.5, 3), inert: (p) => p.source !== 'tilt',
@@ -644,6 +653,7 @@ export function normalizePatch(obj) {
   const p = defaultPatch(kind);
   if (obj && typeof obj === 'object') {
     if (kind === 'tervik') obj = migrateTervikFollow(migrateTervikRatios(obj)); // legacy ratioN → coarse/fine; follow mode → copied env
+    if (kind === 'padlington') obj = migratePadPulse(obj); // legacy 'square' source → 'pulse' (shape 0 = 50% duty = the same spectrum)
     for (const spec of instrument(kind).params) {
       const v = obj[spec.key];
       if (spec.bool) {
@@ -696,6 +706,15 @@ function migrateTervikFollow(obj) {
     }
   }
   return o;
+}
+
+// COMPAT (padlington): the old 'square' Source is now 'pulse' at Shape 0 — which
+// bakes duty 0.5 = the same odd-only spectrum, bit-identical. Translate legacy
+// saves on load so they don't fall through to the default (saw). Deletable once
+// no square-era patches remain: pulse@0 already IS square, nothing else depends
+// on this. Returns a shallow copy so the caller's object isn't mutated.
+function migratePadPulse(obj) {
+  return obj.source === 'square' ? { ...obj, source: 'pulse' } : obj;
 }
 
 // Slider feel: time/frequency knobs move multiplicatively (log), the rest

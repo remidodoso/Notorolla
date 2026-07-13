@@ -43,6 +43,20 @@ ok(deletePoint(3, 4, 6) === 3, 'deletePoint: before the range unmoved');
   ok(starts(a) === '0,4', 'insert past the content: nothing moves');
   ok(a.playEnd === null, 'insert: auto end marker stays auto');
 }
+{
+  // Origin exception: a start marker at 0 stays at 0 on an insert-at-0 (the new
+  // time joins the play region), while the end marker and tiles still shift.
+  const a = arr([0, 4]);
+  a.playStart = 0; a.playEnd = 8;
+  a.insertTime(0, 4);
+  ok(starts(a) === '4,8', `insert-at-0: tiles shift right (got ${starts(a)})`);
+  ok(a.playStart === 0 && a.playEnd === 12, `insert-at-0: start marker holds at 0, end rides (got ${a.playStart},${a.playEnd})`);
+  // But a start marker off the origin still rides even when inserting at 0.
+  const b = arr([0]);
+  b.playStart = 4; b.playEnd = 8;
+  b.insertTime(0, 4);
+  ok(b.playStart === 8 && b.playEnd === 12, `insert-at-0: a non-origin start marker still rides (got ${b.playStart},${b.playEnd})`);
+}
 
 // --- clearRange ---------------------------------------------------------
 {

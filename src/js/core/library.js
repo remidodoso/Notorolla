@@ -546,7 +546,12 @@ export class Arrangement {
   // Open a gap: everything starting at/after `s` shifts right by `len` beats.
   insertTime(s, len) {
     for (const lane of this.lanes) for (const t of lane.tiles) { if (t.start >= s) t.start += len; }
-    this.playStart = insertPoint(this.playStart || 0, s, len);
+    const start0 = this.playStart || 0;
+    // Exception: a start marker at the origin stays at 0 when time is inserted at
+    // the very beginning — the new time joins the play region rather than being
+    // pushed out ahead of it. (The general at/after-the-cut rule would send it to
+    // `len`.) The playhead gets the same origin exception in transformbar.js.
+    if (!(s === 0 && start0 === 0)) this.playStart = insertPoint(start0, s, len);
     if (this.playEnd != null) this.playEnd = insertPoint(this.playEnd, s, len);
   }
 

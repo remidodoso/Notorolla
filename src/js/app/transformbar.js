@@ -125,7 +125,10 @@ export function initTransformbar(ctx) {
     const before = ctx.arrSnap();
     if (kind === 'insert') {
       arrangement.insertTime(s, e - s);
-      state.playheadBeat = insertPoint(state.playheadBeat, s, e - s);
+      // Same origin exception as the start marker (insertTime): a playhead parked
+      // at the very start stays there on an insert-at-0 — the user expects it to
+      // remain at "the start", not jump past the newly inserted time.
+      if (!(s === 0 && state.playheadBeat === 0)) state.playheadBeat = insertPoint(state.playheadBeat, s, e - s);
     } else if (kind === 'clear') {
       arrangement.clearRange(s, e);
     } else {

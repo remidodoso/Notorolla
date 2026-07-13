@@ -71,6 +71,8 @@ export function initProjectio(ctx) {
     arrangement.lanes = freshArr.lanes;
     arrangement.seq = freshArr.seq;
     arrangement.activeLaneId = freshArr.activeLaneId;
+    arrangement.playStart = freshArr.playStart; // region markers travel with the document (fromJSON
+    arrangement.playEnd = freshArr.playEnd;     // defaults 0/null, so New also resets — never carried over)
     arrangement.clearSelection();
     // Opening a FILE: any lane whose patch origin isn't in this catalog came from
     // elsewhere → mark it imported (`[I]`, offers "add to your catalog?"). Resolvable

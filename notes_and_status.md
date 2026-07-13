@@ -280,8 +280,6 @@ archive or the linked section. (Bigger features are in [future_directions.md](fu
   `stereoParams()`. (Also the natural point to enable cross-kind Copy/Paste of the gesture — a §13
   shared-labels tie-in.)
 - **Boshwick:** the variability/snap pass for the non-kick drum types; optional per-type factory presets.
-- **Bug:** `loadContent` doesn't restore `playStart`/`playEnd` (opening a project keeps the previous
-  session's region markers) — one-line fix when next touched.
 - **Lanes:** removing lanes (likely a right-click menu) is still unbuilt.
 - **Patch catalog:** groups + tags on the model, with a tree/tag-facet UI (Phase D); drag a patch onto
   a lane head (Phase E); later — rack instances, patch auditioning, Factory-Save tooling.
@@ -412,7 +410,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 | [audio/audio.js](src/js/audio/audio.js) | `AudioEngine` — additive synth voice (`buildVoice`), per-lane patch resolution (`patchFor`), per-lane **stereo mixer strips** (volume→panner→[chorus]→[delay]→mute-gate; `setLaneVolume`/`setLaneGain`/`setLanePan`, `applyLaneChorus`/`applyLaneDelay`/`applyLaneReverb`, `modsFor`), master limiter + fader + **stereo meter tap** (`getPeak`); `renderToBuffer`/`renderStem` (offline bounce), `FREF` |
 | [audio/instrument.js](src/js/audio/instrument.js) | the **instrument registry** (Vesperia/Zindel/Wendelhorn/Tervik/Nayumi/Boshwick/Padlington): `defaultPatch(kind)`, `normalizePatch`, `clonePatch`, `instrument`/`instrumentKinds`, slider mapping |
 | [audio/patches.js](src/js/audio/patches.js) | `PatchStore` — the **user-global patch catalog** backing store: id-keyed named patches, factory `Init` per kind (`factoryInitId`) + user tier, `allForKind`/`add`/`update`/`remove`/`uniqueUserName`. Pure |
-| [audio/padsynth.js](src/js/audio/padsynth.js) | the **Padlington bake** (pure, seeded): PadSynth profile generators (saw/square/choir/tilt) → Gaussian-band spectrum → random-phase IFFT wavetable; `bakePadTable`/`padTableKey`/`padBaseFreq`, radix-2 `fft` |
+| [audio/padsynth.js](src/js/audio/padsynth.js) | the **Padlington bake** (pure, seeded): PadSynth profile generators (saw/pulse/choir/tilt, with the Saw/Pulse **Shape** morph) → Gaussian-band spectrum → random-phase IFFT wavetable; `bakePadTable`/`padTableKey`/`padBaseFreq`, radix-2 `fft` |
 | [audio/delay.js](src/js/audio/delay.js) | per-lane delay config (`normalizeDelay`, `DELAY_TIMES`/`DELAY_MODES`) + `buildDelayEditor` |
 | [audio/chorus.js](src/js/audio/chorus.js) | per-lane Juno-60 chorus config (`normalizeChorus`, `CHORUS_MODES`) + `buildChorusEditor` |
 | [audio/reverb.js](src/js/audio/reverb.js) | per-lane reverb config (`normalizeReverb`) + `buildReverbEditor` |
@@ -517,13 +515,19 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   change — see Gotchas). v1 = **808 only** (a future Model select for 909/ride/china is noted).
   *Planned:* the same variability/snap pass for the other drum types; per-type factory presets
   sanctioned if needed.
-- **Padlington (2026-07-09)** — a **PadSynth pad** (Paul Nasca's ZynAddSubFX algorithm). A harmonic
-  **profile** — **Source**: Saw (1/k, the "infinite-unison supersaw" pad), Square (odd harmonics),
+- **Padlington (2026-07-09; Shape added 2026-07-12)** — a **PadSynth pad** (Paul Nasca's ZynAddSubFX
+  algorithm). A harmonic
+  **profile** — **Source**: Saw (1/k, the "infinite-unison supersaw" pad), Pulse (a rectangular pulse),
   **Choir** (vowel formants ooh/oh/ah/eh/ee + a **Size** knob, reusing Nayumi's formant tables
   analytically — no samples, the profiles are *generated*), or **Tilt** (a bare 1/k^e) — is smeared
   into **Gaussian bands** in the frequency domain (**Bandwidth** in cents = THE lushness knob;
   **BW Scale** = how the smear grows up the series), given seeded random phases, and IFFT'd into a
   **2^17-sample looping wavetable**. The bake is a pure module ([src/js/audio/padsynth.js](src/js/audio/padsynth.js)).
+  **Shape** (Saw/Pulse only, Lo↔Hi) morphs the waveshape spectrally — since the bake randomizes
+  phase, a waveshape *is* its magnitude profile, so both sources are the same |sin(π·k·x)|/k^e family:
+  Saw→triangle (e=2, symmetry 0→½) and Pulse duty 0.5→0.03 (e=1). Shape 0 = today's Saw/Square
+  bit-for-bit; inert for Choir/Tilt. (The old **Square** source is now **Pulse** at Shape 0; a marked
+  `migratePadPulse` compat shim in `normalizePatch` remaps legacy `source:'square'` on load.)
   **Stretch** (partial k lands at f·k^(1+s)) is the inharmonicity knob — the first Sethares/§15 hook.
   Tables bake **lazily per (patch, octave base C1–C8)** and are cached per context (LRU 16;
   `playbackRate = f0/base` stays within ~[0.71, 1.41], which also keeps the choir's formants
@@ -1018,6 +1022,11 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   gap. Tiles are **atomic** (one starting before the range but reaching into it is untouched). The
   playhead and region markers **ride along** as timeline points (`insertPoint`/`deletePoint`); a
   degenerate region reopens 4 beats apart at the range start. One undo entry per op. `notch/rangeops.mjs`.
+  - **Insert-at-origin exception (2026-07-12):** a **start marker at beat 0** (and a **playhead parked at
+    0**) *stay* at 0 when time is inserted at the beginning, rather than being pushed to the end of the
+    inserted gap — the prepended time joins the play region / stays "at the start," which is what the
+    user expects there. Narrow special-case (`s === 0 && point === 0`) in `insertTime` (marker) and
+    `commitRange` (playhead); every other configuration still rides along by the general rule.
 - **The roll has a fixed-height (400 px) viewport that scrolls internally** (both axes; pairs with the V
   zoom) so a changing pitch span never resizes the pane and slides the page. (One half of the anti-scroll
   discipline — see Gotchas.)
@@ -1060,8 +1069,10 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   (back to auto). Dashed green/red guides mark the bounds through every track. **Both Play and Loop honor
   [start, end)** via `windowedArrangementScore` (windows the score to the region, shifted to beat 0, so
   the scheduler is unchanged). Markers **save with the project** (dirty-tracked) and are **undoable**;
-  New Project resets. Marker edits land at the next loop boundary. **Export still renders the whole
-  arrangement** (a "marked section only" mode is deferred).
+  **Open restores the file's markers, New resets to 0/auto** — `loadContent` copies `playStart`/`playEnd`
+  onto the live arrangement, so they never carry over from the previous document (fixed 2026-07-12).
+  Marker edits land at the next loop boundary. **Export still renders the whole arrangement** (a "marked
+  section only" mode is deferred).
 
 ### Transport & roll
 - **Roll zoom — adjustable V + H scale**: quantized notches (`ROLL_V_SCALES` 4–32 px/semitone,

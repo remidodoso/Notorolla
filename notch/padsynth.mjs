@@ -31,9 +31,16 @@ const N = 1 << 12; // small table for fast tests (the bake takes tableSize)
 {
   const base = { ...defaultPatch('padlington'), harmonics: 16 };
   const saw = padProfile({ ...base, source: 'saw' }, 261.6256);
-  ok(near(saw[0], 1) && near(saw[1], 0.5) && near(saw[3], 0.25), 'saw profile is 1/k');
-  const sq = padProfile({ ...base, source: 'square' }, 261.6256);
-  ok(near(sq[0], 1) && sq[1] === 0 && near(sq[2], 1 / 3) && sq[3] === 0, 'square profile is odd-only 1/k');
+  ok(near(saw[0], 1) && near(saw[1], 0.5) && near(saw[3], 0.25), 'saw (Shape 0) profile is 1/k');
+  // Pulse at Shape 0 = duty 0.5 = the old odd-only square (evens ~0 in float).
+  const pu = padProfile({ ...base, source: 'pulse', shape: 0 }, 261.6256);
+  ok(near(pu[0], 1) && near(pu[1], 0) && near(pu[2], 1 / 3) && near(pu[3], 0), 'pulse (Shape 0) profile is odd-only 1/k (square)');
+  // Shape → Hi thins the duty, so even harmonics fill in (broader, brighter).
+  const puHi = padProfile({ ...base, source: 'pulse', shape: 1 }, 261.6256);
+  ok(puHi[1] > 0.05, 'pulse at Shape Hi fills in even harmonics (skinny pulse)');
+  // Saw → Hi is the odd-only 1/k² triangle (A1=1, evens ~0, A3=1/9).
+  const sawHi = padProfile({ ...base, source: 'saw', shape: 1 }, 261.6256);
+  ok(near(sawHi[0], 1) && near(sawHi[1], 0) && near(sawHi[2], 1 / 9), 'saw at Shape Hi is odd-only 1/k² (triangle)');
   const tl = padProfile({ ...base, source: 'tilt', tilt: 2 }, 261.6256);
   ok(near(tl[1], 0.25) && near(tl[3], 1 / 16), 'tilt profile is 1/k^e');
 
@@ -94,6 +101,7 @@ const N = 1 << 12; // small table for fast tests (the bake takes tableSize)
   ok(padTableKey({ ...p, attack: 2, width: 0, cutoff: 500, pitchAtk: 120 }, 261.6256, SR) === k,
     'envelope/width/filter/pitch-attack edits do NOT change the table key');
   ok(padTableKey({ ...p, bandwidth: 50 }, 261.6256, SR) !== k, 'bandwidth changes the key');
+  ok(padTableKey({ ...p, shape: 0.5 }, 261.6256, SR) !== k, 'Shape changes the key (Saw/Pulse bake param)');
   ok(padTableKey({ ...p, source: 'choir' }, 261.6256, SR) !== k, 'source changes the key');
   ok(padTableKey(p, 523.2511, SR) !== k, 'the octave base is part of the key');
 }
@@ -111,15 +119,18 @@ const N = 1 << 12; // small table for fast tests (the bake takes tableSize)
 // 8) Registry plumbing: defaults, PARAMS, normalize.
 {
   const p = defaultPatch('padlington');
-  const keys = ['source', 'vowel', 'size', 'tilt', 'harmonics', 'bandwidth', 'bwScale', 'stretch',
+  const keys = ['source', 'shape', 'vowel', 'size', 'tilt', 'harmonics', 'bandwidth', 'bwScale', 'stretch',
     'pitchAtk', 'pitchAtkTime', 'width', 'cutoff', 'reso', 'filterEnv', 'keyTrack',
     'attack', 'decay', 'sustain', 'release'];
   ok(keys.every((k) => p[k] !== undefined), 'default padlington patch has every param');
-  ok(p.source === 'saw', 'default source = saw');
+  ok(p.source === 'saw' && p.shape === 0, 'default source = saw, Shape = 0 (Lo)');
   const srcSpec = paramsFor('padlington').find((s) => s.key === 'source');
-  ok(srcSpec && srcSpec.sel && srcSpec.options.length === 4, 'source is a 4-option select');
+  ok(srcSpec && srcSpec.sel && srcSpec.options.length === 4 && srcSpec.options.some((o) => o.id === 'pulse'),
+    'source is a 4-option select including Pulse');
   ok(normalizePatch({ kind: 'padlington', source: 'choir' }).source === 'choir', 'valid source kept');
   ok(normalizePatch({ kind: 'padlington', source: 'zzz' }).source === 'saw', 'bad source → saw');
+  // COMPAT: a legacy 'square' patch migrates to 'pulse' (shape 0 = same spectrum).
+  ok(normalizePatch({ kind: 'padlington', source: 'square' }).source === 'pulse', 'legacy square source → pulse');
   ok(normalizePatch({ kind: 'padlington', harmonics: 9999 }).harmonics === 128, 'harmonics clamps to max');
   ok(normalizePatch({ kind: 'padlington', stretch: 1 }).stretch === 0.05, 'stretch clamps to ±0.05');
 
@@ -128,6 +139,8 @@ const N = 1 << 12; // small table for fast tests (the bake takes tableSize)
   ok(spec('vowel').inert({ source: 'saw' }) && !spec('vowel').inert({ source: 'choir' }), 'Vowel inert outside Choir');
   ok(spec('size').inert({ source: 'tilt' }) && !spec('size').inert({ source: 'choir' }), 'Size inert outside Choir');
   ok(spec('tilt').inert({ source: 'choir' }) && !spec('tilt').inert({ source: 'tilt' }), 'Tilt inert outside Tilt');
+  ok(spec('shape').inert({ source: 'choir' }) && spec('shape').inert({ source: 'tilt' })
+    && !spec('shape').inert({ source: 'saw' }) && !spec('shape').inert({ source: 'pulse' }), 'Shape active only for Saw/Pulse');
 }
 
 // --- fake Web Audio: record nodes, connections, buffers -----------------------

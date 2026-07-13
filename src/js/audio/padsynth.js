@@ -41,6 +41,10 @@ const PAD_FORMANT_GAINS = [1.0, 0.6, 0.4];
 const PAD_FORMANT_Q = 9;        // matches Nayumi's default vowel sharpness
 const PAD_GLOTTAL_TILT = 1.1;   // 1/k^tilt vocal-source rolloff (Nayumi's)
 
+// The thinnest Pulse duty (Shape = Hi). Kept off 0 so the pulse never collapses
+// to silence — a super-skinny, bright, buzzy band-limited pulse.
+const PAD_PULSE_MIN_DUTY = 0.03;
+
 // Magnitude of a bandpass resonator (centre fc, quality q) at frequency f —
 // unity at the centre, skirts falling by Q. The analytic stand-in for running
 // the source through Nayumi's formant bank.
@@ -50,15 +54,29 @@ function formantMag(f, fc, q) {
 }
 
 // The harmonic amplitude profile for a patch: A1..An by source kind.
+//
+// Pulse and Saw are one-parameter Shape morphs of the SAME family, |sin(π·k·x)|/k^e
+// — because the bake randomizes phase, only magnitudes matter, so a waveshape here
+// IS its harmonic-magnitude profile:
+//   • Pulse (e=1): duty d = 0.5→PAD_PULSE_MIN_DUTY as Shape goes Lo→Hi. d=0.5 gives
+//     |sin(πk/2)|/k = the odd-only 1/k SQUARE exactly; thinner d flattens/brightens
+//     the spectrum toward a buzzy skinny pulse (first sinc null at k≈1/d).
+//   • Saw→triangle (e=2): symmetry s = 0→0.5. s→0 is 1/k (all harmonics = SAW);
+//     s=0.5 gives |sin(πk/2)|/k² = the odd-only 1/k² TRIANGLE. The 1/(s(1−s)) scale
+//     is k-independent, so it drops out under RMS normalization — omitted here.
+// Shape 0 reproduces today's Saw/Square bit-for-bit, so existing patches are unchanged.
 export function padProfile(p, baseFreq) {
   const n = Math.max(1, Math.round(p.harmonics));
   const a = new Float32Array(n);
   const F = PAD_VOWELS[p.vowel] || PAD_VOWELS.ah;
+  const sh = p.shape > 0 ? Math.min(1, p.shape) : 0;   // Shape (Saw/Pulse only)
+  const duty = 0.5 - sh * (0.5 - PAD_PULSE_MIN_DUTY);  // Pulse duty cycle
+  const sym = sh * 0.5;                                 // Saw→triangle symmetry
   for (let k = 1; k <= n; k++) {
     let v;
     switch (p.source) {
-      case 'square':  // odd harmonics only, 1/k
-        v = k % 2 ? 1 / k : 0;
+      case 'pulse':   // rectangular pulse, duty `duty`: |sin(π·k·d)| / k
+        v = Math.abs(Math.sin(Math.PI * k * duty)) / k;
         break;
       case 'tilt':    // a bare 1/k^e rolloff — the "abstract" profile
         v = 1 / Math.pow(k, p.tilt);
@@ -69,8 +87,8 @@ export function padProfile(p, baseFreq) {
         v = fm / Math.pow(k, PAD_GLOTTAL_TILT);
         break;
       }
-      default:        // saw: all harmonics, 1/k
-        v = 1 / k;
+      default:        // saw → triangle: 1/k at Shape 0, else |sin(π·k·s)| / k²
+        v = sh <= 0 ? 1 / k : Math.abs(Math.sin(Math.PI * k * sym)) / (k * k);
     }
     a[k - 1] = v;
   }
@@ -120,7 +138,10 @@ export function padSpectrumMags(profile, p, baseFreq, sampleRate, tableSize) {
 export function padTableKey(p, baseFreq, sampleRate, tableSize = PAD_TABLE_SIZE) {
   const f = (x, d) => Number(x).toFixed(d);
   const src = p.source || 'saw';
-  const sub = src === 'choir' ? `${p.vowel}:${f(p.size, 3)}` : src === 'tilt' ? f(p.tilt, 3) : '';
+  const sub = src === 'choir' ? `${p.vowel}:${f(p.size, 3)}`
+    : src === 'tilt' ? f(p.tilt, 3)
+    : (src === 'saw' || src === 'pulse') ? `sh${f(p.shape, 3)}`
+    : '';
   return `${src}|${sub}|h${Math.round(p.harmonics)}|bw${f(p.bandwidth, 2)}|bs${f(p.bwScale, 3)}|st${f(p.stretch, 4)}|f${f(baseFreq, 3)}|r${sampleRate}|n${tableSize}`;
 }
 
