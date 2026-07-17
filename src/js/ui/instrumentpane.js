@@ -67,9 +67,10 @@ export function buildInstrumentPane(containerEl, cb) {
   const copyBtn = mkBtn('Copy', 'tbtn', 'Copy these instrument settings', () => cb.onCopy());
   const pasteBtn = mkBtn('Paste', 'tbtn', 'Paste copied settings onto the target being edited', () => cb.onPaste());
   pasteBtn.disabled = true; // until something is copied
+  const rackBtn = mkBtn('＋ Rack', 'tbtn', 'Add this sound to the rack as a shared instrument (drag it onto lane heads)', () => cb.onAddToRack && cb.onAddToRack());
   const resetBtn = mkBtn('Factory Reset', 'tbtn danger', 'Restore every setting to this instrument’s default sound', () => cb.onReset());
 
-  head.append(target, kindSel, desc, spacer, testBtn, copyBtn, pasteBtn, resetBtn);
+  head.append(target, kindSel, desc, spacer, testBtn, copyBtn, pasteBtn, rackBtn, resetBtn);
   containerEl.append(head);
 
   // Patch bar: the target's PATCH identity + catalog ops (Phase B of §14). The
@@ -98,7 +99,8 @@ export function buildInstrumentPane(containerEl, cb) {
     if (id) cb.onLoad(id);
   });
   const catalogBtn = mkBtn('Catalog', 'tbtn', 'Open the Patch Catalog — browse, apply, rename, delete', () => cb.onCatalog && cb.onCatalog());
-  patchbar.append(patchLabel, nameEl, saveBtn, saveAsBtn, loadSel, catalogBtn);
+  const rackPaneBtn = mkBtn('Rack', 'tbtn', 'Open the Rack — shared instrument instances you assign to lanes', () => cb.onRackPane && cb.onRackPane());
+  patchbar.append(patchLabel, nameEl, saveBtn, saveAsBtn, loadSel, catalogBtn, rackPaneBtn);
   containerEl.append(patchbar);
 
   const body = document.createElement('div');

@@ -11,6 +11,8 @@ This is the document to consult for status and detailed progress.
 
 Keep this document updated in moderate detail. "Future directions" is strategic and used for discussing "big picture" items.
 
+Regularly Purge: When items in this document no longer need work, are completed, become irrelevant due to change of direction, become obsolete or obsolescent, etc., move the relevant text to an archive (see below). This document is not history -- it is status.
+
 Organization: See "file map" below and keep it maintained.
 
 Format: Each new or updated entry must contain a timestamp indicating when the work or change was completed, or when an observation was made.
@@ -121,8 +123,10 @@ name on `ctx`, grep that it isn't taken.
   stays middle C; octave = 16 degrees; pitch-classes named in **hex `0–f`**). Naming is per-tuning (12-ET
   letters, non-12 hex); the grid renders octave-every-`edo`, drops black keys for non-12 (tints the class-0
   home row instead). **Scale masks are EDO-tagged** ([src/js/core/scales.js](src/js/core/scales.js) `scalesFor(edo)`): the
-  picker shows Chromatic (universal) + the tuning's masks — 12-ET pentatonics, or 16-ET **Mavila[7]** `{0,2,4,6,9,11,13}`
-  + Mavila pentatonic; switching tuning drops an out-of-EDO mask back to Chromatic. **Roll** still mirrors with
+  picker shows Chromatic (universal) + the tuning's masks — 12-ET modes/pentatonics/symmetric, or the 16-ET set:
+  the **Mavila** MOS family (**[7]** `{0,2,4,6,9,11,13}`, **[9]** superdiatonic, pentatonic) + 16-ET's symmetric
+  scales (**Octatonic** `1 3×4`, **Whole-tone (8)** `2×8`, **Lemba** `3 3 2×2`); switching tuning drops an
+  out-of-EDO mask back to Chromatic. **Roll** still mirrors with
   12-ET-flavored black-key/octave cosmetics (notes sit at the right degree + sound correct; per-tuning roll
   shading is a deferred polish — it ties into mixed-tuning arrangements).
 
@@ -282,7 +286,14 @@ archive or the linked section. (Bigger features are in [future_directions.md](fu
 - **Boshwick:** the variability/snap pass for the non-kick drum types; optional per-type factory presets.
 - **Lanes:** removing lanes (likely a right-click menu) is still unbuilt.
 - **Patch catalog:** groups + tags on the model, with a tree/tag-facet UI (Phase D); drag a patch onto
-  a lane head (Phase E); later — rack instances, patch auditioning, Factory-Save tooling.
+  a lane head (Phase E); later — patch auditioning, Factory-Save tooling. (Rack instances: **done**
+  2026-07-15 — see "Instrument Rack" in What works today.)
+- **Rack:** deleting an instance from the pane (only New Project clears it today); an optional use-count
+  on chips.
+- **16-ET masks + triads (DONE, 2026-07-15):** added Mavila[9], Octatonic, Whole-tone (8), Lemba (6) scale
+  masks + the `mavila` triad family (anti-diatonic maj/min/dim). *(Note: a 12-ET "quartal" triad was
+  considered but dropped — `{0,5,10}` is the same set-class as the existing `sus` `{0,2,7}`. A genuinely
+  distinct 12-ET trichord, e.g. `{0,4,10}` dom7-no-5, is available if wanted.)*
 - **Grid mutate tools:** **Invert** (needs a chosen pivot — first/selected/centroid/fixed degree, TBD);
   a **smart transpose / harmonize** (move each note to the next chord tone of the detected triad — follows
   harmony, not a fixed interval; composes with the future ratio-based triad definer).
@@ -349,9 +360,10 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 | [core/tuning.js](src/js/core/tuning.js) | row/degree → pitch/frequency seam; per-pattern `tuningFreq` + **`edoOf(tuningId)`**; 12-ET / Just / **16-ET**; per-tuning `degreeToName`/`pitchClassName` (12-ET letters, non-12 hex), **`pitchClassLabel`** (pitchClassName, or `''` for no-equave tunings — the safe gate for pitch-class-tiled displays), `equaveOf`, `degreeBounds`, `nearestDegreeToFreq` |
 | [core/scales.js](src/js/core/scales.js) | per-EDO scale masks: `scalesFor(edo)`, `scaleById`, `scaleValidForEdo` (the scale library the grid + transpose menus draw from) |
 | [core/grid.js](src/js/core/grid.js) | `Pattern` (named; **per-pattern column count**, `Pattern.initial(name, cols)`), `DURATIONS`, `PALETTE`, `BASE_PITCH`, `DEFAULT_ARTIC` |
-| [core/library.js](src/js/core/library.js) | `PatternLibrary` (registry, naming, parking), `Arrangement` (lanes/tiles + per-lane mute/solo + `lane.gain`/`lane.pan`/`lane.patch`, play-region `playStart`/`playEnd`, `audibleLaneIds`), `laneColor`, `insertPoint`/`deletePoint` |
+| [core/library.js](src/js/core/library.js) | `PatternLibrary` (registry, naming, parking), `Arrangement` (lanes/tiles + per-lane mute/solo + `lane.gain`/`lane.pan`/`lane.patch`, play-region `playStart`/`playEnd`, `audibleLaneIds`; the shared-instrument **Rack**: `lane.patchRef`→instance, `resolvePatch`/`laneInstance`/`assignRack`/`detachRack`), `laneColor`, `insertPoint`/`deletePoint` |
+| [core/rack.js](src/js/core/rack.js) | the instrument **Rack** (pure): shared instrument instances `{ id, name, color, patch, +catalog-identity }`; `add`(copy-out, auto-name R1/R2, count-up `seq`)/`get`/`rename`/`remove`, `rackColor`, `toJSON/fromJSON`. Lives on the `Arrangement` (rides project + undo) |
 | [core/transforms.js](src/js/core/transforms.js) | per-tile **nondestructive** pattern transforms (pure): scalar/chromatic **transpose** + **reverse** + **detune** (±100 ¢, uniform sounding-pitch contract), in the canonical One True Order — `applyTransforms`, `setTileTranspose`/`setTileReverse`/`setTileDetune`, `hasReverse`/`findDetune`, `describeTransform`, `transformKindLabel`, `normalizeTransforms` |
-| [core/triads.js](src/js/core/triads.js) | Triadulator engine (pure): partition a pitch-class set into chords — families `trad`/`sus` (12-ET), `septimal` (16-ET); `enumerateTriadulations(pcs, {families, edo})`, `classifyTriad`, `familiesFor(edo)`/`familyLabel`, `chordsFor` |
+| [core/triads.js](src/js/core/triads.js) | Triadulator engine (pure): partition a pitch-class set into chords — families `trad`/`sus` (12-ET), `mavila` (anti-diatonic maj/min/dim on the 675¢ fifth) + `septimal` (16-ET); `enumerateTriadulations(pcs, {families, edo})`, `classifyTriad`, `familiesFor(edo)`/`familyLabel`, `chordsFor` |
 | [core/random.js](src/js/core/random.js) | New Random generator (pure): a contiguous in-scale degree window around the viewport centroid → random degrees, bent by Unique / Run / Triad; plus **Duration/Accent Bias** each with a **Steer** or **Sort** mechanism; `scaleWindow`, injectable rng |
 | [core/reference.js](src/js/core/reference.js) | grid **reference backdrop** (future_directions §16): `bakeReference`, `referenceScore`/`referenceDisplay`, `mergeAudition`, `referenceToJSON`/`FromJSON` |
 | [core/hexlayout.js](src/js/core/hexlayout.js) | pure **isomorphic hex-keyboard geometry** (future_directions §22 visualizer): `degree = base + q·x + r·y` in EDO steps; `HEX_LAYOUTS`/`layoutById` (data presets; Harmonic Table axes derived from JI so they generalise to any EDO), `buildLayout` → cells (with `ring` = hex distance from centre) + **`edges`** (the deduped lattice between keys: endpoints, midpoint, `orient`, `ring`, `interior`) + `byDegree`/`byPc` indices + `maxRing` + `cellAt` (pixel→cell, the future input seam) |
@@ -375,6 +387,7 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 | [ui/instrumentpane.js](src/js/ui/instrumentpane.js) | `buildInstrumentPane` — the retargetable, **kind-aware** "Edit instrument" pane (instrument selector; slider/fader/checkbox/dropdown/stepped-list/knob widgets; **inert dimming** via `spec.inert(patch)`; target chip, Test, Copy/Paste, Save/Load identity) |
 | [ui/knob.js](src/js/ui/knob.js) | `makeKnob` — click-vertical-drag rotary widget + `PAN_MAP`/`GAIN_MAP` mixer mappings |
 | [ui/catalog.js](src/js/ui/catalog.js) | `createCatalog` — the **Patch Catalog** window (a panel.js tenant): kind→patch browse, search, apply, Rename/Delete; content-only |
+| [ui/rackpane.js](src/js/ui/rackpane.js) | `createRackPane` — the **Rack** window (a panel.js tenant): chips of shared instrument instances; **drag a chip** onto a lane head to assign, double-click to rename; content-only (app/rack drives the drag) |
 | [ui/inspector.js](src/js/ui/inspector.js) | `createInspector` — the **Tile inspector** content (a panel.js tenant): optional play/stop/loop transport + a `setFacts` data dump with inline-rename heading |
 | [ui/panel.js](src/js/ui/panel.js) | `createPanel` — the reusable **modeless floating-pane primitive** (fixed, draggable, resizable, geometry-remembered, **click-to-front** z-ordering). Doc-agnostic (pop-out ready). Shared by the inspector + catalog + visualizer |
 | [ui/vizhex.js](src/js/ui/vizhex.js) | `createVizHex` — the **HEX keyboard visualizer** (future_directions §22), a panel.js tenant: pre-renders the empty board offscreen (rebuilt on resize/tuning change), then per frame blits it + fills the lit hexes; **scheduled** lighting (a note lights at its audio-clock time, held for its gate + a decay glow), exact pitch bright + octave-mates dimmer, lane colour × velocity; rAF runs only while open + animating. **Per-kind scene modifier** (`sceneForNote`, pure) over two non-competing layers: melodic voices light pitch **faces**, **Boshwick** lights a **sparse few of the lattice edges** (the gaps between keys, ≤3/hit) chosen by region (kick=centre, hat/cymbal=rim, snare=mid band, clap=scatter, cowbell/rim/clave=fixed edges) with **Tom** the pitched hybrid exception (a face) |
@@ -391,11 +404,12 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 | [app/zoom.js](src/js/app/zoom.js) | the tile-scale strip + roll zoom ladders (`updateScaleStrip`, `clampScaleIdx`) |
 | [app/score.js](src/js/app/score.js) | score building: `buildScore`/`arrangementScore`/`windowedArrangementScore`/`activeScore`, `computeTail`/`maxReverbTail`, region beat math (`playStartBeat`/`playEndBeat`/`arrangementEndBeat`), `ensureTileStarts` |
 | [app/transport.js](src/js/app/transport.js) | the scheduler **driver**: play/stop/loop (grid + tiles + audition), render loop + playhead, transport buttons, tempo, mod-clock, Lite toggle, roll/tile auto-scroll; `LOOP_MAX`/`LOOP_STEP` |
-| [app/tileops.js](src/js/app/tileops.js) | tile-player ops: play-region markers, tile drag (move/copy/reorder w/ live ripple preview), click-select, single-tile audition, grid→lane drop, delete/deselect |
+| [app/tileops.js](src/js/app/tileops.js) | tile-player ops: play-region markers, tile drag (move/copy/reorder w/ live ripple preview), click-select, single-tile audition, grid→lane drop, **drag-to-new-lane** (grid handle or existing tile onto "+ Lane"), delete/deselect |
 | [app/transformbar.js](src/js/app/transformbar.js) | the tile transform bar: Ripple, the Transpose/Reverse/Clone selection actions, the Insert/Clear/Delete range tools, per-selection transform chips |
 | [app/tileinspector.js](src/js/app/tileinspector.js) | the **Tile Inspector** floating pane — transport + facts dump, following the selection |
 | [app/visualizer.js](src/js/app/visualizer.js) | wires the **HEX keyboard visualizer**: the transport-area ⬡ Keyboard summon button, the board's pitch context (current tuning + centre degree ≈ middle C), and the scheduler's `onNoteVisual` feed → `ui/vizhex.js` |
-| [app/patchedit.js](src/js/app/patchedit.js) | the instrument editor: grid/parked-instrument descriptors, the edit pane, per-target patch **identity** (dirty/Save/Save As/Load/Rename), the **Patch Catalog** ops |
+| [app/patchedit.js](src/js/app/patchedit.js) | the instrument editor: grid/parked-instrument descriptors, the edit pane, per-target patch **identity** (dirty/Save/Save As/Load/Rename; a **rack instance** is a first-class target — `targetMeta` resolves to it), the **Patch Catalog** ops, **Add to rack** |
+| [app/rack.js](src/js/app/rack.js) | the instrument **Rack** controller: the Rack window (ui/rackpane), the **drag-a-chip-onto-a-lane-head** gesture (floating ghost + `elementFromPoint`), and undoable (`full`) **assign** / **detach** |
 | [app/lanefx.js](src/js/app/lanefx.js) | per-lane mixer + FX: volume/pan/mute/solo bus pushers, the delay/chorus/reverb/modulator modal editors, add-lane, lane/player reset |
 | [app/triadulator.js](src/js/app/triadulator.js) | the **Triadulator** proposal system: enumerate placeable triads from unused pitch-classes, overlay/rotate them, Confirm to register |
 | [app/randomui.js](src/js/app/randomui.js) | the **New Random** modal: live-preview generation, in-modal back/redo, audition, Replace-in-place / New-Pattern / Cancel |
@@ -428,8 +442,9 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   pool → ~10 osc/note. **Stereo** = a cheap, mono-safe source-level M/S widen (pan spread by index +
   a center-saw scoop gated by side energy). **Pitch Atk / Pitch Time** = the pitch attack, now
   **signed ±200 ¢** (2026-07-09): positive starts sharp and exp-settles to pitch (the synth-brass
-  blip), negative approaches from below (the scoop); 0 = off. Into Vesperia's resonant lowpass +
-  filter envelope and a shared ADSR. Levels scaled by `WENDEL_NORM`. *Deferred:* a Cubase-style
+  blip), negative approaches from below (the scoop); 0 = off. Into Vesperia's resonant lowpass (its
+  cutoff tracks the amp ADSR — the single-envelope model) and a shared ADSR. Levels scaled by
+  `WENDEL_NORM`. *Deferred:* a Cubase-style
   combined Width+Pan panner.
 - **Tervik** — a lightweight **3-operator FM** synth (only 3 osc/voice — the cheapest voice).
   **Op 1 is always the final carrier** and its ADSR is the amp envelope; a 4-way **Algorithm** routes
@@ -540,8 +555,11 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
     decay-to-silence, Sustain > 0 holds the note).
   - **Timbre** — one spectral-tilt slider (`k^e`), **0.5 = neutral**, left darkens / right brightens;
     **energy-normalized** so it changes color, not loudness (see Gotchas).
-  - **Filter** — **Cutoff**, **Resonance** (Q), **Env Amount** (octaves the envelope opens above base
-    at attack) and **Key Track** (0 = fixed Hz, 1 = follows pitch). Native `BiquadFilter`, no WASM.
+  - **Filter** — **Cutoff**, **Resonance** (Q), **Env Amount** (octaves the cutoff opens above base at
+    the envelope peak) and **Key Track** (0 = fixed Hz, 1 = follows pitch). The cutoff **tracks the amp
+    ADSR** — the Juno-60 single-envelope model (one user envelope drives both the VCA and the VCF;
+    shared `scheduleFilterEnv`), so a slow envelope gives a slow, seconds-long sweep and Env Amount 0
+    leaves the filter static. Native `BiquadFilter`, no WASM.
   - **♪ Test** auditions a mid-register note through the current target (a lane target plays through
     its bus, so M/S apply).
 - **Patch persistence:**
@@ -554,6 +572,29 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   - **Grid/neutral patch**: `notorolla.gridpatch` (localStorage only, not in the project).
   - **Migration**: a pre-existing single global patch (`notorolla.patch`) seeds any patch-less lane
     on first load (existing projects reload identical; the dirty baseline absorbs the auto-add).
+
+- **Instrument Rack — shared instrument instances (2026-07-15).** "One voice, many lanes":
+  several lanes sharing ONE live patch instance so editing it once re-sounds them all (Cubase *rack*
+  vs. *track* instruments — future_directions §14). The pure model is [core/rack.js](src/js/core/rack.js) (a `Rack`
+  of instances, each a patch + the same catalog-identity fields a lane carries), living on the
+  `Arrangement` (rides the project file, the autosave, and undo). A lane's **`lane.patchRef`** (an
+  instance id) makes its voice the instance's; ONE resolver — `Arrangement.resolvePatch(lane)` — is
+  routed through by every reader (`patchFor`, mods, stems, inspector, the grid-borrow), so a rack lane
+  agrees everywhere. **Only the voice is shared** — gain/pan/mute-solo, the delay/chorus/reverb inserts,
+  and the modulators stay per-lane.
+  - **Use it:** **＋ Rack** in the instrument editor copies the current sound (params + identity) into a
+    new instance `R1, R2, …` (a pure copy-out — the source lane/grid is untouched; names count up
+    forever, never resurrected). **Drag a chip** from the Rack window onto a lane head to assign it
+    (`data-lane` drop target; a floating ghost + `elementFromPoint`, with the pane made click-through so
+    heads beneath it are hittable). **Double-click a rack lane head** edits the shared instance — the
+    editor targets it (`editTarget.rackId`; `targetMeta` resolves to the instance so Save/Load/dirty
+    apply to it) and **every lane on that instance lights up** (edit coverage). A rack lane head shows
+    **`⟲ R#`** (+ a **Detach** button — private copy of the sound, dropping the ref) in the instance
+    colour, in place of the kind/patch two-liner.
+  - **Undo:** `lane.patchRef` and the rack join the "sound layer" — live-carried on a normal tile
+    undo (sharing/edits survive an unrelated undo), snapshot-restored on a **`full`** entry, which is
+    how **assign / detach** (committed `full`) revert. Editing a shared instance is a live sound edit
+    (not its own undo step), consistent with all patch edits. `notch/rack.mjs` (33 tests).
 
 - **"Lite Instruments" — a live-only CPU relief (2026-07-05).** A global checkbox in the tile-player
   toolbar. When on, the two heavy voices — **Wendelhorn** (~3 osc vs ~10) and **Nayumi** (drops the
@@ -785,10 +826,12 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
 - **Undo/redo is per-pattern**; the tile lane has its own append/delete undo.
 
 ### Tile player (the arrangement)
-- **Parallel lanes** — **2 by default**, add more via a **"+ Lane"** button (a pinned, lane-head-width
-  enclosure below the stack, `position:sticky; left:0` so it doesn't scroll away): `addLane` makes an
-  empty active lane (undoable, persisted; New Project resets to 2). No hard cap. Each lane is an ordered
-  set of positioned tile references. *Removing* lanes is deferred.
+- **Parallel lanes** — **2 by default**, add more via **"+ Lane"**, now a full **lane-shaped slot**
+  below the stack (2026-07-13): a sticky "+ Lane" head + a full-width **latent-lane track** (outlined,
+  no beat dividers when idle, sized to content so it never implies width past the real tiles). *Clicking*
+  the head runs `addLane` — an empty active lane (undoable, persisted; New Project resets to 2); *dragging*
+  a pattern onto the latent track creates a lane holding it (see **Drag-to-new-lane** below). No hard cap.
+  Each lane is an ordered set of positioned tile references. *Removing* lanes is deferred.
 - **Track vs lane, and reordering (drag the colour stripe).** The lane *object* is the **track** — its
   colour, patch, tiles, inserts, mute/solo are all intrinsic; the **lane** is just the row it currently
   sits in (only the positional "Lane N" number is positional). **Colour is intrinsic** (`lane.color`,
@@ -805,6 +848,15 @@ The source lives under `src/js/`, grouped by role: **core/** (pure model + music
   click on the stripe (below the drag threshold) is reserved for a future colour picker.
 - Drag the grid's **grab handle** into a lane to drop a tile (a width-proportional
   thumbnail; note bars colored by duration; bordered in lane color; name centered).
+- **Drag-to-new-lane (2026-07-13).** Dropping onto the "+ Lane" latent track spins the tile(s) off into a
+  brand-new lane at the chosen beat, in **one undo entry**. Two paths share the same drop surface, neutral
+  **slate-glow** affordance, caret + drop-band(s), and beat grid (revealed only during the drag): **(1)** the
+  **grid grab handle** (HTML5 dnd) — the new lane adopts the **grid's** instrument; **(2)** an **existing tile
+  or multi-selection** (the pointer-based tile drag, via `dropTarget → {newLane}`) — the new lane adopts the
+  **source** lane's instrument, and a multi-selection lands as one **rigid block** (relative spacing
+  preserved; an empty new lane has no collisions). Horizontal edge-scroll reaches far beats; **Esc cancels**
+  (newly wired for *all* tile drags — previously you cancelled only by releasing off the lanes). The new-lane
+  preview is drawn straight into the latent track (`showNewLanePreview`), so no rebuild churn mid-gesture.
 - **Fresh-lane instrument seeding**: dropping into a **fresh** lane (`lane.fresh` — brand-new or
   just-reset, never used) sets that lane's instrument so the tile keeps sounding as it did — the
   **grid's** patch when dropped from the grab handle, or the **source lane's** patch when a tile is

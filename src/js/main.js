@@ -11,6 +11,7 @@ import { scalesFor, scaleValidForEdo } from './core/scales.js';
 import { GridView } from './ui/gridview.js';
 import { bakeReference, referenceDisplay } from './core/reference.js';
 import { TilePlayer, TILE_SCALES } from './ui/tileplayer.js';
+import { TilePreview } from './ui/tilepreview.js';
 import { buildToolbar } from './ui/toolbar.js';
 import { normalizePatch, instrument } from './audio/instrument.js';
 import { PatchStore, factoryInitId } from './audio/patches.js';
@@ -36,6 +37,7 @@ import { initTileops } from './app/tileops.js';
 import { initTileinspector } from './app/tileinspector.js';
 import { initTransformbar } from './app/transformbar.js';
 import { initPatchedit } from './app/patchedit.js';
+import { initRack } from './app/rack.js';
 
 // The shared-context object: extracted controllers register their API on it and
 // read each other's (and main.js's) shared state/functions through it. Storage
@@ -123,7 +125,7 @@ ctx.parkedInstr = state.parkedInstr || null;
 function resolveGridInstrPatch() {
   if (ctx.gridInstr.source === 'lane') {
     const lane = arrangement.lane(ctx.gridInstr.laneId);
-    if (lane) return lane.patch;
+    if (lane) return arrangement.resolvePatch(lane); // a borrowed rack lane plays its shared voice
   }
   return gridPatch;
 }
@@ -152,7 +154,7 @@ engine.patch = gridPatch; // fallback default
 engine.patchFor = (laneId) => {
   if (laneId == null) return resolveGridInstrPatch();
   const lane = arrangement.lane(laneId);
-  return lane ? lane.patch : gridPatch;
+  return lane ? arrangement.resolvePatch(lane) : gridPatch; // rack lane → shared voice
 };
 
 // Resolve a lane's mixer settings (linear volume + pan) for the engine — read
@@ -189,7 +191,8 @@ engine.laneChorus = (laneId) => {
 engine.modsFor = (laneId) => {
   const lane = arrangement.lane(laneId);
   if (!lane || !lane.modsByKind) return null;
-  const kind = lane.patch && lane.patch.kind;
+  const rp = arrangement.resolvePatch(lane); // mods key off the resolved (shared) voice's kind
+  const kind = rp && rp.kind;
   if (!modsActive(lane.modsByKind, kind)) return null;
   return lane.modsByKind[kind].map((m) => ({ ...m, loop: state.modLoop }));
 };
@@ -269,7 +272,7 @@ function setReferenceFromSelection(tiles) {
   const pat = library.patterns.get(tile.name);
   if (!pat) return;
   const lane = arrangement.laneOfTile(tile.id);
-  const patch = lane ? lane.patch : null; // future: a lane-less catalog pattern falls back to the grid patch
+  const patch = lane ? arrangement.resolvePatch(lane) : null; // a rack lane bakes its shared voice
   if (!state.reference) state.refPrevMode = state.mode; // remember the layout to restore on Clear
   try {
     state.reference = bakeReference(pat, patch, tile.transforms || null, { name: pat.label || pat.name });
@@ -304,6 +307,9 @@ const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, 
   onTileDown: (id, ev) => ctx.onTileDown(id, ev),
   onGridDragOver: (laneId, start) => ctx.gridDragOver(laneId, start),
   onDropAt: (laneId, start) => ctx.dropCurrentTile(laneId, start),
+  // Grid-drag onto the "+ Lane" latent track: live preview + create-lane-and-drop.
+  onNewLaneDragOver: (start) => ctx.newLaneDragOver(start),
+  onNewLaneDrop: (start) => ctx.dropIntoNewLane(start),
   // Empty-space rubber-band selection (one lane). Live: each band change
   // re-derives the intersecting set; no re-render, just class syncs.
   onMarqueeStart: () => {
@@ -364,6 +370,7 @@ const tilePlayer = new TilePlayer(document.getElementById('tileLane'), library, 
   onResetLane: (laneId) => ctx.resetLane(laneId),
   onMoveLane: (laneId, toIndex) => ctx.moveLane(laneId, toIndex),
   onEdit: (laneId) => ctx.editLane(laneId, true), // double-click the lane head → scroll the pane into view
+  onDetach: (laneId) => ctx.detachLane(laneId),   // lane-head Detach → private copy of the shared voice
   // The lane's patch display { name, dirty, imported } for the lane head.
   patchDisplay: (lane) => ctx.patchInfo(lane),
   onMixStart: () => ctx.onMixStart(),
@@ -530,7 +537,7 @@ function clonePattern() {
   // own (the clone is a fresh floating pattern), so it stays after the borrow ends.
   if (ctx.gridInstr.source === 'lane') {
     const lane = arrangement.lane(ctx.gridInstr.laneId);
-    if (lane) ctx.replaceGridPatch(lane.patch);
+    if (lane) ctx.replaceGridPatch(arrangement.resolvePatch(lane)); // resolve a rack lane's shared voice
   }
   ctx.setGridInstr({ source: 'grid' });
   arrangement.clearSelection();
@@ -623,6 +630,7 @@ function refresh() {
   grid.pattern = library.current();
   grid.referenceDegree = referenceDegreeFor(grid.pattern); // Boshwick keyboard-tracking pivot band
   grid.draw();
+  tilePreview.render(grid.pattern); // re-skin the drag-to-Tile-player card to the current pattern
   updateRollContent(); scrollRollToSelected();
   tilePlayer.render();
   // Reconcile live tile-player edits into the running cycle (tiles are the commit
@@ -725,13 +733,12 @@ document.getElementById('resetPlayer').addEventListener('click', ctx.resetPlayer
 arrUndoBtn.addEventListener('click', ctx.arrUndo);
 arrRedoBtn.addEventListener('click', ctx.arrRedo);
 
-tb.grabHandle.addEventListener('dragstart', (e) => {
-  e.dataTransfer.setData('text/plain', 'pattern');
-  e.dataTransfer.effectAllowed = 'copy';
+// The grid pane's tile-preview card is the drag source (the old toolbar grab
+// handle). dragend always fires (drop or cancel) — the reliable point to clear
+// the grid-drag landing preview. Re-skinned to the current pattern in refresh().
+const tilePreview = new TilePreview(document.getElementById('gridTilePreview'), {
+  onDragEnd: () => ctx.clearGridDragPreview(),
 });
-// dragend always fires (drop or cancel) — the one reliable point to clear the
-// grid-drag landing preview.
-tb.grabHandle.addEventListener('dragend', () => ctx.clearGridDragPreview());
 
 
 // --- initial paint ----------------------------------------------------
@@ -747,6 +754,7 @@ ctx.updateScaleStrip();
 // ctx.refreshTileInspector; transformbar builds the bar at its tail, reading both.
 initTileops(ctx);
 initPatchedit(ctx);
+initRack(ctx); // the instrument rack — shared instances (needs patchInfo/editLane from patchedit)
 initTileinspector(ctx);
 initTransformbar(ctx);
 initKeyboard(ctx); // global keydown shortcuts (extracted last — touches nearly every ctx API)

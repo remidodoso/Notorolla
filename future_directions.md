@@ -1205,15 +1205,20 @@ The **Edit button goes away**; the lane head shows two lines — **Instrument** 
 (`Name` / `Name*` / `Name [I]`). **Double-click anywhere there** → scroll to the editor with that lane
 loaded. (This keeps evolving as lane heads get reworked.)
 
-### Rack instruments (deferred, but designed-for)
+### Rack instruments — BUILT (2026-07-15)
 
 Lanes "notionally sharing an instrument" — really **sharing one live patch instance** (Cubase *rack*
-vs. *track* instruments): edit once, all sharers re-sound. First-class id-keyed patches make this natural
-later (multiple lanes → one instance, exactly as tiles → one pattern). **Not in the initial phases** —
-for now every lane keeps its own independent patch. When it lands it needs a lane-head indicator and is
-"probably its own catalog" (a catalog of shared instances you assign lanes to). Until then, **Save does
-*not* re-sound independent copies** — a lane holding an old copy of a just-re-Saved patch simply goes
-`Name*` (its copy no longer matches the saved sound).
+vs. *track* instruments): edit once, all sharers re-sound. Built as [core/rack.js](src/js/core/rack.js)
+(a `Rack` of instances living on the `Arrangement`) + `lane.patchRef` resolved by one
+`Arrangement.resolvePatch` seam; the Rack window ([ui/rackpane.js](src/js/ui/rackpane.js)) + drag-to-lane-head
+assignment and undoable assign/detach ([app/rack.js](src/js/app/rack.js)); **＋ Rack** copy-out + rack-aware
+`targetMeta` in [app/patchedit.js](src/js/app/patchedit.js). An instance carries the same catalog identity a
+lane does, so it is **not** its own catalog — the patch editor Saves/Loads it exactly like a lane's
+(orthogonal to, and compatible with, the user-global patch catalog). Only the **voice** is shared;
+mixer / inserts / mods stay per-lane. Mechanics in notes_and_status.md; `notch/rack.mjs`. *(The old
+non-rack behaviour is retained for lanes without a `patchRef`: **Save does not re-sound independent
+copies** — such a lane goes `Name*`.) Deferred follow-ons: deleting an instance from the pane (only New
+Project clears the rack today); a use-count on chips; rack ↔ pop-out.*
 
 ### Auditioning (parked, but this is what it plugs into)
 

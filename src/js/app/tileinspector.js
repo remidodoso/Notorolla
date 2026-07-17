@@ -85,7 +85,8 @@ export function initTileinspector(ctx) {
     const lane = arrangement.laneOfTile(anchor.id);
     const laneIdx = arrangement.lanes.indexOf(lane);
     const p = library.patterns.get(anchor.name);
-    const instr = lane && instrument(lane.patch && lane.patch.kind);
+    const rp = lane && arrangement.resolvePatch(lane); // rack lane → shared voice
+    const instr = rp && instrument(rp.kind);
 
     const multi = arrangement.selectedIds.size > 1;
     const placement = [['Lane', lane ? `Lane ${laneIdx + 1}` : '—'], ['Start', `beat ${anchor.start}`]];

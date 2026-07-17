@@ -12,6 +12,7 @@ import { normalizeReverb } from '../audio/reverb.js';
 import { normalizeModsByKind } from '../audio/mods.js';
 import { normalizePatch } from '../audio/instrument.js';
 import { factoryInitId } from '../audio/patches.js';
+import { Rack } from '../core/rack.js';
 
 const HISTORY_LIMIT = 200;
 
@@ -89,6 +90,11 @@ export function initHistory(ctx) {
         reverb: carry ? cur.reverb : normalizeReverb(l.reverb),
         modsByKind: carry ? cur.modsByKind : normalizeModsByKind(l.modsByKind),
         patch: carry ? cur.patch : normalizePatch(l.patch),
+        // A lane's RACK reference is part of the sound layer: carried on a normal
+        // entry (a tile-move undo must not re-wire sharing), restored from the
+        // snapshot on a full entry — which is how assign/detach (committed `full`)
+        // revert. The rack itself is handled just below, the same way.
+        patchRef: carry ? cur.patchRef : (l.patchRef || null),
         // Patch identity is part of the live "sound panel" layer — carried on a
         // normal entry, restored from the snapshot on a full (reset) entry.
         patchOriginId: carry ? cur.patchOriginId : (l.patchOriginId != null ? l.patchOriginId : factoryInitId(normalizePatch(l.patch).kind)),
@@ -98,6 +104,11 @@ export function initHistory(ctx) {
         fresh: !!l.fresh,
       };
     });
+    // The shared instrument rack: on a NORMAL entry it's the live "sound panel"
+    // layer (left untouched, so editing a shared instance survives a tile-move
+    // undo); on a FULL entry it's restored from the snapshot (so assign/detach and
+    // Reset — the deliberate sound-structural edits — are undoable).
+    if (full) arrangement.rack = Rack.fromJSON(o.rack);
     arrangement.seq = o.seq || 0;
     if (o.activeLaneId != null) arrangement.activeLaneId = o.activeLaneId;
     arrangement.playStart = o.playStart == null ? 0 : o.playStart; // region markers are undoable
@@ -107,8 +118,11 @@ export function initHistory(ctx) {
     ctx.applyLaneDelayAll();  // restored delay → rebuild/update the inserts
     ctx.applyLaneChorusAll(); // restored chorus → rebuild the inserts
     ctx.applyLaneReverbAll();  // restored reverb → rebuild the inserts
-    // If the editor was on a lane the undo/redo removed, drop back to the grid.
+    // Re-point the editor at live objects: a lane it was on may be gone (→ grid);
+    // a full restore rebuilt the rack (new instance objects) and a normal restore
+    // may have changed a lane's patchRef, so re-resolve the current target.
     if (ctx.editTarget && ctx.editTarget.laneId != null && !arrangement.lane(ctx.editTarget.laneId)) ctx.editGrid();
+    else if (ctx.reeditTarget) ctx.reeditTarget();
   }
   function arrUndo() { if (!arrPast.length) return; const e = arrPast.pop(); arrFuture.push({ snap: arrSnap(), full: e.full }); arrApply(e.snap, e.full); ctx.refresh(); }
   function arrRedo() { if (!arrFuture.length) return; const e = arrFuture.pop(); arrPast.push({ snap: arrSnap(), full: e.full }); arrApply(e.snap, e.full); ctx.refresh(); }

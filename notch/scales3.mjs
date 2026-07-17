@@ -9,7 +9,9 @@ ok(JSON.stringify(ids(scalesFor(12)))===JSON.stringify([
   'harmonic-minor','melodic-minor','whole-tone','octatonic-wh','octatonic-hw','augmented',
   'blues','major-pent','minor-pent',
 ]), '12-ET scales');
-ok(JSON.stringify(ids(scalesFor(16)))===JSON.stringify(['chromatic','mavila7','mavila-pent']), '16-ET scales');
+ok(JSON.stringify(ids(scalesFor(16)))===JSON.stringify([
+  'chromatic','mavila7','mavila9','mavila-pent','octatonic16','wholetone8','lemba6',
+]), '16-ET scales');
 ok(scaleValidForEdo('major-pent',12)===true, 'major-pent valid in 12');
 ok(scaleValidForEdo('major-pent',16)===false, 'major-pent invalid in 16');
 ok(scaleValidForEdo('mavila7',16)===true, 'mavila7 valid in 16');
@@ -38,6 +40,21 @@ ok(nearestInScale('mavila7',0,1,16)===0 || nearestInScale('mavila7',0,1,16)===2,
 // mavila pentatonic {0,2,4,9,11}
 const inP = (d)=>inScale('mavila-pent',0,d,16);
 ok([0,2,4,9,11].every(inP) && !inP(6) && !inP(13), 'mavila-pent membership');
+
+// New 16-ET masks
+const inM9 = (d)=>inScale('mavila9',0,d,16); // {0,2,4,6,8,9,11,13,15} — 7L2s superdiatonic
+ok([0,2,4,6,8,9,11,13,15].every(inM9) && [1,3,5,7,10,12,14].every(d=>!inM9(d)), 'mavila9 membership');
+ok(stepInScale('mavila9',0,6,1,16)===8 && stepInScale('mavila9',0,8,1,16)===9, 'mavila9 steps (2 then 1)');
+const inOct16 = (d)=>inScale('octatonic16',0,d,16); // {0,1,4,5,8,9,12,13}
+ok([0,1,4,5,8,9,12,13].every(inOct16) && [2,3,6,7,10,11,14,15].every(d=>!inOct16(d)), 'octatonic16 (1 3) membership');
+ok(stepInScale('octatonic16',0,0,1,16)===1 && stepInScale('octatonic16',0,1,1,16)===4, 'octatonic16 steps 1 then 3');
+const inWT8 = (d)=>inScale('wholetone8',0,d,16); // {0,2,4,6,8,10,12,14}
+ok([0,2,4,6,8,10,12,14].every(inWT8) && [1,3,5,7,9,11,13,15].every(d=>!inWT8(d)), 'wholetone8 membership');
+ok(stepInScale('wholetone8',0,14,1,16)===16, 'wholetone8 14→octave');
+const inLem = (d)=>inScale('lemba6',0,d,16); // {0,3,6,8,11,14}
+ok([0,3,6,8,11,14].every(inLem) && [1,2,4,5,7,9,10,12,13,15].every(d=>!inLem(d)), 'lemba6 membership');
+ok(stepInScale('lemba6',0,0,1,16)===3 && stepInScale('lemba6',0,6,1,16)===8, 'lemba6 steps (3 then 2)');
+ok([13].every(d=>inM9(d)) && inOct16(13), 'mavila9 + octatonic16 expose degree 13 (7:4 septimal)');
 
 // 12-ET masks unaffected
 ok(inScale('major-pent',0,7,12)===true && inScale('major-pent',0,7), 'major-pent still works (edo 12 default)');

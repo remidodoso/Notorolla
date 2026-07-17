@@ -11,8 +11,9 @@
 // letting unsaved patterns pile up invisibly.
 
 import { Pattern } from './grid.js';
-import { defaultPatch, normalizePatch } from '../audio/instrument.js';
+import { defaultPatch, normalizePatch, clonePatch } from '../audio/instrument.js';
 import { factoryInitId } from '../audio/patches.js';
+import { Rack } from './rack.js';
 import { normalizeTransforms } from './transforms.js';
 import { defaultDelay, normalizeDelay } from '../audio/delay.js';
 import { defaultChorus, normalizeChorus } from '../audio/chorus.js';
@@ -195,11 +196,52 @@ export class Arrangement {
     // it follows the arrangement as it grows. Play AND Loop honor [start, end).
     this.playStart = 0;
     this.playEnd = null;
+    // The instrument RACK: shared instrument instances (rack.js). A lane's
+    // `patchRef` (an instance id) makes its voice the instance's — edited once,
+    // heard on every lane that references it. Empty until "Add to rack".
+    this.rack = new Rack();
   }
 
   lane(id) { return this.lanes.find((l) => l.id === id); }
   laneOfTile(id) { return this.lanes.find((l) => l.tiles.some((t) => t.id === id)); }
   allTiles() { return this.lanes.flatMap((l) => l.tiles); }
+
+  // --- rack sharing (the shared-instrument seam) ---------------------------
+
+  // The rack instance a lane shares (or null for a lane on its own private patch).
+  laneInstance(lane) { return lane && lane.patchRef ? this.rack.get(lane.patchRef) : null; }
+
+  // The EFFECTIVE voice patch for a lane: its shared rack instance's patch, or its
+  // own private one. Every reader of a lane's instrument routes through here so a
+  // rack lane resolves to the shared voice (mods/stems/inspector/audio all agree).
+  resolvePatch(lane) {
+    const inst = this.laneInstance(lane);
+    return inst ? inst.patch : (lane ? lane.patch : null);
+  }
+
+  // Point a lane at a shared rack instance (its voice becomes the instance's). The
+  // lane's private patch stays dormant, ready for Detach; `fresh` clears so a later
+  // tile drop won't re-seed the instrument. No-op if the instance is unknown.
+  assignRack(laneId, instId) {
+    const lane = this.lane(laneId);
+    if (!lane || !this.rack.get(instId)) return;
+    lane.patchRef = instId;
+    lane.fresh = false;
+  }
+
+  // Detach a lane from its instance: it keeps the exact sound as its OWN private
+  // copy (patch + identity copied out of the instance), then drops the reference.
+  detachRack(laneId) {
+    const lane = this.lane(laneId);
+    if (!lane || !lane.patchRef) return;
+    const inst = this.rack.get(lane.patchRef);
+    if (inst) {
+      lane.patch = clonePatch(inst.patch);
+      lane.patchOriginId = inst.patchOriginId; lane.patchName = inst.patchName;
+      lane.patchDirty = inst.patchDirty; lane.patchImported = inst.patchImported;
+    }
+    lane.patchRef = null;
+  }
 
   // --- selection (a one-lane set; selectedId = the anchor) -----------------
 
@@ -297,6 +339,7 @@ export class Arrangement {
     lane.chorus = defaultChorus();
     lane.reverb = defaultReverb();
     lane.patch = defaultPatch();
+    lane.patchRef = null; // back to a private patch (patchRef ⟺ private patch are exclusive)
     lane.patchOriginId = factoryInitId(lane.patch.kind); lane.patchName = 'Init'; lane.patchDirty = false; lane.patchImported = false;
     lane.modsByKind = {};
     lane.fresh = true;
@@ -312,6 +355,7 @@ export class Arrangement {
     this.clearSelection();
     this.playStart = 0;
     this.playEnd = null;
+    this.rack = new Rack(); // every lane is gone → no references remain
   }
 
   // Mute and Solo are a per-lane tri-state {none | muted | soloed}: turning one
@@ -586,7 +630,8 @@ export class Arrangement {
         delay: l.delay, // per-lane delay insert
         chorus: l.chorus, // per-lane Juno chorus insert
         reverb: l.reverb, // per-lane insert reverb
-        patch: l.patch, // the lane's instrument settings
+        patch: l.patch, // the lane's private instrument settings (dormant while patchRef is set)
+        patchRef: l.patchRef || null, // a shared RACK instance id, or null for a private patch
         patchOriginId: l.patchOriginId, // catalog entry this patch derives from (by id)
         patchName: l.patchName,         // display name shown on the lane head
         patchDirty: !!l.patchDirty,     // edited / not-saved-as-shown (the `*`)
@@ -598,6 +643,7 @@ export class Arrangement {
       activeLaneId: this.activeLaneId,
       playStart: this.playStart,
       playEnd: this.playEnd,
+      rack: this.rack.toJSON(), // shared instrument instances
     };
   }
 
@@ -618,6 +664,7 @@ export class Arrangement {
         tiles: l.tiles.map(tile), mute: !!l.mute, solo: !!l.solo,
         gain: l.gain == null ? 1 : l.gain, pan: l.pan == null ? 0 : l.pan,
         delay: normalizeDelay(l.delay), chorus: normalizeChorus(l.chorus), reverb: normalizeReverb(l.reverb), patch,
+        patchRef: l.patchRef || null, // older saves lack the field → a private patch
         patchOriginId: hasIdentity ? l.patchOriginId : factoryInitId(patch.kind),
         patchName: hasIdentity ? (l.patchName || 'Init') : 'Init',
         patchDirty: hasIdentity ? !!l.patchDirty : true,
@@ -628,12 +675,13 @@ export class Arrangement {
     };
     const lanes = o.lanes
       ? o.lanes.map(lane)
-      : [{ id: 0, color: laneColor(0), tiles: (o.tiles || []).map(tile), mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), chorus: defaultChorus(), reverb: defaultReverb(), patch: defaultPatch(), patchOriginId: factoryInitId(defaultPatch().kind), patchName: 'Init', patchDirty: false, patchImported: false, modsByKind: {}, fresh: false }, newLane(1)];
+      : [{ id: 0, color: laneColor(0), tiles: (o.tiles || []).map(tile), mute: false, solo: false, gain: 1, pan: 0, delay: defaultDelay(), chorus: defaultChorus(), reverb: defaultReverb(), patch: defaultPatch(), patchRef: null, patchOriginId: factoryInitId(defaultPatch().kind), patchName: 'Init', patchDirty: false, patchImported: false, modsByKind: {}, fresh: false }, newLane(1)];
     const a = new Arrangement(lanes);
     a.seq = o.seq || 0;
     a.activeLaneId = o.activeLaneId ?? lanes[0].id;
     a.playStart = o.playStart == null ? 0 : o.playStart; // region markers (optional in older saves)
     a.playEnd = o.playEnd == null ? null : o.playEnd;
+    a.rack = Rack.fromJSON(o.rack); // shared instrument instances (empty in older saves)
     return a;
   }
 }
@@ -656,7 +704,7 @@ function newLane(id) {
     // well-spread) and frozen onto the lane so it travels when the lane is reordered.
     id, color: laneColor(id), tiles: [], mute: false, solo: false, gain: 1, pan: 0,
     delay: defaultDelay(), chorus: defaultChorus(), reverb: defaultReverb(),
-    patch, modsByKind: {}, fresh: true,
+    patch, patchRef: null, modsByKind: {}, fresh: true,
     // Patch identity (future_directions §14): a fresh lane sits on its kind's
     // factory Init, clean. originId links to the catalog entry (by id, not name);
     // patchName is the display label; patchDirty = edited/not-saved (the `*`);

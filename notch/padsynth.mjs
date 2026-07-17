@@ -266,6 +266,29 @@ function capture(f, over = {}, freq = 261.6256) {
   ok(normalizePatch({ kind: 'wendelhorn', pitchAtk: -100 }).pitchAtk === -100, 'wendelhorn accepts a negative pitchAtk');
 }
 
+// 9c) Filter envelope = the single amp ADSR mapped into cutoff (Juno-60): the
+//     cutoff opens base→peak over attack, decays to the sustain cutoff over the
+//     amp decay, and releases to base over the amp release. keyTrack 0 → baseCut =
+//     cutoff exactly. (Shared scheduleFilterEnv, exercised via Padlington's voice.)
+{
+  const tf = capture(fakeCtx(), { cutoff: 1000, keyTrack: 0, filterEnv: 2, sustain: 0.5, attack: 0.3, decay: 1.0, release: 1.2 }).biquads[0].frequency;
+  ok(tf._sets[0].type === 'set' && near(tf._sets[0].v, 1000), 'filter opens from baseCut (= cutoff at keyTrack 0)');
+  ok(near(tf.value, 4000), 'attack ramps cutoff up to peak = base·2^filterEnv (1000·2^2)');
+  ok(tf._sets.some((e) => e.type === 'tgt' && near(e.v, 2000) && near(e.tau, 1.0)), 'decays to the sustain cutoff base·2^(env·sustain) over p.decay');
+  ok(tf._sets.some((e) => e.type === 'tgt' && near(e.v, 1000) && near(e.tau, 1.2)), 'releases back to baseCut over p.release');
+
+  // filterEnv 0 = static filter: every stage sits at base.
+  const s = capture(fakeCtx(), { cutoff: 1500, keyTrack: 0, filterEnv: 0 }).biquads[0].frequency;
+  ok(near(s.value, 1500) && s._sets.every((e) => near(e.v, 1500)), 'filterEnv 0 = static cutoff at base');
+
+  // A note SHORTER than the attack (attack 2 s, note 1 s): the attack lands short
+  // of peak and NO decay stage is scheduled past note-off — only the release.
+  const sh = capture(fakeCtx(), { cutoff: 1000, keyTrack: 0, filterEnv: 2, attack: 2.0 }).biquads[0].frequency;
+  ok(near(sh.value, 2000), 'short note: attack clamps to the note, landing short of peak');
+  const shTgts = sh._sets.filter((e) => e.type === 'tgt');
+  ok(shTgts.length === 1 && near(shTgts[0].v, 1000), 'short note: no decay stage, just the release to base');
+}
+
 // 10) The full-size default bake is sane (one real-size smoke bake).
 {
   const t = bakePadTable(defaultPatch('padlington'), 261.6256, 48000);

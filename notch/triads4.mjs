@@ -7,11 +7,26 @@ const eq=(a,b,m)=>ok(JSON.stringify(a)===JSON.stringify(b), `${m}  got ${JSON.st
 
 // families per tuning
 eq(familiesFor(12), ['trad','sus'], '12-ET families = trad,sus');
-eq(familiesFor(16), ['septimal'], '16-ET families = septimal');
+eq(familiesFor(16), ['mavila','septimal'], '16-ET families = mavila,septimal');
 eq(familiesFor(5), [], 'an EDO with no templates → no families');
 ok(familyLabel('septimal')==='sept', 'septimal label = sept');
 ok(familyLabel('trad')==='trad' && familyLabel('sus')==='sus', '12-ET labels');
+ok(familyLabel('mavila')==='mavila', 'mavila label');
 ok(familyLabel('unknown')==='unknown', 'unknown family → id fallback');
+
+// 16-ET mavila triads (anti-diatonic harmony on the 675¢ fifth)
+eq(classifyTriad([0,4,9],16), {quality:'mavmaj', root:0}, '[0,4,9] = mavila major (small 300¢ third)');
+eq(classifyTriad([0,5,9],16), {quality:'mavmin', root:0}, '[0,5,9] = mavila minor (375¢ third)');
+eq(classifyTriad([0,5,7],16), {quality:'mavdim', root:0}, '[0,5,7] = mavila diminished (525¢ fifth)');
+eq(classifyTriad([9,0,4],16), {quality:'mavmaj', root:0}, 'mavila major order-independent');
+eq(classifyTriad([2,6,11],16), {quality:'mavmaj', root:2}, 'transposed mavila major root 2');
+// mavila tiles a Mavila-native triad set: {0,4,9} ∪ {2,6,11} = {0,2,4,6,9,11}
+{
+  const r = enumerateTriadulations([0,2,4,6,9,11], { proper:true, families:['mavila'], edo:16 });
+  ok(r.length>=1 && r.every(t=>t.leftover.length===0), 'mavila tiles a stack of two mavila-major triads');
+}
+// mavila is distinct from septimal (no pc-set collision at 16-ET)
+ok(classifyTriad([0,4,9],16).quality==='mavmaj' && classifyTriad([0,5,13],16).quality==='sept', 'mavila + septimal coexist without collision');
 
 // classify 16-ET septimal triads (root + transposition + inversion)
 eq(classifyTriad([0,5,13],16), {quality:'sept', root:0}, '[0,5,13] = sept root 0 (4:5:7)');

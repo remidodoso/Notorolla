@@ -61,6 +61,7 @@ export function initTileops(ctx) {
     const onUp = (e) => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('keydown', onKey, true);
       if (dragging) { endTileDrag(e); return; }
       // No movement → a click. Double-click is detected HERE (not via the DOM
       // dblclick event — the first click's refresh REBUILDS the tile element, so
@@ -76,8 +77,19 @@ export function initTileops(ctx) {
       lastTileClick = plain ? { id, t: now } : null;
       selectTile(id, e); // modifiers pick the selection op
     };
+    // Esc cancels an in-progress drag (capture: beats the global Esc). A no-op
+    // before movement crosses the threshold — then it's still a pending click.
+    const onKey = (e) => {
+      if (e.key !== 'Escape' || !dragging) return;
+      e.preventDefault(); e.stopPropagation();
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('keydown', onKey, true);
+      cancelTileDrag();
+    };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+    window.addEventListener('keydown', onKey, true);
   }
   let lastTileClick = null; // {id, t} — the double-click detector's memory
 
@@ -108,23 +120,37 @@ export function initTileops(ctx) {
     let preview = null;
     if (tgt && ctx.tileDrag.multi) {
       // Multi-selection: the grabbed tile's destination sets a rigid shift for
-      // the whole block (clamped so no member lands before beat 0); the plan
-      // (with per-member collision blocking) is what the drop will commit.
+      // the whole block (clamped so no member lands before beat 0).
       const dest = Math.round(tgt.beat - ctx.tileDrag.gripBeats);
       const shift = Math.max(dest - ctx.tileDrag.multi.grabbedStart, -ctx.tileDrag.multi.blockStart);
-      preview = {
-        multi: arrangement.planSelectionDrop(tgt.laneId, shift, ctx.patternLen, copy),
-        shift, copy, toLaneId: tgt.laneId, fromLaneId: ctx.tileDrag.fromLaneId,
-      };
+      if (tgt.newLane) {
+        // Onto "+ Lane": a brand-new empty lane has no collisions, so the block
+        // lands rigidly — every member offset by `shift`. Bands are computed here
+        // for the preview draw; the commit re-creates them via moveSelection.
+        const bands = selectedTiles().map((t) => ({ start: t.start + shift, len: ctx.patternLen(t.name) }));
+        preview = { newLane: true, multi: bands, shift, copy, fromLaneId: ctx.tileDrag.fromLaneId };
+      } else {
+        // Into an existing lane: the plan (with per-member collision blocking) is
+        // what the drop will commit.
+        preview = {
+          multi: arrangement.planSelectionDrop(tgt.laneId, shift, ctx.patternLen, copy),
+          shift, copy, toLaneId: tgt.laneId, fromLaneId: ctx.tileDrag.fromLaneId,
+        };
+      }
     } else if (tgt) {
-      preview = { id: ctx.tileDrag.id, fromLaneId: ctx.tileDrag.fromLaneId, copy, toLaneId: tgt.laneId, start: Math.max(0, Math.round(tgt.beat - ctx.tileDrag.gripBeats)) };
+      const start = Math.max(0, Math.round(tgt.beat - ctx.tileDrag.gripBeats));
+      preview = tgt.newLane
+        ? { newLane: true, id: ctx.tileDrag.id, fromLaneId: ctx.tileDrag.fromLaneId, copy, start }
+        : { id: ctx.tileDrag.id, fromLaneId: ctx.tileDrag.fromLaneId, copy, toLaneId: tgt.laneId, start };
     }
     if (!samePreview(preview, ctx.tileDrag.preview)) {
       ctx.tileDrag.preview = preview;
-      tilePlayer.render(preview, true); // animate the live ripple
+      tilePlayer.render(preview, true); // animate the live ripple (draws the new-lane band too)
     }
-    if (preview) tilePlayer.setCarryCaret(preview.toLaneId, preview.multi ? ctx.tileDrag.multi.blockStart + preview.shift : preview.start);
-    else tilePlayer.setCarryCaret(null); // off the lanes — a drop would cancel
+    // A real-lane target parks the carry caret at the landing; a new-lane target
+    // has no lane id — its caret is drawn by the preview (showNewLanePreview).
+    if (preview && !preview.newLane) tilePlayer.setCarryCaret(preview.toLaneId, preview.multi ? ctx.tileDrag.multi.blockStart + preview.shift : preview.start);
+    else tilePlayer.setCarryCaret(null); // off the lanes (cancel) or onto "+ Lane"
     tilePlayer.moveGhost(e.clientX, e.clientY, copy);
   }
 
@@ -132,29 +158,34 @@ export function initTileops(ctx) {
     const preview = ctx.tileDrag.preview;
     tilePlayer.clearGhost();
     tilePlayer.setCarryCaret(null); // back to hover mode
+    tilePlayer.clearNewLanePreview(); // drop the latent-lane band/glow (refresh would too)
     ctx.tileDrag = null;
 
     if (!preview) { ctx.refresh(); return; } // dropped off the lanes → cancel
     const copy = e.ctrlKey;              // authoritative copy state at the drop
 
+    // A drop onto "+ Lane" creates the destination lane FIRST (inside the undo
+    // bracket), then proceeds as an ordinary move/copy into it.
+    const before = ctx.arrSnap();
+    const toLaneId = preview.newLane ? arrangement.addLane().id : preview.toLaneId;
+
     // Moving/copying into a FRESH lane (brand-new / just-reset) seeds that lane's
     // instrument from the SOURCE lane (a tile carries no patch — its lane does),
     // so the tiles keep sounding the way they did. A used lane keeps its own.
-    const destLane = arrangement.lane(preview.toLaneId);
-    const seedFromSource = destLane && destLane.fresh && preview.toLaneId !== preview.fromLaneId;
+    const destLane = arrangement.lane(toLaneId);
+    const seedFromSource = destLane && destLane.fresh && toLaneId !== preview.fromLaneId;
     const srcLane = seedFromSource ? arrangement.lane(preview.fromLaneId) : null;
     const srcPatch = srcLane ? srcLane.patch : null;
 
-    const before = ctx.arrSnap();
     if (preview.multi) {
       // Whole-selection block drop (ignore-collisions; ripple doesn't apply to
       // multi drags). Move keeps the same ids selected; copy selects the copies.
-      if (copy) arrangement.copySelection(preview.toLaneId, preview.shift, ctx.patternLen);
-      else arrangement.moveSelection(preview.toLaneId, preview.shift, ctx.patternLen);
+      if (copy) arrangement.copySelection(toLaneId, preview.shift, ctx.patternLen);
+      else arrangement.moveSelection(toLaneId, preview.shift, ctx.patternLen);
     } else {
       const newId = copy
-        ? arrangement.copyTile(preview.id, preview.toLaneId, preview.start, ctx.patternLen, state.ripple)
-        : (arrangement.moveTile(preview.id, preview.toLaneId, preview.start, ctx.patternLen, state.ripple), preview.id);
+        ? arrangement.copyTile(preview.id, toLaneId, preview.start, ctx.patternLen, state.ripple)
+        : (arrangement.moveTile(preview.id, toLaneId, preview.start, ctx.patternLen, state.ripple), preview.id);
       arrangement.select(newId);
     }
     ctx.arrCommit(before);
@@ -163,7 +194,18 @@ export function initTileops(ctx) {
       destLane.patchOriginId = srcLane.patchOriginId; destLane.patchName = srcLane.patchName; destLane.patchDirty = srcLane.patchDirty;
     }
     if (destLane) destLane.fresh = false;                // the lane now has a tile
-    arrangement.activeLaneId = preview.toLaneId;
+    if (preview.newLane) ctx.applyLaneGains(0);          // give the new lane's bus the right gain under any solo/mute
+    arrangement.activeLaneId = toLaneId;
+    ctx.refresh();
+  }
+
+  // Esc mid-drag: abort with NO commit. The preview never mutated the model, so a
+  // plain re-render restores the pre-drag view; just tear down the drag chrome.
+  function cancelTileDrag() {
+    tilePlayer.clearGhost();
+    tilePlayer.setCarryCaret(null);
+    tilePlayer.clearNewLanePreview();
+    ctx.tileDrag = null;
     ctx.refresh();
   }
 
@@ -279,13 +321,26 @@ export function initTileops(ctx) {
   function gridDragOver(laneId, rawBeat) {
     const name = library.current().name;
     const start = gridDropStart(name, rawBeat);
+    tilePlayer.clearNewLanePreview(); // moved off the latent slot onto a real lane
     tilePlayer.setCarryCaret(laneId, start); // cheap no-op when unchanged
     if (gridDragPreview && gridDragPreview.toLaneId === laneId && gridDragPreview.start === start) return;
     gridDragPreview = { external: true, name, toLaneId: laneId, start };
     tilePlayer.render(gridDragPreview);
   }
+
+  // Hover over the "+ Lane" latent track: draw the new-lane drop preview (neutral
+  // slate glow + caret + band) straight into it. Clears any in-flight real-lane
+  // preview first (the pointer just moved off the lanes onto the latent slot).
+  function newLaneDragOver(rawBeat) {
+    const name = library.current().name;
+    const start = gridDropStart(name, rawBeat);
+    if (gridDragPreview) { gridDragPreview = null; tilePlayer.setCarryCaret(null); tilePlayer.render(); }
+    tilePlayer.showNewLanePreview([{ start, len: ctx.patternLen(name) }]);
+  }
+
   function clearGridDragPreview() {
     tilePlayer.setCarryCaret(null);
+    tilePlayer.clearNewLanePreview();
     if (!gridDragPreview) return;
     gridDragPreview = null;
     tilePlayer.render();
@@ -309,6 +364,29 @@ export function initTileops(ctx) {
     arrangement.insertAt(laneId, library.current().name, start, ctx.patternLen, state.ripple);
     if (lane) lane.fresh = false; // the lane now has a tile
     arrangement.activeLaneId = laneId;
+    ctx.refresh();
+  }
+
+  // Drop the grid's current pattern into a BRAND-NEW lane, created on the spot —
+  // the "+ Lane" latent-track drop. addLane + adopt-the-grid-instrument + insert,
+  // all ONE undo entry (calling addLane() then dropCurrentTile() would be two).
+  // The new lane is fresh, so it adopts the grid patch/identity exactly like
+  // dropping into any fresh lane; it lands active with the tile at the chosen beat.
+  function dropIntoNewLane(rawBeat) {
+    gridDragPreview = null;
+    tilePlayer.clearNewLanePreview();
+    const name = library.current().name;
+    const start = gridDropStart(name, rawBeat);
+    ctx.arrRecord();
+    const lane = arrangement.addLane();
+    lane.patch = clonePatch(ctx.gridPatch); // adopt the grid's current instrument…
+    lane.patchOriginId = ctx.gridPatchMeta.patchOriginId; // …and its identity, so the tile keeps its name
+    lane.patchName = ctx.gridPatchMeta.patchName;
+    lane.patchDirty = ctx.gridPatchMeta.patchDirty;
+    arrangement.insertAt(lane.id, name, start, ctx.patternLen, state.ripple);
+    lane.fresh = false; // the lane now has a tile
+    arrangement.activeLaneId = lane.id;
+    ctx.applyLaneGains(0); // give the new lane's bus the right gain under any active solo/mute
     ctx.refresh();
   }
 
@@ -340,6 +418,6 @@ export function initTileops(ctx) {
 
   Object.assign(ctx, {
     setPlayMarkers, onTileDown, selectedTiles, updateTileSelectionUI, auditionTile,
-    gridDragOver, dropCurrentTile, clearGridDragPreview, deleteSelectedTile, deselectTile,
+    gridDragOver, dropCurrentTile, newLaneDragOver, dropIntoNewLane, clearGridDragPreview, deleteSelectedTile, deselectTile,
   });
 }

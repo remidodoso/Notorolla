@@ -20,7 +20,7 @@ import { transformKindLabel } from '../core/transforms.js';
 export const TILE_SCALES = [4, 6, 9, 13, 19, 28, 40];
 export const DEFAULT_SCALE_IDX = 1; // = 6 px/beat, the prior fixed scale
 
-const TILE_H = 52;
+export const TILE_H = 52;
 const TRACK_H = 56;
 const THUMB_PAD = 3;
 const MIN_TRACK = 200;  // min track width so empty lanes still offer a drop area
@@ -53,6 +53,7 @@ export class TilePlayer {
     this.cb = cb;
     this.ppb = TILE_SCALES[DEFAULT_SCALE_IDX]; // current time scale; main sets it from saved UI
     this.editLaneId = null; // lane whose patch the instrument editor is showing (lights its Edit)
+    this.editRackId = null; // rack instance being edited — lights EVERY lane sharing it (coverage)
     this.rippleMode = false; // Ripple toggle (main syncs from state): insert/delete ripple vs exact-overwrite
     this.rangeMode = null;  // armed range tool: null | 'insert' | 'clear' | 'delete' — the ruler draws a range instead of dragging markers
     // Per-frame element caches (rebuilt by every render; see there).
@@ -159,6 +160,9 @@ export class TilePlayer {
     // don't (they clamp to the content end).
     const headroom = Math.max(8 * ppb, (this.container.clientWidth || 0) / 2);
     const trackWidth = Math.max(Math.round(maxBeats * ppb + headroom), MIN_TRACK);
+    // Content-only width (no drop-headroom): the latent "+ Lane" track uses this so
+    // an EMPTY prospective lane never implies droppable space past the real content.
+    const contentWidth = Math.max(Math.round(maxBeats * ppb), MIN_TRACK);
 
     // Beat ruler on top (numbers + ticks) carrying the play-region markers.
     c.append(this._buildRuler(ppb, trackWidth, maxBeats));
@@ -177,6 +181,7 @@ export class TilePlayer {
       // the kind is changed. M and S are a tri-state — one or the other or neither.
       const head = document.createElement('div');
       head.className = 'lane-head';
+      head.dataset.lane = lane.id; // the drop target for a rack chip dragged from the Rack pane
       const stripe = document.createElement('span');
       stripe.className = 'lane-stripe';
       stripe.style.background = color;
@@ -197,19 +202,37 @@ export class TilePlayer {
       // Instrument (kind) over Patch (name/*/[I]). Double-click anywhere here
       // opens the editor on this lane — the old "Edit" button is gone (the name
       // is the control). Highlighted while this lane is the editor's target.
+      // A lane sharing a RACK instance shows `⟲ R#` (in the instance colour) + a
+      // Detach button, in place of the kind/patch two-liner. The "editing" highlight
+      // covers this lane AND every other lane on the same instance (edit coverage).
+      const inst = this.arrangement.laneInstance(lane);
+      const editing = this.editLaneId === lane.id || (inst && this.editRackId === inst.id);
       const info = document.createElement('div');
-      info.className = 'lane-info' + (this.editLaneId === lane.id ? ' editing' : '');
-      info.title = 'Double-click to edit this lane’s instrument';
+      info.className = 'lane-info' + (editing ? ' editing' : '') + (inst ? ' rackified' : '');
+      info.title = inst ? 'Double-click to edit this shared instrument' : 'Double-click to edit this lane’s instrument';
       info.ondblclick = () => this.cb.onEdit(lane.id);
-      const instrLabel = instrument(lane.patch && lane.patch.kind).label; // the lane's instrument kind
-      const instr = document.createElement('span');
-      instr.className = 'lane-instr';
-      instr.textContent = instrLabel;
-      const pd = this.cb.patchDisplay ? this.cb.patchDisplay(lane) : { name: lane.patchName || 'Init', dirty: false, imported: false };
-      const patchName = document.createElement('span');
-      patchName.className = 'lane-patch' + ((pd.dirty || pd.imported) ? ' dirty' : '');
-      patchName.textContent = pd.name + (pd.dirty ? '*' : '') + (pd.imported ? ' [I]' : '');
-      info.append(instr, patchName);
+      if (inst) {
+        const rk = document.createElement('span');
+        rk.className = 'lane-rack';
+        rk.textContent = '⟲ ' + inst.name;
+        rk.style.color = inst.color; // the instance's own colour, so shared lanes read at a glance
+        const detach = document.createElement('button');
+        detach.className = 'lane-detach';
+        detach.textContent = 'detach';
+        detach.title = 'Detach — give this lane its own private copy of the sound';
+        detach.onclick = () => this.cb.onDetach && this.cb.onDetach(lane.id);
+        info.append(rk, detach);
+      } else {
+        const instrLabel = instrument(lane.patch && lane.patch.kind).label; // the lane's instrument kind
+        const instr = document.createElement('span');
+        instr.className = 'lane-instr';
+        instr.textContent = instrLabel;
+        const pd = this.cb.patchDisplay ? this.cb.patchDisplay(lane) : { name: lane.patchName || 'Init', dirty: false, imported: false };
+        const patchName = document.createElement('span');
+        patchName.className = 'lane-patch' + ((pd.dirty || pd.imported) ? ' dirty' : '');
+        patchName.textContent = pd.name + (pd.dirty ? '*' : '') + (pd.imported ? ' [I]' : '');
+        info.append(instr, patchName);
+      }
 
       // Chorus + Delay: small "C"/"D" buttons (lit when on) opening their editor
       // modals, between the instrument block and the Pan/Gain knobs.
@@ -230,7 +253,7 @@ export class TilePlayer {
       reverbBtn.onclick = () => this.cb.onReverb(lane.id);
       // Modulators: "M" chiclet (lit when the current instrument has an active mod).
       const modBtn = document.createElement('button');
-      modBtn.className = 'lane-mod' + (modsActive(lane.modsByKind, lane.patch && lane.patch.kind) ? ' on' : '');
+      modBtn.className = 'lane-mod' + (modsActive(lane.modsByKind, (this.arrangement.resolvePatch(lane) || {}).kind) ? ' on' : '');
       modBtn.textContent = 'M';
       modBtn.title = 'Modulators (per lane) — slow parameter movement over playback';
       modBtn.onclick = () => this.cb.onMods(lane.id);
@@ -407,17 +430,60 @@ export class TilePlayer {
       c.append(laneEl);
     });
 
-    // Add-lane row: a pinned enclosure the width of a lane head (sticky like the
-    // heads), below and aligned with the lane stack.
+    // Add-lane row — a full lane-SHAPED slot: the "+ Lane" button as the sticky
+    // head, plus a full-width "latent lane" track to its right (outlined, NO beat
+    // dividers when idle). A plain click still adds an empty lane; dragging a grid
+    // pattern onto the track (or the button = beat 0) materialises a new lane with
+    // the tile at the chosen beat. The drop preview (glow + caret + band, beat grid
+    // revealed for the gesture) is drawn STRAIGHT into the track — no render() mid-
+    // drag — like showStamps and the marquee band, so the gesture can't be yanked
+    // by a rebuild or the scroll guards.
     const addRow = document.createElement('div');
     addRow.className = 'lane-add';
+    const addHead = document.createElement('div');
+    addHead.className = 'lane-add-head';
     const addBtn = document.createElement('button');
     addBtn.className = 'lane-add-btn';
     addBtn.textContent = '+ Lane';
-    addBtn.title = 'Add a lane';
+    addBtn.title = 'Add a lane — or drag a pattern here to create a lane holding it';
     addBtn.addEventListener('click', () => this.cb.onAddLane());
-    addRow.append(addBtn);
+    addHead.append(addBtn);
+    // Dropping on the head/button lands the tile at beat 0 (its natural far-left).
+    addHead.addEventListener('dragover', (e) => {
+      e.preventDefault(); e.dataTransfer.dropEffect = 'copy';
+      this.cb.onNewLaneDragOver(0);
+    });
+    addHead.addEventListener('drop', (e) => { e.preventDefault(); this.cb.onNewLaneDrop(0); });
+
+    const addTrack = document.createElement('div');
+    addTrack.className = 'lane-track lane-add-track';
+    addTrack.style.width = `${contentWidth}px`; // content-only — no drop-headroom (see contentWidth)
+    const newLaneBeat = (e) => (e.clientX - addTrack.getBoundingClientRect().left) / this.ppb;
+    addTrack.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      this.edgeScroll(e.clientX, e.clientY); // horizontal auto-scroll to reach far beats
+      this.cb.onNewLaneDragOver(newLaneBeat(e));
+    });
+    addTrack.addEventListener('drop', (e) => {
+      e.preventDefault();
+      this.cb.onNewLaneDrop(newLaneBeat(e));
+    });
+    addRow.append(addHead, addTrack);
     c.append(addRow);
+
+    // A drag onto "+ Lane" (Phase 2, the pointer-based tile drag): draw the
+    // prospective landing into the latent track we just rebuilt — same slate glow +
+    // bands as the grid drag. (The grid drag draws directly via onNewLaneDragOver;
+    // the tile drag re-renders each move, so render owns the draw for that path.)
+    if (preview && preview.newLane) {
+      let bands = preview.multi;
+      if (!bands) {
+        const t = this.arrangement.allTiles().find((x) => x.id === preview.id);
+        bands = t ? [{ start: preview.start, len: this._len(t.name) }] : [];
+      }
+      this.showNewLanePreview(bands);
+    }
 
     c.scrollLeft = keepX; c.scrollTop = keepY; // restore BEFORE the FLIP measures client rects
 
@@ -471,6 +537,25 @@ export class TilePlayer {
     const clone = this.arrangement.lanes.map((l) => l.tiles.map((t) => ({ ...t })));
     const landings = [];
     const doomed = new Set();
+    if (preview && preview.newLane) {
+      // Drag onto "+ Lane": the landing is drawn in the latent add-track (see
+      // showNewLanePreview), NOT as a band among the real lanes. For a MOVE, lift
+      // the dragged tile(s) from their source lane so the preview shows the gap
+      // they leave; a COPY leaves the source intact. (Checked before `.multi`
+      // below — a new-lane multi preview also carries a `.multi` band list.)
+      if (!preview.copy) {
+        if (preview.multi) {
+          const ids = this.arrangement.selectedIds;
+          for (const tiles of clone) for (let i = tiles.length - 1; i >= 0; i--) if (ids.has(tiles[i].id)) tiles.splice(i, 1);
+        } else {
+          for (const tiles of clone) {
+            const i = tiles.findIndex((x) => x.id === preview.id);
+            if (i >= 0) { if (this.rippleMode) rippleRemoveFrom(tiles, tiles[i], lenOf); else tiles.splice(i, 1); break; }
+          }
+        }
+      }
+      return { laneTiles: clone, landings, doomed };
+    }
     if (preview && preview.multi) {
       // Multi-selection drag: a rigid block translation, already PLANNED by main
       // (planSelectionDrop — the same plan the drop commits, so preview==commit).
@@ -541,6 +626,17 @@ export class TilePlayer {
       const localX = clientX - track.getBoundingClientRect().left;
       // UNROUNDED cursor beat — the caller subtracts its grip, then rounds.
       return { laneId, beat: localX / this.ppb };
+    }
+    // Below the real lanes: the "+ Lane" latent track — a drop here spins the
+    // tile(s) off into a brand-new lane (Phase 2). Same unrounded-beat contract.
+    const addRow = this.container.querySelector('.lane-add');
+    if (addRow) {
+      const r = addRow.getBoundingClientRect();
+      if (clientY >= r.top && clientY <= r.bottom) {
+        const track = addRow.querySelector('.lane-add-track');
+        const localX = clientX - track.getBoundingClientRect().left;
+        return { newLane: true, beat: Math.max(0, localX / this.ppb) };
+      }
     }
     return null;
   }
@@ -718,6 +814,45 @@ export class TilePlayer {
   }
   clearStamps() {
     if (this._stampEls) { for (const el of this._stampEls) el.remove(); this._stampEls = null; }
+  }
+
+  // Latent-lane drop preview — drawn straight into the add-row's track (no
+  // render), the showStamps pattern. Lights the slot (a neutral UI-slate glow via
+  // the .armed class), reveals the beat grid for the gesture, and marks the
+  // prospective landing(s) with drop-band(s) + a caret. `bands` = [{start, len}] in
+  // beats: one for a single tile (grid drag or a lone existing tile), several for a
+  // multi-selection block; the caret sits at the left-most band's start. Cheap on
+  // every dragover; clearNewLanePreview (or any render, which rebuilds the track)
+  // tears it down. Uses its OWN caret so it never entangles with the carry caret.
+  showNewLanePreview(bands) {
+    const track = this.container.querySelector('.lane-add-track');
+    if (!track) return;
+    track.classList.add('armed');
+    track.style.backgroundImage = gridBackground(this.ppb); // dividers visible only during the drag
+    // Reconcile a pool of band elements to match `bands` (renders detach them; the
+    // parent-check below re-attaches to the freshly rebuilt track).
+    if (!this._newBands) this._newBands = [];
+    while (this._newBands.length < bands.length) {
+      const b = document.createElement('div'); b.className = 'drop-band';
+      this._newBands.push(b);
+    }
+    while (this._newBands.length > bands.length) this._newBands.pop().remove();
+    bands.forEach((band, i) => {
+      const el = this._newBands[i];
+      el.style.left = `${Math.round(band.start * this.ppb)}px`;
+      el.style.width = `${Math.max(2, Math.round(band.len * this.ppb))}px`;
+      if (el.parentNode !== track) track.append(el);
+    });
+    const caretAt = bands.length ? Math.min(...bands.map((b) => b.start)) : 0;
+    if (!this._newCaret) { this._newCaret = document.createElement('div'); this._newCaret.className = 'beat-caret'; }
+    this._newCaret.style.left = `${caretAt * this.ppb}px`;
+    if (this._newCaret.parentNode !== track) track.append(this._newCaret);
+  }
+  clearNewLanePreview() {
+    const track = this.container.querySelector('.lane-add-track');
+    if (track) { track.classList.remove('armed'); track.style.backgroundImage = ''; }
+    if (this._newBands) { for (const el of this._newBands) el.remove(); this._newBands = null; }
+    if (this._newCaret) { this._newCaret.remove(); this._newCaret = null; }
   }
   setActiveLane(laneId) {
     this.container.querySelectorAll('.lane').forEach((el) => {
@@ -1187,7 +1322,7 @@ export class TilePlayer {
 }
 
 // Total length of a pattern in beats (all columns, trailing rests included).
-function patternBeats(pattern) {
+export function patternBeats(pattern) {
   return pattern.columns.reduce((s, c) => s + DURATIONS[c.durIndex].beats, 0);
 }
 
@@ -1262,7 +1397,7 @@ function laneToggle(text, kind, on, title, onClick) {
 // reset — regeneration is cheap and rare.
 const thumbCache = new Map(); // key -> css url()
 const THUMB_CACHE_MAX = 300;
-function thumbImage(pattern, ppb) {
+export function thumbImage(pattern, ppb) {
   const key = ppb + '|' + pattern.columns.map((c) => (c.isRest ? 'r' : c.degree) + ':' + c.durIndex).join(',');
   let url = thumbCache.get(key);
   if (!url) {

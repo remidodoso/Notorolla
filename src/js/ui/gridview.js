@@ -60,7 +60,11 @@ const GHOST_SHIFT = DOT_R; // reference ghost sits this far LEFT of its centred 
                            // so the edited note overlaps its right half (it peeks out left)
 const DRAG_THRESHOLD = 4;        // px of movement that turns a click into a drag
 const TRIAD_BAND = 30;           // px reserved above the lanes for two label rows
-const QUALITY = { maj: 'Maj', min: 'min', dim: 'dim', aug: 'aug', sus: 'sus', sept: '4:5:7', sup: 'sup' };
+const QUALITY = {
+  maj: 'Maj', min: 'min', dim: 'dim', aug: 'aug', sus: 'sus', // 12-ET trad + sus
+  mavmaj: 'Maj', mavmin: 'min', mavdim: 'dim',                // 16-ET Mavila (anti-diatonic maj/min/dim)
+  sept: '4:5:7', sup: 'sup',                                  // 16-ET septimal
+};
 
 export const MIN_ROWS = 12;      // never fewer than twelve tones (for now)
 export const MAX_ROWS = 48;
@@ -677,15 +681,18 @@ export class GridView {
     const edo = edoOf(tuningId);
     const eq = hasEquave(tuningId); // false = no octave (cross): octave-mate/tint/tonic gate off
 
-    // Which pitches carry a note (exact degree = strong highlight; the same
-    // pitch-class in other octaves = soft highlight).
-    const active = new Set();
-    const activePC = new Set();
+    // Row highlighting has two axes. STRUCTURE (a warm tan wash): exact degree =
+    // strong, same pitch-class in another octave = soft. FREQUENCY (a green overlay
+    // on top): how many notes use this row. We count notes per exact degree and per
+    // pitch-class so the row loop can paint both.
+    const degCount = new Map(); // notes on each exact degree
+    const pcCount = new Map();  // notes per pitch-class (any octave)
     if (this.opts.getHighlightRows()) {
       for (const c of this.pattern.columns) {
         if (c.isRest) continue;
-        active.add(c.degree);
-        activePC.add(((c.degree % edo) + edo) % edo);
+        degCount.set(c.degree, (degCount.get(c.degree) || 0) + 1);
+        const cpc = ((c.degree % edo) + edo) % edo;
+        pcCount.set(cpc, (pcCount.get(cpc) || 0) + 1);
       }
     }
 
@@ -702,8 +709,10 @@ export class GridView {
       const d = top - k;
       const y = topPad + k * ROW_H;
       const pc = ((d % edo) + edo) % edo;
-      const isActive = active.has(d);
-      const isOctave = eq && !isActive && activePC.has(pc);
+      const nD = degCount.get(d) || 0;   // notes on this exact degree
+      const nPc = pcCount.get(pc) || 0;  // notes of this pitch-class (any octave)
+      const isActive = nD > 0;
+      const isOctave = eq && !isActive && nPc > 0;
       const isRoot = rootShown && pc === rootPc;
       ctx.fillStyle = edo === 12 ? (isBlackKey(d) ? '#13151c' : '#171a22') : (eq && pc === 0 ? '#1b2030' : '#171a22');
       ctx.fillRect(0, y, W, ROW_H);
@@ -718,11 +727,24 @@ export class GridView {
         ctx.fillStyle = 'rgba(240, 140, 175, 0.13)';
         ctx.fillRect(0, y, W, ROW_H);
       }
+      // Structure axis (tan): exact degree = strong, octave-mate = soft.
       if (isActive) {
         ctx.fillStyle = 'rgba(222, 184, 135, 0.12)';   // strong: this very note
         ctx.fillRect(0, y, W, ROW_H);
       } else if (isOctave) {
         ctx.fillStyle = 'rgba(222, 184, 135, 0.045)';  // soft: octave-mate
+        ctx.fillRect(0, y, W, ROW_H);
+      }
+      // Frequency axis (green overlay, on top of the tan): 2+ notes on THIS exact
+      // row = "more" (a hammered pitch); else the pitch-class recurring across
+      // octaves (2+ total) = "faint". Only warms rows that already carry a
+      // structural highlight; the across-octave faint tier needs an equave to mean
+      // anything, so it's gated on `eq` (the no-octave cross tuning counts exact rows).
+      if (nD >= 2) {
+        ctx.fillStyle = 'rgba(120, 200, 130, 0.11)';   // more: this exact pitch hammered
+        ctx.fillRect(0, y, W, ROW_H);
+      } else if (eq && nPc >= 2) {
+        ctx.fillStyle = 'rgba(120, 200, 130, 0.05)';   // faint: class recurs across octaves
         ctx.fillRect(0, y, W, ROW_H);
       }
       if (isRoot) {
@@ -925,7 +947,7 @@ export class GridView {
       const t = classifyTriad([a.degree, b.degree, c.degree], edoOf(this.pattern.tuningId));
       if (!t) continue;
       const g = this._colGeom(i + 1);
-      out.push({ x: g.x + g.w / 2, text: `${pitchClassName(t.root, this.pattern.tuningId)} ${QUALITY[t.quality]}` });
+      out.push({ x: g.x + g.w / 2, text: `${pitchClassName(t.root, this.pattern.tuningId)} ${QUALITY[t.quality] || t.quality}` });
     }
     return out;
   }

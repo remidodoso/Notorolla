@@ -22,6 +22,13 @@ const TEMPLATES = [
   { quality: 'dim', family: 'trad', edo: 12, offsets: [0, 3, 6] },
   { quality: 'aug', family: 'trad', edo: 12, offsets: [0, 4, 8] },
   { quality: 'sus', family: 'sus',  edo: 12, offsets: [0, 2, 7] },
+  // 16-ET MAVILA triads — the native anti-diatonic harmony on the flat 675¢ fifth
+  // (9 steps). Anti-diatonic means the "major" triad carries the SMALL third (4 steps
+  // / 300¢) and the "minor" the larger neutral third (5 steps / 375¢); the diminished
+  // is the leading-tone triad (525¢ / 7-step fifth). These harmonize the Mavila scales.
+  { quality: 'mavmaj', family: 'mavila', edo: 16, offsets: [0, 4, 9] },
+  { quality: 'mavmin', family: 'mavila', edo: 16, offsets: [0, 5, 9] },
+  { quality: 'mavdim', family: 'mavila', edo: 16, offsets: [0, 5, 7] },
   // 16-ET septimal triads (no good fifth, so these lean on the excellent 7/4 = 13
   // steps): 4:5:7 (a flat major third + the harmonic seventh) and a supermajor
   // (9/7 ≈ 6 steps under the 7/4). See project notes for the 16-ET theory.
@@ -30,7 +37,7 @@ const TEMPLATES = [
 ];
 
 // Display label for a chord family (the toggle button text). Falls back to the id.
-const FAMILY_LABELS = { trad: 'trad', sus: 'sus', septimal: 'sept' };
+const FAMILY_LABELS = { trad: 'trad', sus: 'sus', mavila: 'mavila', septimal: 'sept' };
 export function familyLabel(id) { return FAMILY_LABELS[id] || id; }
 
 const MAX_RESULTS = 200; // guard against pathological enumeration blow-up

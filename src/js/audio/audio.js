@@ -27,15 +27,36 @@ const PARTIALS = [1.0, 0.55, 0.36, 0.22, 0.13, 0.07];
 // climb. Small value — just enough to read as "struck string", not "organ".
 const INHARMONICITY = 0.0006;
 
-// Filter envelope settle time-constant (s) — how fast the swept cutoff falls
-// from its peak to the base. Fixed (not a knob), as the old sound had it.
-const FILTER_ENV_TAU = 0.10;
-
 // The keyboard-tracking reference pitch (middle C in the default seam): the note
 // where a tracking control has no effect — filter tracking gives cutoff exactly
 // patch.cutoff (× (f0/FREF)^keyTrack = 1), and Boshwick's pitch tracking leaves
 // the drum at its nominal pitch. Exported so the grid can mark this pivot row.
 export const FREF = degreeToFreq(60);
+
+// Filter envelope = the SINGLE (amplitude) ADSR, mapped into cutoff space by the
+// `filterEnv` DEPTH in octaves — the Juno-60 model: one user envelope drives both
+// the VCA and the VCF. cutoff(t) = baseCut · 2^(filterEnv · E(t)) where E is the
+// normalized amp envelope: it OPENS base→peak over the attack, DECAYS to the
+// sustain cutoff over the decay, HOLDS, and RELEASES back to base — so a slow
+// envelope gives a slow (seconds-long) sweep and filterEnv 0 leaves the filter
+// static. `baseCut` already folds in keyTrack (cutoff follows pitch). Short notes
+// clamp the attack to the note so no ramp is scheduled past note-off. Every
+// filtered voice shares this — the filter tracks whatever the user envelope is
+// (today, always the amp ADSR; a future opt-in second envelope would repoint here).
+// Pure play-time automation: nothing baked or stored, so no migration surface.
+function scheduleFilterEnv(tf, p, time, duration, f0, sampleRate) {
+  const nyq = sampleRate * 0.45;
+  const clampf = (v) => Math.min(Math.max(v, 60), nyq);
+  const baseCut = clampf(p.cutoff * Math.pow(f0 / FREF, p.keyTrack));
+  const atk = Math.max(p.attack, 0.001);
+  const atkEnd = Math.min(atk, duration);
+  const openCut = clampf(baseCut * Math.pow(2, p.filterEnv * (atkEnd / atk))); // where the (possibly clamped) attack lands
+  const susCut = clampf(baseCut * Math.pow(2, p.filterEnv * p.sustain));
+  tf.setValueAtTime(baseCut, time);
+  tf.exponentialRampToValueAtTime(openCut, time + atkEnd);          // exp ramp = log-linear cutoff = the amp's linear attack, in octave space
+  if (atkEnd >= atk) tf.setTargetAtTime(susCut, time + atk, p.decay); // (skip on a note shorter than the attack)
+  tf.setTargetAtTime(baseCut, time + duration, p.release);
+}
 
 // Spectral tilt: partial k's amplitude is scaled by k^e, where e runs from
 // −SPREAD (dark) through 0 (neutral, timbre 0.5) to +SPREAD (bright).
@@ -633,7 +654,6 @@ function buildVoice(ctx, dest, p, pitch, time, duration, velocity, freq, lite = 
 // with its own envelope + key tracking.
 function buildVesperiaVoice(ctx, dest, p, pitch, time, duration, velocity, freq) {
   const f0 = freq != null ? freq : degreeToFreq(pitch);
-  const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 
   // Signal path: partials -> env (amplitude) -> tone (brightness) -> dest.
   const env = ctx.createGain();
@@ -656,15 +676,9 @@ function buildVesperiaVoice(ctx, dest, p, pitch, time, duration, velocity, freq)
   g.setTargetAtTime(sustainLevel, time + p.attack, p.decay); // decay -> sustain
   g.setTargetAtTime(0.0001, releaseTime, p.release);          // key off
 
-  // Filter envelope + key tracking. Cutoff follows pitch by keyTrack (1 = fully
-  // f0-relative), opens filterEnv octaves above that base at the attack, then
-  // settles to the base — the percussive "strike" over the ringing body.
-  const nyq = ctx.sampleRate * 0.45;
-  const baseCut = clamp(p.cutoff * Math.pow(f0 / FREF, p.keyTrack), 60, nyq);
-  const peakCut = clamp(baseCut * Math.pow(2, p.filterEnv), 60, nyq);
-  const tf = tone.frequency;
-  tf.setValueAtTime(peakCut, time);
-  tf.setTargetAtTime(baseCut, time + p.attack, FILTER_ENV_TAU);
+  // Filter envelope + key tracking: the cutoff tracks the amp ADSR (single-ADSR),
+  // scaled by filterEnv octaves. See scheduleFilterEnv.
+  scheduleFilterEnv(tone.frequency, p, time, duration, f0, ctx.sampleRate);
 
   // Oscillators are cheap; spin up one sine per partial, then discard. The
   // Timbre control tilts the partial amplitudes (k^e) about the neutral mix.
@@ -1309,13 +1323,9 @@ function buildWendelhornVoice(ctx, dest, p, pitch, time, duration, velocity, fre
   g.setTargetAtTime(sustainLevel, time + p.attack, p.decay);
   g.setTargetAtTime(0.0001, releaseTime, p.release);
 
-  // Filter envelope + key tracking (opens on attack, settles to base).
-  const nyq = ctx.sampleRate * 0.45;
-  const baseCut = clamp(p.cutoff * Math.pow(f0 / FREF, p.keyTrack), 60, nyq);
-  const peakCut = clamp(baseCut * Math.pow(2, p.filterEnv), 60, nyq);
-  const tf = tone.frequency;
-  tf.setValueAtTime(peakCut, time);
-  tf.setTargetAtTime(baseCut, time + p.attack, FILTER_ENV_TAU);
+  // Filter envelope + key tracking: cutoff tracks the amp ADSR (single-ADSR),
+  // scaled by filterEnv octaves. See scheduleFilterEnv.
+  scheduleFilterEnv(tone.frequency, p, time, duration, f0, ctx.sampleRate);
 
   const waves = wendelSawWaves(ctx);
   const ensembleOn = p.ensemble > 0.0005 && p.speed > 0;
@@ -1492,12 +1502,9 @@ function buildPadlingtonVoice(ctx, dest, p, pitch, time, duration, velocity, fre
   }
   g.setTargetAtTime(0.0001, releaseTime, p.release);
 
-  // Filter envelope + key tracking (opens on attack, settles to base).
-  const nyq = ctx.sampleRate * 0.45;
-  const baseCut = clamp(p.cutoff * Math.pow(f0 / FREF, p.keyTrack), 60, nyq);
-  const peakCut = clamp(baseCut * Math.pow(2, p.filterEnv), 60, nyq);
-  tone.frequency.setValueAtTime(peakCut, time);
-  tone.frequency.setTargetAtTime(baseCut, time + p.attack, FILTER_ENV_TAU);
+  // Filter envelope + key tracking: cutoff tracks the amp ADSR (single-ADSR),
+  // scaled by filterEnv octaves. See scheduleFilterEnv.
+  scheduleFilterEnv(tone.frequency, p, time, duration, f0, ctx.sampleRate);
 
   // Pitch attack (Wendelhorn's blip, signed): start ± cents off pitch and
   // exp-settle onto it — positive = approach from above (brass / the vocal

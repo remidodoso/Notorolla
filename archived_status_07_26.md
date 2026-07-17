@@ -498,3 +498,22 @@ off any selector; drawbar tabs a distinct widget species — now live in the ski
 spread; FM operator-diagram labels for Tervik's Algorithm rotary; app-wide UI-scale; per-instrument
 identity; key-up-pluck envelope; plus minor mapping calls (Wendelhorn Detune placement, Stereo/Width box,
 Nayumi Grit placement, Boshwick inert map / Snap placement).
+
+## 2026-07-13 – 07-19
+
+**Filter envelope — the fixed "strike" practice, OBSOLETE (2026-07-13).** Superseded by the single-ADSR
+(Juno-60) model in which the filter cutoff tracks the amplitude ADSR (current behavior in notes & status;
+shared `scheduleFilterEnv`). The OLD practice, in all three filtered voices (`audio.js` Vesperia /
+Wendelhorn / Padlington): the cutoff was set to `base·2^filterEnv` at note onset and settled back to base
+with a FIXED `FILTER_ENV_TAU = 0.10 s` time constant — independent of the amp envelope and the note
+length, a fast percussive "strike over the ringing body." It had **no release stage**, and on a note
+shorter than the attack the settle was scheduled *past* note-off (a duration-dependent inconsistency).
+Consequence: **seconds-long filter sweeps were impossible** — the fixed ~0.5 s settle is what surfaced the
+bug when the composer expected a slow sweep. It was never the intended design (that Vesperia envelope was
+a pre-front-panel "Mary Had a Little Lamb" test tone, not a signed-off sound); "envelope tracking" is
+meant to track a USER envelope, and the only user envelope today is the amp ADSR. Fix: the filter tracks
+the amp ADSR scaled by `filterEnv` octaves (open→decay-to-sustain→release), `FILTER_ENV_TAU` deleted, the
+three copy-pasted blocks converged on the shared helper. Pure play-time scheduling, so **no migration** —
+existing patches keep their exact values and simply sound correct. `notch/padsynth.mjs` gained filter-env
+stage coverage (open to peak / decay to sustain-cutoff / release to base / static at filterEnv 0 / short-note
+clamp).

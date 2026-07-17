@@ -123,7 +123,8 @@ export function initLanefx(ctx) {
     const lane = arrangement.lane(laneId);
     if (!lane) return;
     const idx = arrangement.lanes.indexOf(lane);
-    const kind = lane.patch && lane.patch.kind;
+    const rp = arrangement.resolvePatch(lane); // mods key off the resolved (shared) voice's kind
+    const kind = rp && rp.kind;
     if (!lane.modsByKind) lane.modsByKind = {};
     if (!lane.modsByKind[kind]) lane.modsByKind[kind] = Array.from({ length: MOD_SLOTS }, defaultMod);
     onMixStart(); // capture the pre-edit snapshot

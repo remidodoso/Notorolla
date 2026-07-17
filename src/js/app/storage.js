@@ -37,7 +37,7 @@ export function initStorage(ctx) {
     highlightRows: true,
     showTriads: true,   // label chords found in adjacent notes (every family the tuning offers)
     proper: false,      // Triadulator: when on, only complete (no-leftover) triadulations
-    families: { trad: true, sus: false, septimal: true }, // Triadulator: enabled chord families (per id)
+    families: { trad: true, sus: false, mavila: true, septimal: true }, // Triadulator: enabled chord families (per id)
     topDegree: 71,
     visibleRows: 12,
     activePane: 'grid', // 'grid' | 'tiles' — which pane the roll mirrors
@@ -66,6 +66,7 @@ export function initStorage(ctx) {
     state.families = { trad: state.trad !== false, sus: !!state.sus, septimal: true };
   }
   if (state.families.septimal === undefined) state.families.septimal = true;
+  if (state.families.mavila === undefined) state.families.mavila = true; // new family seeds on
   delete state.trad; delete state.sus;
 
   // If localStorage.setItem throws (private mode / quota), warn ONCE and drop the

@@ -161,7 +161,8 @@ export function initExportui(ctx) {
         const notes = byLane.get(lane.id);
         if (!notes || !notes.length) continue;   // skip empty lanes
         const buffer = await engine.renderStem(notes, durSec, lane.id, busMode, sampleRate);
-        const label = instrument(lane.patch && lane.patch.kind).label;
+        const rp = arrangement.resolvePatch(lane); // a rack lane's stem is labelled by its shared voice
+        const label = instrument(rp && rp.kind).label;
         let base = safeFileName(`${String(li + 1).padStart(2, '0')} ${label}`);
         let name = base, k = 2;                   // de-dup same-instrument lanes
         while (used.has(name.toLowerCase())) name = `${base} (${k++})`;

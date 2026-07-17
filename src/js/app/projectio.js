@@ -69,16 +69,19 @@ export function initProjectio(ctx) {
 
     const freshArr = Arrangement.fromJSON(env.arr);
     arrangement.lanes = freshArr.lanes;
+    arrangement.rack = freshArr.rack; // shared instrument instances travel with the document
     arrangement.seq = freshArr.seq;
     arrangement.activeLaneId = freshArr.activeLaneId;
     arrangement.playStart = freshArr.playStart; // region markers travel with the document (fromJSON
     arrangement.playEnd = freshArr.playEnd;     // defaults 0/null, so New also resets — never carried over)
     arrangement.clearSelection();
-    // Opening a FILE: any lane whose patch origin isn't in this catalog came from
-    // elsewhere → mark it imported (`[I]`, offers "add to your catalog?"). Resolvable
-    // origins clear the flag. (Autosave reload doesn't run here, so an in-session
-    // delete's `Name*` survives a normal reload — only a file Open mints `[I]`.)
+    // Opening a FILE: any lane (or rack instance) whose patch origin isn't in this
+    // catalog came from elsewhere → mark it imported (`[I]`, offers "add to your
+    // catalog?"). Resolvable origins clear the flag. (Autosave reload doesn't run
+    // here, so an in-session delete's `Name*` survives a normal reload — only a file
+    // Open mints `[I]`.)
     for (const l of arrangement.lanes) l.patchImported = !patches.get(l.patchOriginId);
+    for (const inst of arrangement.rack.instances) inst.patchImported = !patches.get(inst.patchOriginId);
 
     if (env.tempo) {
       state.bpm = env.tempo;

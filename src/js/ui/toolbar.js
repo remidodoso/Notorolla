@@ -15,14 +15,8 @@ export function buildToolbar(el, state, onChange) {
   el.innerHTML = '';
   const durBtns = [], artBtns = [], modeBtns = [], curBtns = [];
 
-  // Grab handle: drag this into the Tile player to drop a tile of the current
-  // pattern (note-editing already owns dragging on the grid itself).
-  const grabHandle = document.createElement('span');
-  grabHandle.className = 'grab';
-  grabHandle.setAttribute('draggable', 'true');
-  grabHandle.textContent = '⠿ pattern →';
-  grabHandle.title = 'Drag into the Tile player';
-  el.append(grabHandle, sep());
+  // (The old "⠿ pattern →" grab handle moved out of the toolbar into the grid
+  // pane's tile-preview strip below the grid — see ui/tilepreview.js.)
 
   // Pattern lifecycle. New doubles as Restore when a pattern is parked.
   const newBtn = button('New');
@@ -287,7 +281,7 @@ export function buildToolbar(el, state, onChange) {
     for (const b of familyBox.children) b.classList.toggle('active', !!state.families[b._family]);
   }
   refresh();
-  return { refresh, setRootOptions, setScaleOptions, setFamilyButtons, setCols, setReference: setReferenceUI, setRefEnabled, grabHandle, newBtn, cloneBtn, randomBtn, undoBtn, redoBtn, clearBtn, triadBtn, confirmBtn, properBtn, rotateBtn, reverseBtn, sortAscBtn, sortDescBtn, shuffleBtn, shuffleNoRepBtn, transUpBtn, transDownBtn, tuningSel, scaleSel, rootSel };
+  return { refresh, setRootOptions, setScaleOptions, setFamilyButtons, setCols, setReference: setReferenceUI, setRefEnabled, newBtn, cloneBtn, randomBtn, undoBtn, redoBtn, clearBtn, triadBtn, confirmBtn, properBtn, rotateBtn, reverseBtn, sortAscBtn, sortDescBtn, shuffleBtn, shuffleNoRepBtn, transUpBtn, transDownBtn, tuningSel, scaleSel, rootSel };
 }
 
 function button(text) {

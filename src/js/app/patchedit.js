@@ -62,6 +62,9 @@ export function initPatchedit(ctx) {
     onSaveAs: saveTargetPatchAs,
     onLoad: loadTargetPatch,
     onCatalog: () => { catalog.toggle(); },
+    // Rack: copy the current sound into a new shared instance; open the rack pane.
+    onAddToRack: addToRack,
+    onRackPane: () => { if (ctx.toggleRackPane) ctx.toggleRackPane(); },
   });
 
   let patchClipboard = null; // in-memory only (cleared on reload) — Copy/Paste
@@ -93,8 +96,11 @@ export function initPatchedit(ctx) {
   function changeKind(kind) {
     const cur = ctx.editTarget.patch;
     if (cur.kind === kind) return;
-    let stash = patchStash.get(stashKey(ctx.editTarget.laneId));
-    if (!stash) { stash = {}; patchStash.set(stashKey(ctx.editTarget.laneId), stash); }
+    // A rack target's stash is keyed by the shared instance (not the lane it was
+    // opened from), so the "restore the kind you'd dialed" nicety follows the voice.
+    const skey = ctx.editTarget.rackId ? `rack:${ctx.editTarget.rackId}` : stashKey(ctx.editTarget.laneId);
+    let stash = patchStash.get(skey);
+    if (!stash) { stash = {}; patchStash.set(skey, stash); }
     stash[cur.kind] = clonePatch(cur);
     const usedStash = !!stash[kind];
     swapTargetPatch(stash[kind] ? clonePatch(stash[kind]) : defaultPatch(kind));
@@ -108,19 +114,42 @@ export function initPatchedit(ctx) {
   // patch, so editing the grid's instrument edits the lane (and every tile on it).
   function editGrid() {
     const lane = ctx.gridInstr.source === 'lane' ? arrangement.lane(ctx.gridInstr.laneId) : null;
-    if (lane) {
-      const idx = arrangement.lanes.indexOf(lane);
-      ctx.editTarget = { patch: lane.patch, laneId: lane.id };
-      tilePlayer.editLaneId = lane.id;
-      instrPane.setTarget(lane.patch, `Lane ${idx + 1}`, lane.color || laneColor(idx));
-      tilePlayer.render();
-      return;
-    }
+    if (lane) { pointEditorAtLane(lane); return; }
     ctx.editTarget = { patch: gridPatch, laneId: null };
-    tilePlayer.editLaneId = null;
+    tilePlayer.editLaneId = null; tilePlayer.editRackId = null;
     instrPane.setTarget(gridPatch, 'Grid', '#8a8f98');
     tilePlayer.render();
     if (catalog && catalog.isOpen()) catalog.refresh(); // follow the target's highlight
+    if (ctx.refreshRack) ctx.refreshRack(); // the edited-instance chip highlight
+  }
+
+  // Point the editor at a lane — resolving a RACK reference to its shared instance
+  // (so editing edits the instance, re-sounding every lane on it). The target chip
+  // reads the rack name (e.g. R1) in the instance colour; a private lane reads
+  // "Lane N" in the lane colour. Shared by editGrid (borrow) and editLane.
+  function pointEditorAtLane(lane) {
+    const idx = arrangement.lanes.indexOf(lane);
+    const inst = arrangement.laneInstance(lane);
+    if (inst) {
+      ctx.editTarget = { patch: inst.patch, laneId: lane.id, rackId: inst.id };
+      tilePlayer.editLaneId = lane.id; tilePlayer.editRackId = inst.id;
+      instrPane.setTarget(inst.patch, inst.name, inst.color);
+    } else {
+      ctx.editTarget = { patch: lane.patch, laneId: lane.id };
+      tilePlayer.editLaneId = lane.id; tilePlayer.editRackId = null;
+      instrPane.setTarget(lane.patch, `Lane ${idx + 1}`, lane.color || laneColor(idx));
+    }
+    tilePlayer.render();
+    if (catalog && catalog.isOpen()) catalog.refresh(); // follow the target's highlight
+    if (ctx.refreshRack) ctx.refreshRack(); // the edited-instance chip highlight
+  }
+
+  // Re-point the editor at live objects after an undo/redo restore (the rack may
+  // have been rebuilt, or a lane's patchRef changed). Called from history's arrApply.
+  function reeditTarget() {
+    if (!ctx.editTarget) return;
+    if (ctx.editTarget.laneId == null) editGrid();
+    else { const lane = arrangement.lane(ctx.editTarget.laneId); if (lane) pointEditorAtLane(lane); else editGrid(); }
   }
 
   // Point the editor at a lane's own patch. `scroll` brings the pane into view —
@@ -129,12 +158,7 @@ export function initPatchedit(ctx) {
   function editLane(laneId, scroll = false) {
     const lane = arrangement.lane(laneId);
     if (!lane) return;
-    const idx = arrangement.lanes.indexOf(lane);
-    ctx.editTarget = { patch: lane.patch, laneId };
-    tilePlayer.editLaneId = laneId;
-    instrPane.setTarget(lane.patch, `Lane ${idx + 1}`, lane.color || laneColor(idx));
-    tilePlayer.render();
-    if (catalog && catalog.isOpen()) catalog.refresh(); // follow the target's highlight
+    pointEditorAtLane(lane); // resolves a rack reference to its shared instance
     // Reveal the pane only when its TOP isn't already on-screen. The pane is often
     // taller than the viewport, so an unconditional scrollIntoView('nearest') can
     // never be a no-op (it aligns an edge) and yanks the page even when the pane is
@@ -174,6 +198,10 @@ export function initPatchedit(ctx) {
   // --- patch identity: dirty tracking, Save/Save As/Load/Rename ----------------
   // The patch-identity record for the current edit target (a lane, or the grid).
   function targetMeta() {
+    // A rack target's identity lives on the shared INSTANCE (which carries the same
+    // originId/name/dirty/imported fields a lane does), so Save/Load/dirty all act
+    // on the instance and propagate to every lane that shares it.
+    if (ctx.editTarget.rackId) return arrangement.rack.get(ctx.editTarget.rackId) || ctx.gridPatchMeta;
     if (ctx.editTarget.laneId == null) return ctx.gridPatchMeta;
     return arrangement.lane(ctx.editTarget.laneId) || ctx.gridPatchMeta;
   }
@@ -199,6 +227,7 @@ export function initPatchedit(ctx) {
       m.patchDirty = true;
       instrPane.syncIdentity();
       if (ctx.editTarget.laneId != null) tilePlayer.render();
+      if (ctx.editTarget.rackId && ctx.refreshRack) ctx.refreshRack(); // the chip's `*`
     }
     persistPatch();
   }
@@ -211,6 +240,7 @@ export function initPatchedit(ctx) {
     instrPane.syncIdentity();
     if (ctx.editTarget.laneId != null) tilePlayer.render();
     if (catalog && catalog.isOpen()) catalog.refresh(); // new/loaded patch, highlight move
+    if (ctx.editTarget.rackId && ctx.refreshRack) ctx.refreshRack(); // the chip name/`*`
   }
   function setTargetIdentity(originId, name, dirty) {
     const m = targetMeta();
@@ -351,12 +381,17 @@ export function initPatchedit(ctx) {
       if (lane === exceptMeta) continue;
       if (lane.patchOriginId === entryId && !lane.patchDirty) lane.patchDirty = true;
     }
+    for (const inst of arrangement.rack.instances) { // rack instances holding an old copy fall out of sync too
+      if (inst === exceptMeta) continue;
+      if (inst.patchOriginId === entryId && !inst.patchDirty) inst.patchDirty = true;
+    }
     if (ctx.gridPatchMeta !== exceptMeta && ctx.gridPatchMeta.patchOriginId === entryId && !ctx.gridPatchMeta.patchDirty) {
       ctx.gridPatchMeta.patchDirty = true;
       ctx.safeSet(GRIDMETA_KEY, JSON.stringify(ctx.gridPatchMeta));
     }
     ctx.persist();
     tilePlayer.render();
+    if (ctx.refreshRack) ctx.refreshRack();
   }
 
   // --- catalog management: apply / rename / delete -----------------------------
@@ -364,6 +399,7 @@ export function initPatchedit(ctx) {
   function patchLinkers(id) {
     const out = arrangement.lanes.filter((l) => l.patchOriginId === id);
     if (ctx.gridPatchMeta.patchOriginId === id) out.push(ctx.gridPatchMeta);
+    for (const inst of arrangement.rack.instances) if (inst.patchOriginId === id) out.push(inst); // rack instances link too
     return out;
   }
 
@@ -372,6 +408,7 @@ export function initPatchedit(ctx) {
     instrPane.syncIdentity();
     tilePlayer.render();
     if (catalog && catalog.isOpen()) catalog.refresh();
+    if (ctx.refreshRack) ctx.refreshRack();
   }
 
   // True in-place Rename of a USER entry (keeps its id, so all links follow). Clean
@@ -451,8 +488,20 @@ export function initPatchedit(ctx) {
     setTargetIdentity(patches.initId(kind), 'Init', false);
   }
 
+  // "Add to rack": copy the CURRENT sound (params + its catalog identity) into a
+  // new shared rack instance (R1, R2, …). A pure copy-out — the source lane/grid is
+  // untouched and does NOT become a reference (you assign by dragging the chip onto
+  // a lane head). Persists + opens/refreshes the rack pane so the new chip shows.
+  function addToRack() {
+    const m = targetMeta();
+    arrangement.rack.add(ctx.editTarget.patch, m);
+    ctx.persist();
+    if (ctx.openRackPane) ctx.openRackPane(); // reveal the new instance
+    if (ctx.refreshRack) ctx.refreshRack();
+  }
+
   Object.assign(ctx, {
-    setGridInstr, setParkedInstr, replaceGridPatch, editGrid, editLane, patchInfo,
+    setGridInstr, setParkedInstr, replaceGridPatch, editGrid, editLane, reeditTarget, addToRack, patchInfo,
     patchStash, stashKey,
   });
   editGrid(); // start with the editor showing the grid's active instrument
